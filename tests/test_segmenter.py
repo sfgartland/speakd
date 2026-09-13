@@ -1,5 +1,9 @@
 """Tests for sentence and clause segmentation."""
 
+import threading
+
+import pytest
+
 from speakd.model import Piece, Span
 from speakd.segmenter import DEFAULT_MAX_CHARS, segment
 
@@ -47,3 +51,33 @@ def test_whitespace_only_input_produces_nothing() -> None:
 
 def test_default_max_chars_is_exported() -> None:
     assert DEFAULT_MAX_CHARS == 180
+
+
+def test_max_chars_below_one_raises_instead_of_looping_forever() -> None:
+    """The guard is what stops `_split_words` spinning at max_chars < 1.
+
+    Run it on a throwaway daemon thread and join with a timeout, so a
+    regression that removes the guard fails this assertion in five seconds
+    instead of wedging the whole suite with no timeout and no output.
+    """
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            segment([piece("word " * 10)], 0)
+        except BaseException as exc:  # recorded here, asserted on by the caller
+            outcome.append(exc)
+        else:
+            outcome.append(None)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=5.0)
+
+    assert not worker.is_alive(), "segment() did not return: the max_chars guard regressed"
+    assert isinstance(outcome[0], ValueError)
+
+
+def test_negative_max_chars_raises() -> None:
+    with pytest.raises(ValueError, match="max_chars"):
+        segment([piece("word word")], -5)

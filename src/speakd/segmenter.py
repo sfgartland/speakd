@@ -63,7 +63,17 @@ def _units(text: str, max_chars: int) -> Iterator[tuple[int, str]]:
 
 
 def segment(pieces: Sequence[Piece], max_chars: int = DEFAULT_MAX_CHARS) -> list[Piece]:
-    """Split pieces into speakable units, preserving provenance where it is real."""
+    """Split pieces into speakable units, preserving provenance where it is real.
+
+    Raises `ValueError` if `max_chars` is below 1. `_split_words` cannot
+    advance at that setting — the computed end index equals the start index
+    and a non-space character never moves it — so it would spin forever.
+    The guard lives here rather than only at the CLI because `speak()`
+    segments on the caller's thread: a library or socket caller passing 0
+    would otherwise wedge with no timeout, no exception and no log.
+    """
+    if max_chars < 1:
+        raise ValueError(f"max_chars must be at least 1, got {max_chars}")
     result: list[Piece] = []
     for piece in pieces:
         exact = len(piece.spoken) == piece.span.end - piece.span.start
