@@ -70,14 +70,21 @@ else is a client.
 
 ```python
 Span(start: int, end: int)                 # offsets into the job's source text
-Piece(span: Span, spoken: str)             # a unit of text and its provenance
+Piece(span: Span, spoken: str, exact: bool = True)   # text and its provenance
 Segment(span, text, audio_offset, duration)  # a synthesised unit, placed in time
 Job(source_id, text, profile, priority, segments)
 ```
 
 A job's text enters as a single `Piece`. Transforms map pieces to pieces:
 rewriting changes `spoken` and keeps `span`; dropping a code block removes a
-piece; an insertion inherits a neighbouring span. Because provenance survives
+piece; an insertion inherits a neighbouring span.
+
+**A transform that rewrites `spoken` must clear `exact`.** Provenance cannot be
+inferred from string length: a length-preserving rewrite — `café` to `cafe`, an
+em-dash swap, much of the pronunciation table — would otherwise be mistaken for
+untouched source, and the segmenter would compute sub-spans against text that no
+longer matches. The flag is the contract; the length check is only a secondary
+guard behind it. Because provenance survives
 arbitrary rewriting, follow-along display works even under a profile that
 rewrites heavily.
 
@@ -240,9 +247,44 @@ channels with roles, priority and profiles; plugin host with both invariants;
 markdown, pronunciation and summarize transforms; the vault pack; the Claude
 Code client; `speakctl`; tests and CI.
 
-**Out:** document reader and position persistence; the out-of-process effect
-tier and PDF highlighter; engines beyond Kokoro; Codex and OpenCode adapters;
-the natural-language policy compiler.
+**Out:** document reader and position persistence; engines beyond Kokoro; Codex
+and OpenCode adapters; the natural-language policy compiler.
+
+**The event bus is now IN, at plan 2.** It was cut as speculation on the grounds
+that nothing consumed events. That reasoning expired when the desktop GUI was
+specified: a follow-along view is a subscriber, so the fan-out has a consumer
+before it is written.
+
+### Plan structure
+
+Milestone 1 is delivered as three plans, because each must produce working
+software on its own:
+
+1. **Speaking pipeline** — timeline, segmenter, streaming synthesis, engine,
+   player, `speakctl say`. Complete.
+2. **Daemon** — transports, channels, roles, profiles, control verbs, event bus.
+3. **Plugins and clients** — plugin host, built-in transforms, the vault pack,
+   the Claude Code client.
+
+Plans 2 and 3a (the plugin host and transforms) are independent of each other:
+transforms need only the data model, not the daemon. They can run concurrently.
+The Claude Code client depends on plan 2's protocol and follows it.
+
+### Milestone 2: the desktop GUI
+
+A Tauri shell — the OS webview rather than a bundled Chromium, roughly 3-10 MB
+against Electron's 120-200 — around a web frontend that also serves as a plain
+localhost page. Transport controls, and the source text with the spoken range
+highlighted.
+
+The shell owns nothing: queue, timeline and channels stay in the daemon, and the
+page talks to it over the same HTTP and WebSocket transports agent clients use.
+The Rust side does only what a webview cannot — global hotkeys (pausing from
+inside an editor is the thing a browser tab can never do), system tray, and
+supervising the daemon process. Highlighting is `span_at`; click-to-jump is
+`time_of`, which is why that map is bidirectional. The cost of the OS-webview
+approach is three engines to test — WebKitGTK, WKWebView, WebView2 — rather than
+one.
 
 **Done:** speakd has replaced narrator in daily use; a typical response starts
 speaking in under three seconds; the citation pack reads a real vault note
@@ -268,6 +310,46 @@ Deferred deliberately; none blocks milestone 1.
 - **Background event taxonomy.** Which events a background channel may interrupt
   for is currently three names; real use will refine it.
 - **Distribution.** PyPI name `speakd` is free. Whether to publish, and when.
+
+- **The timeline's time base — decide before the event bus.** `audio_offset`
+  accumulates nominal durations (`len(audio) / sample_rate`), so it measures
+  synthesis, not wall-clock. Whenever synthesis stalls playback the two diverge,
+  and a subscriber then has no correct argument to pass `span_at()`. Either stamp
+  `time.monotonic()` at each playback start, or make offsets measured so that
+  gaps become real gaps — `span_at` already returns `None` inside a gap, which is
+  the right answer during a stall. Measured offsets need care: an instantaneous
+  test player would trip `Timeline.append`'s overlap check.
+
+- **What a player failure should do.** A raising player currently propagates out
+  of `speak()`, discarding the timeline built so far and every recorded error.
+  For a daemon, a sink disappearing mid-utterance is routine — a headset walking
+  out of range — and losing the position map defeats resume in exactly the case
+  where resume matters most. The alternative is recording it in `errors` and
+  returning the partial result. Failure handling above covers transforms,
+  plugins, startup and subscribers, but not the player.
+
+## Notes for the daemon
+
+Learned while building plan 1; each one bites at plan 2's layer, not plan 1's.
+
+- **Never reuse a cancellation `Event` across utterances without clearing it.**
+  `speak()` no longer writes to a caller-supplied Event, so the hazard is now the
+  caller's alone: a channel holding one long-lived Event that is set once and not
+  cleared goes permanently mute, with an empty timeline, no errors and no
+  exception. Prefer a fresh Event per utterance.
+- **Hush cannot interrupt a segment through cancellation.** `play()` blocks by
+  design, so setting the Event is only noticed when the current segment ends —
+  a two-to-four second tail at the default segment length, on the most common
+  path there is. The daemon must call `player.stop()` directly from its control
+  thread.
+- **`SoundDevicePlayer` drives sounddevice's process-wide stream**, so with
+  several channels one session's `stop()` silences another's audio. Serving
+  multiple sessions needs a per-player `OutputStream`.
+- **`speak()` always starts at unit 0.** Seek and resume need a start index, and
+  `SpeechResult` does not retain the input pieces, so either re-segmentation must
+  be deterministic or the units must be kept.
+- **`Timeline` is per-call**, with offsets restarting at zero. One timeline per
+  job is the right model; the event bus must not assume a single global clock.
 
 ## References
 
