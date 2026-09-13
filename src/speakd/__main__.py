@@ -16,6 +16,7 @@ from speakd.cli import default_socket_path
 from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece
+from speakd.player import Closeable, Player
 from speakd.transport import SocketServer
 
 
@@ -27,11 +28,52 @@ def _profile_for(name: str) -> ProfileView:
     return ProfileView(voice="af_heart", speed=1.1, interrupt_on=("error",), prepare=prepare)
 
 
+def build_player(*, sample_rate: int, fake: bool = False) -> Player:
+    """The player the daemon runs with.
+
+    `StreamingPlayer` rather than `SoundDevicePlayer` because a hush that
+    waits for the current sentence to end is not a hush. `fake=True` is for
+    tests, which must never open an audio device.
+
+    Imported inside the function, like every other optional-dependency use
+    here: `SoundDeviceSink` opens no device until `start()`, but the module
+    it needs is only present with the kokoro extra.
+    """
+    if fake:
+        from speakd.player import FakeSink, StreamingPlayer
+
+        return StreamingPlayer(FakeSink())
+    from speakd.player import SoundDeviceSink, StreamingPlayer
+
+    return StreamingPlayer(SoundDeviceSink(sample_rate))
+
+
 def _unlink_quietly(path: Path) -> None:
     try:
         path.unlink()
     except OSError:
         pass
+
+
+def _close_player(player: Player) -> None:
+    """Give the audio device back, reporting rather than raising if it refuses.
+
+    Guarded like every other player call in this project: a raise here would
+    turn a clean shutdown into a traceback for something that is already over.
+    Reported on stderr rather than on the bus, because by this point the
+    server is stopped and there is no subscriber left to hear it -- and never
+    swallowed, since a device that would not release is exactly why the next
+    start finds it busy.
+
+    A player that holds nothing is not asked to release it; `isinstance` is
+    the probe, as with `Pausable`.
+    """
+    if not isinstance(player, Closeable):
+        return
+    try:
+        player.close()
+    except Exception as exc:
+        sys.stderr.write(f"speakd: could not release the audio device: {exc!r}\n")
 
 
 def serve(daemon: Daemon, socket_path: Path) -> int:
@@ -82,6 +124,12 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
     daemon.silence()
     server.stop()
     daemon.stop()
+    # Last, and never above `daemon.stop()`: `close()` is terminal by contract
+    # -- the sink refuses every later write and start -- so the speech worker
+    # has to be gone before it runs, or a worker still inside play() meets a
+    # closed sink on its next chunk. Nothing may use the player after this
+    # line.
+    _close_player(daemon.player)
     return 0
 
 
@@ -95,7 +143,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    from speakd.player import SoundDevicePlayer
     from speakd.synth.kokoro_engine import KokoroEngine
 
     try:
@@ -107,7 +154,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     daemon = Daemon(
-        engine, SoundDevicePlayer(), _profile_for, bus=EventBus(), channels=ChannelTable()
+        engine,
+        # The engine's own rate, not a literal: a sink opened at the wrong
+        # rate plays the right samples at the wrong speed, which sounds like
+        # a broken voice rather than like a misconfiguration.
+        build_player(sample_rate=engine.sample_rate),
+        _profile_for,
+        bus=EventBus(),
+        channels=ChannelTable(),
     )
     return serve(daemon, args.socket)
 

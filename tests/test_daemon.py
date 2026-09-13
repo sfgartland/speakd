@@ -12,7 +12,7 @@ from speakd.channels import ChannelTable
 from speakd.daemon import Daemon, ProfileView, _Job
 from speakd.events import Event, EventBus
 from speakd.model import Piece, Role
-from speakd.player import RecordingPlayer
+from speakd.player import FakeSink, Player, RecordingPlayer, StreamingPlayer
 from speakd.protocol import Request, Response, Verb
 from speakd.synth.fake import FakeEngine
 
@@ -36,6 +36,35 @@ def daemon():  # type: ignore[no-untyped-def]
         yield d, player, bus
     finally:
         d.stop()
+
+
+@pytest.fixture
+def running_daemon():  # type: ignore[no-untyped-def]
+    """A started daemon, built with whichever player the test needs.
+
+    A factory rather than a plain fixture because the player is the variable
+    under test here: `StreamingPlayer` can pause and `RecordingPlayer` cannot,
+    and the daemon has to answer for both.
+    """
+    built: list[Daemon] = []
+
+    def build(player: Player | None = None) -> Daemon:
+        d = Daemon(
+            FakeEngine(),
+            player if player is not None else RecordingPlayer(),
+            profile_for,
+            bus=EventBus(),
+            channels=ChannelTable(),
+        )
+        d.start()
+        built.append(d)
+        return d
+
+    try:
+        yield build
+    finally:
+        for d in built:
+            d.stop()
 
 
 def enqueue(source: str, text: str, kind: str = "response") -> Request:
@@ -122,12 +151,114 @@ def test_every_utterance_gets_a_fresh_cancel_event(daemon) -> None:  # type: ign
     assert len(player.played) == 2
 
 
-def test_transport_verbs_report_that_they_are_not_implemented(daemon) -> None:  # type: ignore[no-untyped-def]
-    d, _player, _bus = daemon
-    for verb in (Verb.PAUSE, Verb.RESUME, Verb.SEEK):
-        response = d.handle(Request(verb=verb, source_id="s", payload={}))
-        assert response.ok is False
-        assert "streaming player" in response.error
+def test_pause_pauses_a_pausable_player(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    response = daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert response.ok
+    assert response.data["paused"] is True
+    assert daemon.player.paused is True
+
+
+def test_resume_unpauses(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    response = daemon.handle(Request(verb=Verb.RESUME, source_id="s"))
+    assert response.ok
+    assert response.data["paused"] is False
+    assert daemon.player.paused is False
+
+
+def test_pausing_a_player_that_cannot_pause_says_why(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=RecordingPlayer())
+    response = daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert not response.ok
+    assert "pause" in response.error
+    assert "RecordingPlayer" in response.error
+
+
+def test_a_transport_change_is_announced(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    transport = [event for event in seen if event.kind == "transport"]
+    assert len(transport) == 1
+    assert transport[0].data["paused"] is True
+
+
+def test_pausing_twice_announces_once(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    """A GUI that redraws on every event must not flicker on a no-op."""
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert len([event for event in seen if event.kind == "transport"]) == 1
+
+
+def test_seek_is_still_refused(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    response = daemon.handle(Request(verb=Verb.SEEK, source_id="s"))
+    assert not response.ok
+    # The refusal has to name itself. The message it replaced promised seek
+    # "until the streaming player lands" -- which this daemon is now running.
+    assert "seek" in response.error
+    assert "streaming player" not in response.error
+
+
+def test_a_player_that_cannot_be_paused_is_reported_not_raised(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    """A refusing sink must not come back as a traceback on the control path."""
+
+    class UnpausablePlayer(StreamingPlayer):
+        def pause(self) -> None:
+            raise RuntimeError("PortAudioError: device unavailable")
+
+    daemon = running_daemon(player=UnpausablePlayer(FakeSink()))
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    response = daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert not response.ok
+    assert "device unavailable" in response.error
+    # Nothing changed, so nothing is announced: a GUI told it is paused when
+    # the audio is still running is worse off than one told nothing.
+    assert [event for event in seen if event.kind == "transport"] == []
+    assert daemon.player.paused is False
+
+
+def test_hush_reports_discards_as_their_own_kind(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon()
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    # Queue more than the worker can take, then hush.
+    for index in range(3):
+        daemon.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": f"Item {index}."}))
+    response = daemon.handle(Request(verb=Verb.HUSH, source_id="s"))
+    assert response.ok
+
+    discarded = [event for event in seen if event.kind == "discarded"]
+    if response.data["discarded"]:
+        assert discarded, "a discard was counted but never announced"
+        # Summed by hand rather than with `int(...)`: `Event.data` is
+        # `dict[str, object]`, and pinning the type here is the assertion
+        # anyway -- a count a GUI has to coerce is not a count.
+        announced = 0
+        for event in discarded:
+            count = event.data["count"]
+            assert isinstance(count, int)
+            announced += count
+        assert announced == response.data["discarded"]
+
+
+def test_a_discard_is_not_reported_as_an_error(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon()
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    for index in range(3):
+        daemon.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": f"Item {index}."}))
+    daemon.handle(Request(verb=Verb.HUSH, source_id="s"))
+    for event in seen:
+        if event.kind == "error":
+            assert "discard" not in str(event.data).lower()
 
 
 def test_a_prepare_failure_is_reported_but_speech_continues(daemon) -> None:  # type: ignore[no-untyped-def]
@@ -756,7 +887,7 @@ def test_a_hush_discards_the_queue_behind_the_utterance_it_cancels() -> None:
     player = HoldingPlayer(reached, release)
     bus = EventBus()
     seen: list[Event] = []
-    bus.subscribe(seen.append, kinds=["error"])
+    bus.subscribe(seen.append, kinds=["discarded"])
     d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
     d.start()
     try:
@@ -769,8 +900,11 @@ def test_a_hush_discards_the_queue_behind_the_utterance_it_cancels() -> None:
         assert response.data["discarded"] == 2
         release.set()
         assert d.wait_idle(timeout=5.0), "the discarded jobs were never released"
-        # Nothing vanished: each dropped utterance was reported.
-        assert len([e for e in seen if "discarded" in str(e.data.get("message", ""))]) == 2
+        # Nothing vanished: the drop was reported, once, with its count and
+        # the channel it came off.
+        assert len(seen) == 1, "one hush, one announcement"
+        assert seen[0].data["count"] == 2
+        assert seen[0].data["sources"] == ["s"]
         assert len(player.played) == 1, "the hushed utterance kept playing"
         # And the channel is not poisoned — the next utterance still speaks.
         assert d.handle(enqueue("s", "After.")).ok is True
@@ -909,10 +1043,9 @@ def test_a_subscriber_that_fails_mid_hush_does_not_strand_the_queue() -> None:
     bus = EventBus()
 
     def explode(event: Event) -> None:
-        if "discarded" in str(event.data.get("message", "")):
-            raise SystemExit(7)
+        raise SystemExit(7)
 
-    bus.subscribe(explode, kinds=["error"])
+    bus.subscribe(explode, kinds=["discarded"])
     d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
     d.start()
     try:
@@ -1222,14 +1355,15 @@ def test_a_hushed_utterance_is_not_reported_as_a_stopped_daemon() -> None:
     `_drain_queued` is the hush path; `_retire` and `_speak`'s recheck are the
     stop path. A user who hushes and reads "the daemon stopped before this
     reached the engine" is being told something false about a daemon that is
-    still running and about to speak again.
+    still running and about to speak again. The two now differ by kind as
+    well as by wording, and both differences are load-bearing.
     """
     reached = threading.Event()
     release = threading.Event()
     player = HoldingPlayer(reached, release)
     bus = EventBus()
     seen: list[Event] = []
-    bus.subscribe(seen.append, kinds=["error"])
+    bus.subscribe(seen.append)
     d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
     d.start()
     try:
@@ -1242,11 +1376,14 @@ def test_a_hushed_utterance_is_not_reported_as_a_stopped_daemon() -> None:
     finally:
         release.set()
         d.stop()
-    messages = [str(e.data.get("message", "")) for e in seen]
-    discarded = [m for m in messages if "discarded" in m]
+    discarded = [e for e in seen if e.kind == "discarded"]
     assert len(discarded) == 1
-    assert "hush" in discarded[0]
-    assert "stopped" not in discarded[0], f"a hush reported as a stop: {discarded[0]!r}"
+    reason = str(discarded[0].data.get("reason", ""))
+    assert "hush" in reason
+    assert "stopped" not in reason, f"a hush reported as a stop: {reason!r}"
+    # And it is nowhere among the errors: the kind is the thing a GUI matches
+    # on, so a hush that also raised an error would be counted twice.
+    assert not [e for e in seen if e.kind == "error" and "discarded" in str(e.data)]
 
 
 def test_work_the_daemon_stopped_on_still_says_so() -> None:
@@ -1418,7 +1555,7 @@ def test_a_hush_whose_sink_fails_still_clears_the_queue() -> None:
     player = UnstoppableHoldingPlayer(reached, release)
     bus = EventBus()
     seen: list[Event] = []
-    bus.subscribe(seen.append, kinds=["error"])
+    bus.subscribe(seen.append, kinds=["discarded"])
     d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
     d.start()
     try:
@@ -1435,7 +1572,7 @@ def test_a_hush_whose_sink_fails_still_clears_the_queue() -> None:
         release.set()
         d.stop()
     assert d.wait_idle(timeout=5.0)
-    discarded = [e for e in seen if "discarded" in str(e.data.get("message", ""))]
-    assert len(discarded) == 2, "the dropped utterances were never reported"
-    assert all("hush" in str(e.data.get("message", "")) for e in discarded)
+    assert len(seen) == 1, "the dropped utterances were never reported"
+    assert seen[0].data["count"] == 2
+    assert "hush" in str(seen[0].data.get("reason", ""))
     assert len(player.played) == 1, "the daemon went on speaking through the hush"

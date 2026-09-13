@@ -21,16 +21,21 @@ from speakd.channels import ChannelTable
 from speakd.events import Event, EventBus
 from speakd.model import Piece, Role, Span
 from speakd.pipeline import speak
-from speakd.player import Player
+from speakd.player import Pausable, Player
 from speakd.protocol import Request, Response, Verb
 from speakd.scheduler import SpeechRequest, decide
 from speakd.synth import Synthesizer
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
 
-_NOT_IMPLEMENTED = (
-    "not implemented until the streaming player lands: Player.play blocks, so "
-    "there is no way to suspend or seek mid-segment"
+# Named for the one verb still refused. The wording it replaces — "not
+# implemented until the streaming player lands" — became false the moment the
+# streaming player landed, and a refusal whose stated reason has already
+# happened sends a reader waiting for something that is already here.
+_SEEK_NOT_IMPLEMENTED = (
+    "seek is not implemented: the timeline can map an offset to a time, but "
+    "moving playback needs the audio for segments already played, which is "
+    "neither retained nor re-synthesised"
 )
 
 _NOT_RUNNING = "the daemon is not running: start() it before enqueuing speech"
@@ -210,6 +215,43 @@ class Daemon:
         except Exception as exc:
             self._publish("error", "", {"message": f"could not silence the player: {exc!r}"})
 
+    def _set_paused(self, paused: bool) -> Response:
+        """Suspend or take up playback, announcing only a real change.
+
+        A player that cannot pause is not an error in the daemon; it is a
+        fact about how this daemon was constructed, and the caller is told
+        which player it got so the answer is actionable.
+
+        The state goes on the bus because a GUI must be able to *read* it
+        rather than infer it from the absence of `position` events — silence
+        is also what a finished utterance sounds like. Only a real change is
+        announced: a pause when already paused is a no-op, and publishing it
+        would make a GUI that redraws on every event flicker.
+        """
+        player = self.player
+        if not isinstance(player, Pausable):
+            return Response(
+                ok=False,
+                error=f"{type(player).__name__} cannot pause",
+            )
+        if player.paused == paused:
+            return Response(ok=True, data={"paused": paused})
+        verb = "pause" if paused else "resume"
+        try:
+            if paused:
+                player.pause()
+            else:
+                player.resume()
+        except Exception as exc:
+            # Guarded like every other player call here: a sink that refuses
+            # must not raise out of `handle` as a traceback on the control
+            # path. Nothing is announced, because nothing changed — a
+            # `transport` event for a pause that did not happen is worse than
+            # none, since it is exactly what a GUI trusts.
+            return Response(ok=False, error=f"could not {verb} the player: {exc!r}")
+        self._publish("transport", "", {"paused": paused})
+        return Response(ok=True, data={"paused": paused})
+
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
 
@@ -277,8 +319,10 @@ class Daemon:
                     ]
                 },
             )
-        if request.verb in (Verb.PAUSE, Verb.RESUME, Verb.SEEK):
-            return Response(ok=False, error=_NOT_IMPLEMENTED)
+        if request.verb in (Verb.PAUSE, Verb.RESUME):
+            return self._set_paused(request.verb is Verb.PAUSE)
+        if request.verb is Verb.SEEK:
+            return Response(ok=False, error=_SEEK_NOT_IMPLEMENTED)
         if request.verb is Verb.SET_ROLE:
             raw = request.payload.get("role")
             try:
@@ -427,17 +471,36 @@ class Daemon:
         Taken off the queue in one step under the lock, with any stop signal
         put straight back, and only then reported. `EventBus.publish` swallows
         a subscriber's `Exception` but not its `BaseException`, and one
-        escaping mid-loop must not leave jobs off the queue with their pending
-        count unreleased — `wait_idle` would block to its timeout — nor
-        swallow a sentinel `stop()` is waiting on.
+        escaping must not leave jobs off the queue with their pending count
+        unreleased — `wait_idle` would block to its timeout — nor swallow a
+        sentinel `stop()` is waiting on.
+
+        One event for the whole drain, not one per job: a hush of forty
+        queued utterances is one thing that happened, and forty events is a
+        GUI redrawing forty times to say so. It carries the count and the
+        channels the count came from, which is what the per-job events said
+        between them.
         """
         with self._idle:
             jobs, signals = self._empty_queue()
             for _ in range(signals):
                 self._jobs.put(None)
         try:
-            for job in jobs:
-                self._publish("error", job.source_id, {"message": _DISCARDED_HUSHED})
+            if jobs:
+                # Its own kind, because a GUI showing "3 dropped" had to match
+                # on the message text to find them, and prose is not an API:
+                # the day someone rewords this, the GUI goes quiet about
+                # speech that vanished. No event when nothing was dropped —
+                # `discarded: 0` is not news.
+                self._publish(
+                    "discarded",
+                    "",
+                    {
+                        "count": len(jobs),
+                        "reason": _DISCARDED_HUSHED,
+                        "sources": sorted({job.source_id for job in jobs}),
+                    },
+                )
         finally:
             self._release(len(jobs))
         return len(jobs)

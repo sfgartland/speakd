@@ -117,6 +117,11 @@ def _build_parser() -> argparse.ArgumentParser:
     # the other to anyone calling `main`.
     priority.add_argument("priority", metavar="INTEGER", help="higher is heard first")
 
+    # Transport, in the same shape as the verbs above: --source, --socket,
+    # and one line back when nothing answers.
+    sub.add_parser("pause", parents=[common], help="suspend playback where it is")
+    sub.add_parser("resume", parents=[common], help="take playback up again")
+
     sub.add_parser("subscribe", parents=[common], help="stream events as JSON lines")
     sub.add_parser("status", parents=[common], help="print the daemon's channels as JSON")
     return parser
@@ -372,6 +377,16 @@ def _silence(args: argparse.Namespace, verb: Verb) -> int:
     return 0
 
 
+def _transport(args: argparse.Namespace, verb: Verb) -> int:
+    """pause and resume. A daemon whose player cannot pause says so, and that
+    refusal is printed rather than swallowed: a dead pause button that reports
+    nothing is the failure this whole path exists to remove."""
+    response = _call(args.socket, Request(verb=verb, source_id=args.source))
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
 def _role(args: argparse.Namespace) -> int:
     try:
         role = Role(args.role)
@@ -457,6 +472,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _silence(args, Verb.HUSH)
     if args.command == "cancel":
         return _silence(args, Verb.CANCEL)
+    if args.command == "pause":
+        return _transport(args, Verb.PAUSE)
+    if args.command == "resume":
+        return _transport(args, Verb.RESUME)
     if args.command == "role":
         return _role(args)
     if args.command == "priority":

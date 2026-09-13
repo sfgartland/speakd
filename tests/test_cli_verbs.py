@@ -19,7 +19,7 @@ from speakd.cli import default_socket_path, main
 from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece
-from speakd.player import RecordingPlayer
+from speakd.player import FakeSink, RecordingPlayer, StreamingPlayer
 from speakd.synth.fake import FakeEngine
 from speakd.transport import SocketServer
 
@@ -63,6 +63,32 @@ class BlockingPlayer:
 
 @pytest.fixture
 def running(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """A served daemon on the player the shipping daemon actually runs.
+
+    `StreamingPlayer` rather than `RecordingPlayer` so these tests exercise
+    the transport verbs the daemon now answers; a fixture whose player cannot
+    pause could only ever prove that pause is refused.
+    """
+    player = StreamingPlayer(FakeSink())
+    daemon = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    daemon.start()
+    server = SocketServer(tmp_path / "speakd.sock", daemon.handle, daemon.bus)
+    server.start()
+    try:
+        yield server.address, daemon, player
+    finally:
+        server.stop()
+        daemon.stop()
+
+
+@pytest.fixture
+def running_recording(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """Like `running`, but counting segments rather than chunks.
+
+    `FakeSink.blocks` counts 2048-frame writes, so "two segments were played"
+    cannot be said against it without pinning the chunk size as well. Kept on
+    `RecordingPlayer` rather than weakened.
+    """
     player = RecordingPlayer()
     daemon = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
     daemon.start()
@@ -112,8 +138,8 @@ def blocking(tmp_path: Path):  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 
 
-def test_enqueue_speaks_through_the_daemon(running, capsys) -> None:  # type: ignore[no-untyped-def]
-    address, daemon, player = running
+def test_enqueue_speaks_through_the_daemon(running_recording, capsys) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, player = running_recording
     code = main(["enqueue", "One. Two.", "--source", "s", "--socket", str(address)])
     assert code == 0
     assert daemon.wait_idle(timeout=5.0)
@@ -128,6 +154,90 @@ def test_hush_is_accepted(running) -> None:  # type: ignore[no-untyped-def]
 def test_cancel_is_accepted(running) -> None:  # type: ignore[no-untyped-def]
     address, _daemon, _player = running
     assert main(["cancel", "--source", "s", "--socket", str(address)]) == 0
+
+
+def test_the_daemon_entry_point_builds_a_pausable_player() -> None:
+    """A daemon whose player cannot pause makes the GUI's controls dead."""
+    from speakd.__main__ import build_player
+    from speakd.player import Pausable
+
+    assert isinstance(build_player(sample_rate=24000, fake=True), Pausable)
+
+
+def test_pause_works_end_to_end_through_the_socket(running) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, _player = running
+    assert main(["pause", "--source", "s", "--socket", str(address)]) == 0
+    assert main(["resume", "--source", "s", "--socket", str(address)]) == 0
+
+
+def test_pause_on_a_daemon_that_cannot_pause_prints_why(running_recording, capsys) -> None:  # type: ignore[no-untyped-def]
+    """A dead pause button that reports nothing is what this path removes.
+
+    The daemon names the player it got, and the client has to carry that
+    through: `RecordingPlayer` says "swap the player", where a bare non-zero
+    exit says nothing at all.
+    """
+    address, _daemon, _player = running_recording
+    assert main(["pause", "--source", "s", "--socket", str(address)]) != 0
+    err = capsys.readouterr().err
+    assert "RecordingPlayer" in err
+    assert "pause" in err
+    assert "Traceback" not in err
+
+
+def test_pause_fails_the_same_way_as_hush_when_no_daemon_answers(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """A new verb that reports unreachability its own way is a new verb to learn."""
+    missing = tmp_path / "absent.sock"
+    hush_code = main(["hush", "--source", "s", "--socket", str(missing)])
+    hush_err = capsys.readouterr().err
+    for verb in ("pause", "resume"):
+        code = main([verb, "--source", "s", "--socket", str(missing)])
+        assert (code, capsys.readouterr().err) == (hush_code, hush_err)
+
+
+def test_the_entry_point_runs_the_daemon_on_that_player(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """`build_player` is only worth having if `main` is what calls it.
+
+    Nothing else pins the swap: a `build_player` no caller reaches would pass
+    every other test here while the shipping daemon went on running the
+    blocking player. The sink is built but never started, so no device opens.
+    """
+    import speakd.__main__ as entry
+    import speakd.player
+    from speakd.player import Pausable
+    from speakd.synth import kokoro_engine
+
+    class StubEngine:
+        name = "stub"
+        # Deliberately not 24000: a hardcoded rate would still sound right in
+        # a test that used Kokoro's own.
+        sample_rate = 12345
+
+        def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+            return np.zeros(0, dtype=np.float32)
+
+    rates: list[int] = []
+
+    class RecordingSink(FakeSink):
+        """A `SoundDeviceSink` that records its rate and opens nothing."""
+
+        def __init__(self, sample_rate: int, blocksize: int = 1024) -> None:
+            super().__init__()
+            rates.append(sample_rate)
+
+    monkeypatch.setattr(kokoro_engine, "KokoroEngine", StubEngine)
+    monkeypatch.setattr(speakd.player, "SoundDeviceSink", RecordingSink)
+    built: list[Daemon] = []
+
+    def capture(daemon: Daemon, socket_path: Path) -> int:
+        built.append(daemon)
+        return 0
+
+    monkeypatch.setattr(entry, "serve", capture)
+    assert entry.main(["--socket", str(tmp_path / "speakd.sock")]) == 0
+    assert built, "the entry point never built a daemon"
+    assert isinstance(built[0].player, Pausable), "the shipping daemon cannot pause"
+    assert rates == [12345], "the sink did not take the engine's rate"
 
 
 def test_role_sets_the_channel_role(running) -> None:  # type: ignore[no-untyped-def]
@@ -376,6 +486,11 @@ def profile_for(name):
     return ProfileView(voice="af_heart", speed=1.1, interrupt_on=("error",), prepare=prepare)
 
 
+def note(step):
+    with marker.open("a") as handle:
+        print(step, file=handle)
+
+
 daemon = Daemon(
     FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
 )
@@ -387,12 +502,25 @@ if mode == "refuse":
 
     daemon.start = refuse
 
+if mode.startswith("close"):
+    # A player that owns a device handle, and says when it gives it back.
+    from speakd.player import FakeSink, StreamingPlayer
+
+    class NotingSink(FakeSink):
+        def stop(self):
+            note("stop")
+            super().stop()
+
+        def close(self):
+            note("close")
+            if mode == "close-raises":
+                raise RuntimeError("PortAudioError: device busy")
+            super().close()
+
+    daemon.player = StreamingPlayer(NotingSink())
+
 if mode == "order":
     # Records the shutdown order Ctrl-C actually takes.
-    def note(step):
-        with marker.open("a") as handle:
-            print(step, file=handle)
-
     class NotingPlayer(RecordingPlayer):
         def stop(self):
             note("silence")
@@ -487,6 +615,52 @@ def test_ctrl_c_stops_the_audio_before_it_stops_the_server(tmp_path: Path) -> No
     # Silence, then the server, then the daemon's own teardown (which
     # silences again on its way down).
     assert steps == ["silence", "server", "silence"], steps
+
+
+def test_the_entry_point_releases_the_audio_device_on_the_way_out(tmp_path: Path) -> None:
+    """The daemon now owns a device handle, and nothing else will give it back.
+
+    `SoundDevicePlayer` held no resources, so shutdown had nothing to release.
+    A `StreamingPlayer`'s sink keeps the device claimed for the daemon's whole
+    life -- on a laptop, for as long as speakd runs -- which other
+    applications notice.
+    """
+    process, socket_path, marker = _spawn(tmp_path, "close")
+    try:
+        assert _until(socket_path.exists, timeout=20.0), "the daemon never listened"
+        process.send_signal(signal.SIGINT)
+        assert process.wait(timeout=20.0) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()
+    steps = marker.read_text().split()
+    assert "close" in steps, "the sink was never closed: the device stays claimed"
+    # Last, and after every stop. close() is terminal by contract, so the
+    # speech worker has to be gone before it -- a worker still inside play()
+    # would meet a closed sink on its next chunk.
+    assert steps[-1] == "close", steps
+    assert set(steps[:-1]) == {"stop"}, steps
+
+
+def test_a_sink_that_will_not_close_does_not_break_the_shutdown(tmp_path: Path) -> None:
+    """A clean exit must not become a traceback because the device refused."""
+    process, socket_path, marker = _spawn(tmp_path, "close-raises")
+    try:
+        assert _until(socket_path.exists, timeout=20.0), "the daemon never listened"
+        process.send_signal(signal.SIGINT)
+        code = process.wait(timeout=20.0)
+        _out, err = process.communicate(timeout=20.0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert code == 0, "a sink that would not close took the shutdown down with it"
+    assert "close" in marker.read_text().split()
+    # Recorded, not swallowed: a device that will not release is exactly why
+    # the next start finds it busy.
+    assert "device busy" in err
+    assert "Traceback" not in err
 
 
 def test_a_refused_start_is_reported_and_never_listens(tmp_path: Path) -> None:

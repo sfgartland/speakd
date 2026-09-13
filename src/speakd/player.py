@@ -46,6 +46,19 @@ class Pausable(Protocol):
     def paused(self) -> bool: ...
 
 
+@runtime_checkable
+class Closeable(Protocol):
+    """A player holding a resource that outlives every utterance it plays.
+
+    Separate from `Player` for the same reason as `Pausable`: nothing in the
+    speech path ever closes anything, and folding this in would make every
+    test double implement a method it has no use for. The entry point asks
+    with `isinstance` on its way down, and only there.
+    """
+
+    def close(self) -> None: ...
+
+
 class RecordingPlayer:
     """Records what it was asked to play. For tests."""
 
@@ -442,6 +455,16 @@ class StreamingPlayer:
     def resume(self) -> None:
         """Take playback up again from where it was suspended."""
         self._resume.set()
+
+    def close(self) -> None:
+        """Give the device back for good. Terminal: the sink refuses all after.
+
+        `stop()` deliberately leaves the sink reusable -- that is what makes a
+        hush a hush rather than a shutdown -- so nothing in the speech path
+        ever releases the device. Without this the daemon keeps it claimed for
+        its whole life, which other applications on the machine notice.
+        """
+        self._sink.close()
 
     def stop(self) -> None:
         """End the current playback.
