@@ -194,7 +194,7 @@ git commit -m "Add the audio sink seam so playback is testable without a device"
 - Consumes: `AudioSink`, `FakeSink`
 - Produces: `StreamingPlayer(sink: AudioSink, chunk_frames: int = 2048)` satisfying the existing `Player` protocol — `play(audio, sample_rate)` blocking until the segment finishes **or is interrupted**, `stop()` returning immediately — plus `frames_played: int` and `interrupted: bool`
 
-`play()` writes the segment to the sink in chunks, checking an interrupt flag between chunks. That is what makes a hush take effect within one chunk — about 45 ms at 2048 frames and 24 kHz — instead of waiting out the whole segment.
+`play()` writes the segment to the sink in chunks, checking an interrupt flag between chunks. That is what makes a hush take effect within one chunk instead of waiting out the whole segment. At 2048 frames and 24 kHz a chunk is 85 ms (2048/24000); the 45 ms figure is the 48 kHz one. So the interrupt-latency bound is **~85 ms while playing** — the check happens between chunks, and a blocking write holds for the chunk it is playing — and **50 ms while paused**, which is the resume wait's poll interval.
 
 - [ ] **Step 1: Write the failing test**
 

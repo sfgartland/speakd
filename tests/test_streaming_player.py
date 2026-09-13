@@ -101,7 +101,7 @@ def test_pause_suspends_and_resume_continues() -> None:
     assert done.wait(timeout=5.0), "resume should let playback finish"
     thread.join(timeout=5.0)
     assert sink.frames_written == 1000
-    assert written_while_paused < 1000
+    assert written_while_paused == 0, "a pause taken before play() must write nothing at all"
 
 
 def test_stop_while_paused_does_not_deadlock() -> None:
@@ -168,12 +168,20 @@ def test_pause_is_sticky_across_stop() -> None:
     assert sink.frames_written == frames_before + 500
 
 
-def test_resume_without_pause_is_harmless() -> None:
+def test_resume_before_play_releases_a_pause_taken_before_play() -> None:
+    """resume() has to actually lift the pause, not merely be callable.
+
+    Asserting only that a never-paused player still plays tests the `set()`
+    in `__init__` and passes with resume()'s whole body deleted, which is how
+    this one used to read.
+    """
     import threading
 
     sink = FakeSink()
     player = StreamingPlayer(sink, chunk_frames=100)
+    player.pause()
     player.resume()
+    assert player.paused is False
     done = threading.Event()
 
     def run() -> None:
@@ -182,7 +190,7 @@ def test_resume_without_pause_is_harmless() -> None:
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    assert done.wait(timeout=5.0), "resume() without a prior pause() should never hang play()"
+    assert done.wait(timeout=5.0), "resume() must release the pause it was given"
     thread.join(timeout=5.0)
     assert sink.frames_written == 100
 
@@ -224,3 +232,17 @@ def test_an_empty_segment_opens_no_device() -> None:
     player = StreamingPlayer(sink, chunk_frames=100)
     player.play(audio(0), 24000)
     assert sink.started is False, "an empty segment must open no device"
+
+
+def test_player_exposes_what_the_sink_recorded() -> None:
+    """Dropped audio has to reach someone. The pipeline owns the player, not
+    the sink, so the player is where `errors` has to be readable from."""
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    assert player.errors == []
+
+    sink.stop()
+    sink.write(audio(100))
+
+    assert len(player.errors) == 1
+    assert "dropped 100 frames" in player.errors[0]
