@@ -158,9 +158,11 @@ def _say(args: argparse.Namespace) -> int:
     # A missing or failing transform never silences the rest of the
     # utterance -- the chain just loses that transform's contribution, and
     # `transformed` below carries on regardless. But an agent driving this
-    # over a shell command reads the exit code, not stderr, so the loss must
-    # still be visible there: both kinds collect into `transform_errors` and
-    # join `result.errors` in deciding the exit code below.
+    # reads either the exit code or the --dry-run JSON, and both must tell
+    # the same story: `missing_transforms` and `transform_errors` feed both
+    # the JSON payload below and, together with `result.errors`, the exit
+    # code, so the two surfaces cannot silently drift apart again.
+    missing_transforms: list[str] = []
     transform_errors: list[str] = []
     if args.no_transforms:
         transformed = pieces
@@ -169,9 +171,12 @@ def _say(args: argparse.Namespace) -> int:
         register_builtins(host)
         chain, missing = resolve_chain(profile, host)
         for name in missing:
-            message = f"profile {profile.name!r}: transform {name!r} is not provided by any plugin"
-            print(f"speakctl: {message}", file=sys.stderr)
-            transform_errors.append(message)
+            print(
+                f"speakctl: profile {profile.name!r}: transform {name!r} "
+                "is not provided by any plugin",
+                file=sys.stderr,
+            )
+            missing_transforms.append(name)
         chain_result = apply_chain(pieces, chain)
         for message in chain_result.errors:
             print(f"speakctl: {message}", file=sys.stderr)
@@ -193,6 +198,8 @@ def _say(args: argparse.Namespace) -> int:
                 {
                     "duration": result.timeline.duration,
                     "errors": result.errors,
+                    "missing_transforms": missing_transforms,
+                    "transform_errors": transform_errors,
                     "segments": [
                         {
                             "text": s.text,
@@ -211,8 +218,10 @@ def _say(args: argparse.Namespace) -> int:
     # 0 spoke cleanly, 1 spoke but something failed, 2 never got started.
     # An agent driving this needs to tell a partial failure from a clean run,
     # and a silently dropped segment -- or a silently dropped transform -- is
-    # exactly what it must not miss.
-    return 1 if (result.errors or transform_errors) else 0
+    # exactly what it must not miss. `missing_transforms` and
+    # `transform_errors` also ride along in the --dry-run JSON above, so the
+    # exit code and the JSON always agree on why a run exited 1.
+    return 1 if (result.errors or missing_transforms or transform_errors) else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -166,6 +166,9 @@ def test_missing_transform_warns_still_speaks_and_exits_nonzero(capsys, tmp_path
     assert "p" in captured.err
     payload = json.loads(captured.out)
     assert payload["segments"], "the utterance must still be spoken"
+    assert payload["missing_transforms"] == ["citations"]
+    assert payload["transform_errors"] == []
+    assert payload["errors"] == []
 
 
 def test_a_raising_transform_is_reported_and_exit_is_nonzero(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -183,6 +186,47 @@ def test_a_raising_transform_is_reported_and_exit_is_nonzero(capsys, monkeypatch
     captured = capsys.readouterr()
     assert "transform exploded" in captured.err
     payload = json.loads(captured.out)
+    assert payload["segments"], "the utterance must still be spoken"
+    assert payload["missing_transforms"] == []
+    assert len(payload["transform_errors"]) == 1
+    assert "transform exploded" in payload["transform_errors"][0]
+    assert payload["errors"] == []
+
+
+def test_dry_run_json_reports_both_a_missing_and_a_failing_transform(  # type: ignore[no-untyped-def]
+    capsys, tmp_path, monkeypatch
+) -> None:
+    """The two reporting surfaces must agree: the --dry-run JSON needs to
+    carry the same picture as the exit code, not just speak()'s errors --
+    otherwise an agent reading the JSON (the whole point of --dry-run) sees
+    "errors": [] on a run that exited 1."""
+    from speakd.plugins import builtin
+
+    def boom(pieces: object) -> object:
+        raise RuntimeError("transform exploded")
+
+    monkeypatch.setattr(builtin, "markdown", boom)
+
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.p]\ntransforms = ["citations", "markdown"]\n')
+
+    code = main(
+        [
+            "say",
+            "The API returned null.",
+            "--dry-run",
+            "--profile",
+            "p",
+            "--profiles-file",
+            str(path),
+        ]
+    )
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["missing_transforms"] == ["citations"]
+    assert len(payload["transform_errors"]) == 1
+    assert "transform exploded" in payload["transform_errors"][0]
+    assert payload["errors"] == []
     assert payload["segments"], "the utterance must still be spoken"
 
 
