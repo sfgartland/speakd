@@ -1166,3 +1166,38 @@ def test_stop_sets_the_cancel_event_under_the_lock_that_guards_it() -> None:
     d.stop()
     assert watcher.is_set()
     assert watcher.held_at_set is True, "stop() set the cancel Event with the lock released"
+
+
+class UnstoppablePlayer(RecordingPlayer):
+    """A sink whose stop() raises, as PortAudio's does when the device goes."""
+
+    def stop(self) -> None:
+        super().stop()
+        raise RuntimeError("PortAudioError: device unavailable")
+
+
+def test_a_player_that_cannot_be_silenced_still_lets_the_worker_leave() -> None:
+    """An unguarded player.stop() in stop() kills the daemon permanently.
+
+    It raises before the sentinel is deposited, so the worker is never told to
+    leave, `_worker` keeps pointing at it, and every later start() returns
+    `_STILL_FINISHING`. In serve() it escapes as a traceback. The headset that
+    walked out of range is exactly the case `pipeline` already anticipates.
+    """
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["error"])
+    d = Daemon(FakeEngine(), UnstoppablePlayer(), profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    d.stop()
+    assert d._worker is None, "the worker was never told to leave"
+    assert any("device unavailable" in str(e.data.get("message", "")) for e in seen), (
+        "a sink that failed must be reported, like every other sink failure here"
+    )
+    # And the daemon is startable again, rather than refusing forever.
+    assert d.start().data["started"] is True
+    try:
+        assert d.handle(enqueue("s", "One.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()

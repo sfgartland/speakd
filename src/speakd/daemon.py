@@ -152,7 +152,7 @@ class Daemon:
         # device. No further ordering is needed — a job that reaches `_speak`
         # after this rechecks `_running` and is discarded before it ever
         # reaches the player.
-        self.player.stop()
+        self._stop_player()
         with self._idle:
             # Under the lock, and only while this is still the worker being
             # stopped. `_retire` clears `_worker` and empties the queue under
@@ -173,6 +173,21 @@ class Daemon:
         with self._idle:
             if self._worker is worker:
                 self._worker = None
+
+    def _stop_player(self) -> None:
+        """Silence the device, reporting rather than raising if it refuses.
+
+        A real sink's stop() can fail — the headset walking out of range is
+        the case `pipeline` already anticipates. Raised out of `stop()` it
+        would escape before the sentinel is deposited: the worker would never
+        be told to leave, `_worker` would keep pointing at it, and every later
+        start() would return `_STILL_FINISHING`. Reported on the bus instead,
+        like every other sink failure in this module.
+        """
+        try:
+            self.player.stop()
+        except Exception as exc:
+            self._publish("error", "", {"message": f"could not silence the player: {exc!r}"})
 
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
