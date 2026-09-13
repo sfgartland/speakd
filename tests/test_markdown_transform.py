@@ -29,14 +29,16 @@ def test_fenced_code_is_replaced_by_a_marker_in_place() -> None:
     assert render("Before.\n```python\nx = 1\n```\nAfter.") == "Before. Code block omitted. After."
 
 
-def test_indented_code_block_is_replaced_by_a_marker() -> None:
-    assert render("Explanation.\n\n    x = 1\n    y = 2\n\nDone.") == (
-        "Explanation. Code block omitted. Done."
+def test_a_loose_list_items_indented_continuation_paragraph_is_read_as_prose() -> None:
+    # Indented (four-space) code blocks are deliberately not detected: a
+    # correct detector needs list-context tracking to avoid mistaking a loose
+    # list item's continuation paragraph for one, and that tradeoff was
+    # judged not worth it (see the module docstring). This test pins the
+    # accepted behaviour so nobody re-adds detection without noticing the
+    # regression it previously caused here.
+    assert render("- Do X.\n\n    This paragraph explains why X matters.\n\n- Do Y.") == (
+        "Do X. This paragraph explains why X matters. Do Y."
     )
-
-
-def test_a_nested_list_item_is_not_mistaken_for_an_indented_code_block() -> None:
-    assert render("- item\n\n    - nested") == "item. nested."
 
 
 def test_inline_code_keeps_its_text() -> None:
