@@ -6,7 +6,7 @@
 
 **Architecture:** A service registry plus disposable registrations gives the two composability invariants: unloading a plugin mechanically undoes its side effects, and a plugin activates only while the services it declares are present. Transforms map `Piece` to `Piece`, preserving provenance; a profile names an ordered chain of them.
 
-**Tech Stack:** Python 3.10–3.13, stdlib only (`tomllib` for profiles), pytest, ruff, mypy strict.
+**Tech Stack:** Python 3.11–3.13, stdlib only (`tomllib` for profiles), pytest, ruff, mypy strict.
 
 **Spec:** `docs/design/2026-09-13-speakd-design.md`
 
@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- Python `>=3.10,<3.14` — `misaki`, a kokoro dependency, does not support 3.14.
+- Python `>=3.11,<3.14` — `misaki`, a kokoro dependency, does not support 3.14; `tomllib` is standard library only from 3.11.
 - Core dependencies stay minimal: numpy only. Add nothing to `pyproject.toml`. Profiles use `tomllib` from the standard library.
 - No test may require torch or an audio device.
 - Imports of optional dependencies happen inside functions, never at module import time.
@@ -430,7 +430,9 @@ def test_require_hands_the_service_to_the_plugin() -> None:
     registry = ServiceRegistry()
     host = PluginHost(registry)
     seen: list[object] = []
-    host.register("p", lambda ctx: seen.append(ctx.require("bibliography")), requires=["bibliography"])
+    host.register(
+        "p", lambda ctx: seen.append(ctx.require("bibliography")), requires=["bibliography"]
+    )
     registry.provide("bibliography", "the-bib")
     assert seen == ["the-bib"]
 
@@ -1223,7 +1225,7 @@ def test_load_profiles_on_a_missing_file_yields_only_the_default(tmp_path: Path)
 
 def test_load_profiles_rejects_a_non_positive_speed(tmp_path: Path) -> None:
     path = tmp_path / "profiles.toml"
-    path.write_text('[profile.bad]\ntransforms = []\nspeed = 0\n')
+    path.write_text("[profile.bad]\ntransforms = []\nspeed = 0\n")
     with pytest.raises(ValueError, match="speed"):
         load_profiles(path)
 

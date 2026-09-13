@@ -3,7 +3,7 @@ name = "speakd"
 version = "0.0.1"
 description = "Streaming speech synthesis daemon for local AI agents"
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Severin Gartland" }]
 dependencies = ["numpy>=1.24"]
@@ -27,12 +27,19 @@ build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 100
+# Kept at py310: raising it surfaces UP042 (str+Enum -> StrEnum) in modules
+# outside this change (model.py, protocol.py); a real improvement, but a
+# separate one. requires-python is >=3.11 regardless of this setting.
 target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
+# Pinned at 3.12: numpy's stubs use PEP 695 syntax that older targets
+# cannot parse. This leaves a narrow gap — a 3.12-only construct would pass
+# mypy but break at runtime for a 3.11 user — accepted knowingly because CI
+# runs pytest on 3.11 and would catch an import-time syntax error there.
 python_version = "3.12"
 strict = true
 
