@@ -1,22 +1,25 @@
 """Synthesiser tier.
 
-Engines yield audio incrementally together with the source span each chunk
-covers — the streaming contract that makes the timeline possible. Kokoro is
-the only implementation for now; the interface exists so adding Piper or a
-hosted engine is an adapter rather than a refactor.
+Engines synthesise one already-segmented unit at a time. Segmentation and
+timing belong to the pipeline, so that adding another engine is an adapter
+rather than a rewrite of how streaming works.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Any, Protocol
+from typing import Protocol
 
-from speakd.model import Segment
+import numpy as np
 
 
 class Synthesizer(Protocol):
-    name: str
+    """Turns one already-segmented unit of text into audio.
 
-    def stream(self, text: str, voice: str, speed: float) -> Iterator[tuple[Segment, Any]]:
-        """Yield (segment, audio) pairs as they are produced."""
-        ...
+    Engines do not split text. Segmentation happens before them so the
+    pipeline controls how soon the first sound can play.
+    """
+
+    name: str
+    sample_rate: int
+
+    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray: ...

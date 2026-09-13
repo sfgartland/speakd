@@ -6,12 +6,12 @@ readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = { text = "MIT" }
 authors = [{ name = "Severin Gartland" }]
-dependencies = []
+dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 # Kokoro pulls torch; keep it out of the default install so the core stays light.
 # NOTE: misaki (a kokoro dep) requires Python < 3.14.
-kokoro = ["kokoro", "sounddevice", "numpy", "scipy"]
+kokoro = ["kokoro", "sounddevice", "scipy"]
 llm = ["litellm"]
 
 [project.scripts]
@@ -35,6 +35,14 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+# Neither optional dependency ships type stubs, and neither is installed in
+# the default environment, so strict mode cannot resolve them. Both are
+# imported inside functions and immediately adapted behind our own typed
+# interfaces (Player, Synthesizer), so nothing untyped escapes those modules.
+[[tool.mypy.overrides]]
+module = ["kokoro.*", "sounddevice.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

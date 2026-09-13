@@ -701,7 +701,9 @@ def test_plays_every_segment_in_order() -> None:
 
 def test_timeline_offsets_accumulate() -> None:
     player = RecordingPlayer()
-    result = speak([piece("One. Two.")], FakeEngine(sample_rate=1000, chars_per_second=10.0), player)
+    result = speak(
+        [piece("One. Two.")], FakeEngine(sample_rate=1000, chars_per_second=10.0), player
+    )
     assert result.timeline.span_at(0.0) is not None
     assert result.timeline.duration > 0.0
 
@@ -938,7 +940,8 @@ class KokoroEngine:
         if not text.strip():
             return np.zeros(0, dtype=np.float32)
         chunks = [
-            audio for _, _, audio in self._pipeline(text, voice=voice, speed=speed)
+            audio
+            for _, _, audio in self._pipeline(text, voice=voice, speed=speed)
             if audio is not None
         ]
         if not chunks:
