@@ -428,6 +428,13 @@ class SocketClient:
         self._reader = connection.makefile("rb")
 
     def send(self, request: Request) -> Response:
+        """Send one request and read the next line back as its response.
+
+        Strictly synchronous today: there is no correlation id on the wire, so
+        the reply is whatever arrives next on this connection, and a second
+        request must not be sent before the first has been answered. A
+        pipelining client would need the protocol to grow correlation first.
+        """
         return self.send_raw(encode(request))
 
     def send_raw(self, line: bytes) -> Response:
