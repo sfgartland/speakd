@@ -16,7 +16,7 @@ from speakd.cli import default_socket_path
 from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece
-from speakd.player import Player
+from speakd.player import Closeable, Player
 from speakd.transport import SocketServer
 
 
@@ -53,6 +53,27 @@ def _unlink_quietly(path: Path) -> None:
         path.unlink()
     except OSError:
         pass
+
+
+def _close_player(player: Player) -> None:
+    """Give the audio device back, reporting rather than raising if it refuses.
+
+    Guarded like every other player call in this project: a raise here would
+    turn a clean shutdown into a traceback for something that is already over.
+    Reported on stderr rather than on the bus, because by this point the
+    server is stopped and there is no subscriber left to hear it -- and never
+    swallowed, since a device that would not release is exactly why the next
+    start finds it busy.
+
+    A player that holds nothing is not asked to release it; `isinstance` is
+    the probe, as with `Pausable`.
+    """
+    if not isinstance(player, Closeable):
+        return
+    try:
+        player.close()
+    except Exception as exc:
+        sys.stderr.write(f"speakd: could not release the audio device: {exc!r}\n")
 
 
 def serve(daemon: Daemon, socket_path: Path) -> int:
@@ -103,6 +124,12 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
     daemon.silence()
     server.stop()
     daemon.stop()
+    # Last, and never above `daemon.stop()`: `close()` is terminal by contract
+    # -- the sink refuses every later write and start -- so the speech worker
+    # has to be gone before it runs, or a worker still inside play() meets a
+    # closed sink on its next chunk. Nothing may use the player after this
+    # line.
+    _close_player(daemon.player)
     return 0
 
 

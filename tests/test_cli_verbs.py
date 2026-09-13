@@ -486,6 +486,11 @@ def profile_for(name):
     return ProfileView(voice="af_heart", speed=1.1, interrupt_on=("error",), prepare=prepare)
 
 
+def note(step):
+    with marker.open("a") as handle:
+        print(step, file=handle)
+
+
 daemon = Daemon(
     FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
 )
@@ -497,12 +502,25 @@ if mode == "refuse":
 
     daemon.start = refuse
 
+if mode.startswith("close"):
+    # A player that owns a device handle, and says when it gives it back.
+    from speakd.player import FakeSink, StreamingPlayer
+
+    class NotingSink(FakeSink):
+        def stop(self):
+            note("stop")
+            super().stop()
+
+        def close(self):
+            note("close")
+            if mode == "close-raises":
+                raise RuntimeError("PortAudioError: device busy")
+            super().close()
+
+    daemon.player = StreamingPlayer(NotingSink())
+
 if mode == "order":
     # Records the shutdown order Ctrl-C actually takes.
-    def note(step):
-        with marker.open("a") as handle:
-            print(step, file=handle)
-
     class NotingPlayer(RecordingPlayer):
         def stop(self):
             note("silence")
@@ -597,6 +615,52 @@ def test_ctrl_c_stops_the_audio_before_it_stops_the_server(tmp_path: Path) -> No
     # Silence, then the server, then the daemon's own teardown (which
     # silences again on its way down).
     assert steps == ["silence", "server", "silence"], steps
+
+
+def test_the_entry_point_releases_the_audio_device_on_the_way_out(tmp_path: Path) -> None:
+    """The daemon now owns a device handle, and nothing else will give it back.
+
+    `SoundDevicePlayer` held no resources, so shutdown had nothing to release.
+    A `StreamingPlayer`'s sink keeps the device claimed for the daemon's whole
+    life -- on a laptop, for as long as speakd runs -- which other
+    applications notice.
+    """
+    process, socket_path, marker = _spawn(tmp_path, "close")
+    try:
+        assert _until(socket_path.exists, timeout=20.0), "the daemon never listened"
+        process.send_signal(signal.SIGINT)
+        assert process.wait(timeout=20.0) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()
+    steps = marker.read_text().split()
+    assert "close" in steps, "the sink was never closed: the device stays claimed"
+    # Last, and after every stop. close() is terminal by contract, so the
+    # speech worker has to be gone before it -- a worker still inside play()
+    # would meet a closed sink on its next chunk.
+    assert steps[-1] == "close", steps
+    assert set(steps[:-1]) == {"stop"}, steps
+
+
+def test_a_sink_that_will_not_close_does_not_break_the_shutdown(tmp_path: Path) -> None:
+    """A clean exit must not become a traceback because the device refused."""
+    process, socket_path, marker = _spawn(tmp_path, "close-raises")
+    try:
+        assert _until(socket_path.exists, timeout=20.0), "the daemon never listened"
+        process.send_signal(signal.SIGINT)
+        code = process.wait(timeout=20.0)
+        _out, err = process.communicate(timeout=20.0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert code == 0, "a sink that would not close took the shutdown down with it"
+    assert "close" in marker.read_text().split()
+    # Recorded, not swallowed: a device that will not release is exactly why
+    # the next start finds it busy.
+    assert "device busy" in err
+    assert "Traceback" not in err
 
 
 def test_a_refused_start_is_reported_and_never_listens(tmp_path: Path) -> None:
