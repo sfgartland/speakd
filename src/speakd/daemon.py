@@ -463,7 +463,11 @@ class Daemon:
         cancel = threading.Event()
         with self._idle:
             self._cancel = cancel
-        if not self._running:
+            # Read under the same lock that installs the Event, so a stop()
+            # cannot land between the two and leave this job installed as the
+            # current utterance and past its own liveness check at once.
+            running = self._running
+        if not running:
             # stop() can still land between this job leaving the queue and
             # the check above, so the Event alone cannot stop it.
             self._publish("error", job.source_id, {"message": _DISCARDED_STOPPED})
