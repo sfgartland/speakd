@@ -4,7 +4,6 @@ import threading
 import time
 
 import numpy as np
-import pytest
 
 from speakd.model import Piece, Span
 from speakd.pipeline import speak
@@ -101,14 +100,20 @@ class HoldingPlayer(RecordingPlayer):
 
 
 class RaisingPlayer(RecordingPlayer):
-    """Raises on one specific play() call, simulating a lost audio device."""
+    """Raises on one specific play() call, simulating a lost audio device.
 
-    def __init__(self, bad_index: int) -> None:
+    `fail_on_call` counts play() invocations from 1, so the default raises on
+    the very first call.
+    """
+
+    def __init__(self, fail_on_call: int = 1) -> None:
         super().__init__()
-        self.bad_index = bad_index
+        self.fail_on_call = fail_on_call
+        self.calls = 0
 
     def play(self, audio: np.ndarray, sample_rate: int) -> None:
-        if len(self.played) == self.bad_index:
+        self.calls += 1
+        if self.calls == self.fail_on_call:
             raise RuntimeError("device disappeared")
         super().play(audio, sample_rate)
 
@@ -221,16 +226,16 @@ def test_cancellation_mid_stream_does_not_leak_the_producer_thread() -> None:
 
 def test_a_raising_player_does_not_leak_the_producer_thread() -> None:
     # The producer will have a second unit ready (or in flight) when
-    # play() raises on the first. Without draining on the exception path,
-    # the producer's later put blocks forever on the depth-one queue with
-    # no reader left: this test fails against the brief's verbatim
-    # implementation and passes against the shared drain-in-finally fix.
+    # play() raises on the first. Without draining on the recorded-failure
+    # path, the producer's later put blocks forever on the depth-one queue
+    # with no reader left: this test fails against an implementation that
+    # skips the drain and passes against the shared drain-in-finally fix.
     before = set(threading.enumerate())
-    player = RaisingPlayer(bad_index=0)
+    player = RaisingPlayer()
 
-    with pytest.raises(RuntimeError, match="device disappeared"):
-        speak([piece("One. Two.")], FakeEngine(), player)
+    result = speak([piece("One. Two.")], FakeEngine(), player)
 
+    assert result.aborted is True
     new_threads = set(threading.enumerate()) - before
     for new_thread in new_threads:
         new_thread.join(timeout=2.0)
@@ -238,16 +243,17 @@ def test_a_raising_player_does_not_leak_the_producer_thread() -> None:
 
 
 def test_a_raising_player_does_not_set_a_caller_supplied_cancel_event() -> None:
-    # Teardown after an exception used to run through the caller's own Event.
-    # The caller then saw cancelled=True for an utterance nobody cancelled,
-    # and the next speak() reusing that Event played nothing, reported no
-    # error and returned an empty timeline — a silent failure.
+    # Teardown after a recorded player failure used to run through the
+    # caller's own Event. The caller then saw cancelled=True for an
+    # utterance nobody cancelled, and the next speak() reusing that Event
+    # played nothing, reported no error and returned an empty timeline — a
+    # silent failure.
     cancel = threading.Event()
-    player = RaisingPlayer(bad_index=0)
+    player = RaisingPlayer()
 
-    with pytest.raises(RuntimeError, match="device disappeared"):
-        speak([piece("One. Two.")], FakeEngine(), player, cancel=cancel)
+    result = speak([piece("One. Two.")], FakeEngine(), player, cancel=cancel)
 
+    assert result.aborted is True
     assert not cancel.is_set(), "speak() mutated the caller's Event"
 
     reused = RecordingPlayer()
@@ -267,3 +273,45 @@ def test_a_cancelled_utterance_leaves_the_caller_event_as_the_caller_set_it() ->
     assert not cancel.is_set()
     assert result.cancelled is False
     assert len(player.played) == 3
+
+
+def test_segments_record_when_playback_started() -> None:
+    player = RecordingPlayer()
+    result = speak([piece("One. Two.")], FakeEngine(), player)
+    stamps = [s.played_at for s in result.timeline.segments]
+    assert all(s is not None for s in stamps)
+    assert stamps == sorted(s for s in stamps if s is not None)
+
+
+def test_audio_offset_stays_nominal_while_played_at_is_real() -> None:
+    # A slow engine stalls playback: the nominal offsets stay tight while the
+    # wall-clock stamps spread out. That gap is the thing subscribers must see.
+    player = RecordingPlayer()
+    engine = FakeEngine(sample_rate=1000, chars_per_second=1000.0, synthesis_cost=0.05)
+    result = speak([piece("One. Two. Three.")], engine, player)
+    segments = result.timeline.segments
+    nominal = segments[-1].audio_offset - segments[0].audio_offset
+    assert segments[0].played_at is not None and segments[-1].played_at is not None
+    real = segments[-1].played_at - segments[0].played_at
+    assert real > nominal
+
+
+def test_a_raising_player_is_recorded_not_raised() -> None:
+    player = RaisingPlayer()
+    result = speak([piece("One. Two. Three.")], FakeEngine(), player)
+    assert result.aborted is True
+    assert len(result.errors) == 1
+    assert "player" in result.errors[0].lower() or "device" in result.errors[0].lower()
+
+
+def test_a_raising_player_keeps_the_timeline_built_so_far() -> None:
+    player = RaisingPlayer(fail_on_call=2)
+    result = speak([piece("One. Two. Three.")], FakeEngine(), player)
+    assert len(result.timeline) == 1
+    assert result.timeline.segments[0].text == "One."
+    assert result.aborted is True
+
+
+def test_a_clean_run_is_not_aborted() -> None:
+    result = speak([piece("One.")], FakeEngine(), RecordingPlayer())
+    assert result.aborted is False

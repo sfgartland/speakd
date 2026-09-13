@@ -53,15 +53,19 @@ class Piece:
 class Segment:
     """One synthesised unit, and where it came from.
 
-    `span` indexes the job's source text; `audio_offset` and `duration` are
-    seconds relative to the start of the job's audio. Together these form the
-    span-to-time map that position events, seeking and resume all read from.
+    `span` indexes the job's source text. `audio_offset` and `duration` are
+    nominal seconds within the job's audio — what seek and resume describe.
+    `played_at` is a `time.monotonic()` stamp taken when playback of this
+    segment actually began, which is what subscribers describe. The two differ
+    whenever synthesis stalls playback, and that difference is the point:
+    a single measured number would hide the stall.
     """
 
     span: Span
     text: str
     audio_offset: float
     duration: float
+    played_at: float | None = None
 
 
 @dataclass

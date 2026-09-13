@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -25,6 +26,7 @@ from speakd.timeline import Timeline
 class SpeechResult:
     timeline: Timeline
     cancelled: bool = False
+    aborted: bool = False
     errors: list[str] = field(default_factory=list)
 
 
@@ -76,6 +78,7 @@ def speak(
     errors: list[str] = []
     offset = 0.0
     exhausted = False
+    aborted = False
     try:
         while True:
             item = work.get()
@@ -90,28 +93,50 @@ def speak(
                 break
             unit, audio = item
             duration = len(audio) / engine.sample_rate
+            # Stamped here, not after play() returns: this is when playback
+            # of the segment actually starts, which is what subscribers of
+            # `played_at` need. `audio_offset` above stays nominal instead —
+            # accumulated from durations alone — because seek and resume
+            # describe the audio, not the wall clock. The two diverge exactly
+            # when synthesis stalls playback, and that divergence is the
+            # point: collapsing them into one measured number would hide it.
+            started = time.monotonic()
+            try:
+                player.play(audio, engine.sample_rate)
+            except Exception as exc:
+                # A sink vanishing mid-utterance is routine for a daemon: a
+                # headset walking out of range, say. Recording the failure
+                # rather than raising it keeps the position map built so
+                # far — discarding it would defeat resume in exactly the
+                # case where resume matters most.
+                errors.append(f"player: {exc}")
+                aborted = True
+                break
+            # Appended only once playback has actually succeeded, so a
+            # segment whose play() call failed is never added: the timeline
+            # returned on the aborted path is exactly what was played.
             timeline.append(
                 Segment(
                     span=unit.span,
                     text=unit.spoken,
                     audio_offset=offset,
                     duration=duration,
+                    played_at=started,
                 )
             )
-            player.play(audio, engine.sample_rate)
             offset += duration
     finally:
         if not exhausted:
-            # Reached by cancellation discovered above, or by an exception
-            # (e.g. player.play() raising when an audio device disappears
-            # mid-utterance) propagating past us. Either way the producer may
-            # already be past its own cancel check for the next unit — or
-            # simply mid-synthesis, unaware anything has gone wrong — and
-            # about to put once more. With a depth-one queue and no reader
-            # left, that put (including its unconditional final put(None))
-            # would block forever, leaking the thread. Setting `stop` makes
-            # the producer stop at its next check; draining to the sentinel
-            # guarantees it always has a reader until it actually exits.
+            # Reached by cancellation discovered above, or by a player
+            # failure recorded and broken out of above. Either way the
+            # producer may already be past its own cancel check for the next
+            # unit — or simply mid-synthesis, unaware anything has gone
+            # wrong — and about to put once more. With a depth-one queue and
+            # no reader left, that put (including its unconditional final
+            # put(None)) would block forever, leaking the thread. Setting
+            # `stop` makes the producer stop at its next check; draining to
+            # the sentinel guarantees it always has a reader until it
+            # actually exits.
             #
             # This delays speak()'s return by at most one in-flight
             # synthesize() call. Audio itself has already stopped on the
@@ -130,4 +155,6 @@ def speak(
         # returning quietly: in a long-lived daemon a regression here
         # accumulates stuck threads, one per utterance, with nothing to see.
         errors.append("synthesis thread did not exit within 1.0s")
-    return SpeechResult(timeline=timeline, cancelled=cancel.is_set(), errors=errors)
+    return SpeechResult(
+        timeline=timeline, cancelled=cancel.is_set(), aborted=aborted, errors=errors
+    )
