@@ -242,6 +242,8 @@ class Daemon:
             # hush answered `ok`. `Event.set()` never blocks. Only
             # `player.stop()` does, on a real device, which is why that one
             # stays outside: holding the lock across it would stall enqueue.
+            # This narrows the window rather than closing it; `_speak` says
+            # what is left of it.
             with self._idle:
                 self._cancel.set()
             try:
@@ -454,6 +456,19 @@ class Daemon:
                 self._idle.notify_all()
 
     def _speak(self, job: _Job) -> None:
+        """Say one job, from the cancel Event down to the `finished` event.
+
+        One window is knowingly left open. A hush landing between `_consume`
+        taking this job off the queue and the assignment below sets the
+        previous utterance's Event and drains a queue this job is no longer
+        in, so the job speaks after the hush was answered. It is a few
+        bytecodes wide with no I/O in it, where the same hole before the
+        review spanned a whole utterance's worth of event publishing. Closing
+        it properly wants a hush generation counter — a number bumped by
+        every hush, recorded on a job when it is enqueued, and compared here —
+        not a wider lock; the lock cannot help, because the job is already out
+        of the queue by then.
+        """
         # First, before anything else can run. A fresh Event per utterance:
         # reusing one is how a channel goes permanently mute with an empty
         # timeline and no error. Assigned here rather than after `prepare`

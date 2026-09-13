@@ -437,7 +437,13 @@ class SocketServer:
 
 
 class SocketClient:
-    """A connection to the daemon."""
+    """A connection to the daemon.
+
+    One connection, one purpose. A subscriber that stops draining its events
+    is dropped and its connection is shut down with it, requests and all, so
+    a client that wants both should open two — which is what `speakctl
+    subscribe` does.
+    """
 
     def __init__(self, connection: socket.socket) -> None:
         self._socket = connection
