@@ -415,3 +415,29 @@ def test_a_second_server_refuses_to_steal_a_live_address(tmp_path: Path) -> None
             client.close()
     finally:
         first.stop()
+
+
+def test_a_closed_connection_is_forgotten_by_the_server(tmp_path: Path) -> None:
+    """The deregistration in `_serve`'s finally is a real unbounded leak.
+
+    `_connections` and `_conn_threads` grow by one entry per `speakctl`
+    invocation otherwise -- one socket object and one dead Thread each, held
+    for the life of a daemon that is meant to run for weeks, with nothing
+    watching either list.
+    """
+    srv = SocketServer(tmp_path / "speakd.sock", echo_handler, EventBus())
+    srv.start()
+    try:
+        for _ in range(5):
+            client = connect(srv.address)
+            try:
+                assert client.send(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+            finally:
+                client.close()
+        deadline = time.monotonic() + 5.0
+        while srv._connections and time.monotonic() < deadline:
+            threading.Event().wait(0.01)
+        assert srv._connections == [], "closed connections were never forgotten"
+        assert srv._conn_threads == [], "finished connection threads were never forgotten"
+    finally:
+        srv.stop()

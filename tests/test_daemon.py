@@ -13,7 +13,7 @@ from speakd.daemon import Daemon, ProfileView, _Job
 from speakd.events import Event, EventBus
 from speakd.model import Piece, Role
 from speakd.player import RecordingPlayer
-from speakd.protocol import Request, Verb
+from speakd.protocol import Request, Response, Verb
 from speakd.synth.fake import FakeEngine
 
 
@@ -1255,3 +1255,128 @@ def test_work_the_daemon_stopped_on_still_says_so() -> None:
     assert discarded, "the queued utterance vanished without a word"
     assert all("stopped" in message for message in discarded)
     assert all("hush" not in message for message in discarded)
+
+
+# --- Whole-branch review: guards nothing was pinning ---
+
+
+class RetiringPlayer(RecordingPlayer):
+    """Retires the daemon's worker from inside stop(), once.
+
+    stop() calls player.stop() between reading `_worker` and depositing its
+    sentinel, which is exactly the window in which the worker it read can
+    retire itself and stop being the daemon's.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.daemon: Daemon | None = None
+        self.retired = False
+
+    def stop(self) -> None:
+        super().stop()
+        if self.retired or self.daemon is None:
+            return
+        self.retired = True
+        d = self.daemon
+        d._jobs.put(None)
+        deadline = time.monotonic() + 5.0
+        while d._worker is not None and time.monotonic() < deadline:
+            time.sleep(0.001)
+
+
+def test_a_stop_whose_worker_retires_first_strands_no_sentinel() -> None:
+    """The identity check on stop()'s deposit is what keeps the queue clean.
+
+    Deposited unconditionally, a sentinel left behind by a worker that had
+    already retired is unowned: the next start()'s worker eats it and closes
+    the daemon it was just asked to run.
+    """
+    player = RetiringPlayer()
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    player.daemon = d
+    d.start()
+    d.stop()
+    assert d._worker is None, "the worker never retired"
+    assert d._jobs.qsize() == 0, "stop() left an unowned sentinel on the queue"
+    assert d.start().data["started"] is True
+    try:
+        assert d.handle(enqueue("s", "One.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+        assert len(player.played) == 1, "the new worker was closed by a sentinel meant for no one"
+    finally:
+        d.stop()
+
+
+def test_an_enqueue_racing_a_stop_is_refused_rather_than_queued_unspoken() -> None:
+    """The second `_running` check, under the lock, is what refuses it.
+
+    Without it a job accepted just before a stop lands in the queue behind an
+    `ok` response, with no worker left to say it: speech that disappears in
+    silence, which is the one thing this daemon must never do.
+    """
+    reached = threading.Event()
+    release = threading.Event()
+
+    def parking_profile(name: str) -> ProfileView:
+        if name == "slow":
+            # Called after `_enqueue`'s first `_running` check and before it
+            # takes the lock -- the whole of the window, held open.
+            reached.set()
+            assert release.wait(timeout=5.0), "the test never released the enqueue"
+        return ProfileView(voice="af_heart", speed=1.1, interrupt_on=(), prepare=passthrough)
+
+    player = RecordingPlayer()
+    d = Daemon(FakeEngine(), player, parking_profile, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    answers: list[object] = []
+
+    def ask() -> None:
+        answers.append(
+            d.handle(
+                Request(
+                    verb=Verb.ENQUEUE,
+                    source_id="s",
+                    payload={"text": "One.", "profile": "slow"},
+                )
+            )
+        )
+
+    asker = threading.Thread(target=ask, name="test-enqueue")
+    asker.start()
+    assert reached.wait(timeout=5.0), "the enqueue never reached the window"
+    d.stop()
+    release.set()
+    asker.join(timeout=5.0)
+    assert not asker.is_alive()
+
+    answer = answers[0]
+    assert isinstance(answer, Response)
+    assert answer.ok is False, "an enqueue that can never be spoken was answered ok"
+    assert "not running" in answer.error
+    assert d._jobs.qsize() == 0, "the refused job was queued anyway"
+    assert d.wait_idle(timeout=1.0), "the refused job was counted as pending"
+    assert player.played == []
+
+
+def test_a_double_release_cannot_drive_the_pending_count_negative() -> None:
+    """The floor in `_release` is what keeps wait_idle able to return.
+
+    A count released twice goes negative without it, and a negative count
+    never reaches zero: wait_idle blocks to its timeout forever after, on a
+    daemon that is in fact idle.
+    """
+    player = RecordingPlayer()
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    try:
+        assert d.handle(enqueue("s", "One.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+        # The double release the floor exists for.
+        d._release(1)
+        assert d.wait_idle(timeout=1.0), "wait_idle stopped coming back"
+        assert d.handle(enqueue("s", "Two.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+        assert len(player.played) == 2
+    finally:
+        d.stop()
