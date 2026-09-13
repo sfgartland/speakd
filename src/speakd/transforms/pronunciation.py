@@ -45,25 +45,30 @@ _FILENAME = re.compile(r"([A-Za-z0-9_-]{2,})\.([a-z]{1,10})")
 _CHAINED = re.compile(r"(dot [A-Za-z0-9_-]+)\.([A-Za-z]{1,10})")
 
 # Longer forms first: JSONL before JSON, HTTPS before HTTP.
+#
+# \b on both ends because these are whole words, not substrings: without it
+# every all-caps word containing an entry was mangled -- CAPITAL became
+# "CA P ITAL", CURL "CU R L", REPLACE "reppleACE" -- and markdown, which runs
+# first and preserves case, hands this table all-caps headings intact.
 _WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"README", re.I), "read me"),
-    (re.compile(r"JSONL", re.I), "jason L"),
-    (re.compile(r"JSON", re.I), "jason"),
-    (re.compile(r"YAML", re.I), "yammel"),
-    (re.compile(r"TOML", re.I), "tommel"),
-    (re.compile(r"HTTPS"), "H T T P S"),
-    (re.compile(r"HTTP"), "H T T P"),
-    (re.compile(r"APIs"), "A P I s"),
-    (re.compile(r"API"), "A P I"),
-    (re.compile(r"CLI"), "C L I"),
-    (re.compile(r"SQL", re.I), "sequel"),
-    (re.compile(r"URLs"), "U R L s"),
-    (re.compile(r"URL"), "U R L"),
-    (re.compile(r"UUID", re.I), "you you I D"),
-    (re.compile(r"PyPI"), "pie P I"),
-    (re.compile(r"OAuth", re.I), "oh auth"),
-    (re.compile(r"CORS"), "cores"),
-    (re.compile(r"REPL"), "repple"),
+    (re.compile(r"\bREADME\b", re.I), "read me"),
+    (re.compile(r"\bJSONL\b", re.I), "jason L"),
+    (re.compile(r"\bJSON\b", re.I), "jason"),
+    (re.compile(r"\bYAML\b", re.I), "yammel"),
+    (re.compile(r"\bTOML\b", re.I), "tommel"),
+    (re.compile(r"\bHTTPS\b"), "H T T P S"),
+    (re.compile(r"\bHTTP\b"), "H T T P"),
+    (re.compile(r"\bAPIs\b"), "A P I s"),
+    (re.compile(r"\bAPI\b"), "A P I"),
+    (re.compile(r"\bCLI\b"), "C L I"),
+    (re.compile(r"\bSQL\b", re.I), "sequel"),
+    (re.compile(r"\bURLs\b"), "U R L s"),
+    (re.compile(r"\bURL\b"), "U R L"),
+    (re.compile(r"\bUUID\b", re.I), "you you I D"),
+    (re.compile(r"\bPyPI\b"), "pie P I"),
+    (re.compile(r"\bOAuth\b", re.I), "oh auth"),
+    (re.compile(r"\bCORS\b"), "cores"),
+    (re.compile(r"\bREPL\b"), "repple"),
 )
 
 

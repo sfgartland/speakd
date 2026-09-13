@@ -35,7 +35,9 @@ def test_a_no_space_abbreviation_before_a_capital_is_not_mistaken_for_a_filename
 
 
 def test_lowercase_filename_extensions_still_convert() -> None:
-    assert say("edit settings.json now") == "edit settings dot jason now"
+    # A different extension from the settings.json case above, and one the word
+    # table does not also rewrite, so this covers the filename rule alone.
+    assert say("edit main.py now") == "edit main dot py now"
 
 
 def test_arrows_and_operators_are_spoken() -> None:
@@ -71,3 +73,18 @@ def test_output_is_marked_inexact() -> None:
 
 def test_plain_text_is_untouched_apart_from_spacing() -> None:
     assert say("a plain sentence") == "a plain sentence"
+
+
+def test_ordinary_all_caps_words_are_not_mangled() -> None:
+    """markdown runs first and preserves case, so a heading arrives all-caps."""
+    assert say("CAPITAL") == "CAPITAL"
+    assert say("REPLACE") == "REPLACE"
+    assert say("MySQL") == "MySQL"
+    assert say("CURL") == "CURL"
+    assert say("CLICK") == "CLICK"
+    assert say("RAPID") == "RAPID"
+    assert say("CORSET") == "CORSET"
+
+
+def test_acronyms_still_match_next_to_punctuation() -> None:
+    assert say("the (API), and JSON.") == "the (A P I), and jason."
