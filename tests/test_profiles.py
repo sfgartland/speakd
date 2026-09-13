@@ -48,6 +48,41 @@ def test_load_profiles_rejects_a_non_positive_speed(tmp_path: Path) -> None:
         load_profiles(path)
 
 
+def test_load_profiles_rejects_a_bare_string_transforms(tmp_path: Path) -> None:
+    # A missing pair of brackets is an easy typo: "markdown" without [] is a
+    # string, and `tuple("markdown")` would silently iterate its characters
+    # rather than error, hiding the mistake behind eight bogus "missing"
+    # transform names later.
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.bad]\ntransforms = "markdown"\n')
+    with pytest.raises(ValueError, match="bad"):
+        load_profiles(path)
+
+
+def test_load_profiles_rejects_a_bare_string_interrupt_on(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.bad]\ntransforms = ["markdown"]\ninterrupt_on = "error"\n')
+    with pytest.raises(ValueError, match="bad"):
+        load_profiles(path)
+
+
+def test_load_profiles_rejects_a_scalar_transforms(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text("[profile.bad]\ntransforms = 5\n")
+    with pytest.raises(ValueError, match="bad"):
+        load_profiles(path)
+
+
+def test_load_profiles_rejects_a_non_table_profile(tmp_path: Path) -> None:
+    # `[profile]` with a bare key inside it (rather than a `[profile.name]`
+    # sub-table) makes that key's value the "profile", which is a string,
+    # not a table -- the loader must not reach for `.get` on it.
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile]\nxyz = "hello"\n')
+    with pytest.raises(ValueError, match="xyz"):
+        load_profiles(path)
+
+
 def test_resolve_chain_orders_transforms_as_the_profile_names_them() -> None:
     host = PluginHost(ServiceRegistry())
     register_builtins(host)

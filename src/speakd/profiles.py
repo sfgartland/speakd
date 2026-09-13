@@ -35,15 +35,27 @@ def load_profiles(path: Path) -> dict[str, Profile]:
     with path.open("rb") as handle:
         data = tomllib.load(handle)
     for name, raw in data.get("profile", {}).items():
+        if not isinstance(raw, dict):
+            raise ValueError(f"profile {name!r}: must be a table, got {type(raw).__name__}")
         speed = float(raw.get("speed", DEFAULT_PROFILE.speed))
         if speed <= 0:
             raise ValueError(f"profile {name!r}: speed must be greater than 0, got {speed}")
+        transforms = raw.get("transforms", [])
+        if not isinstance(transforms, list):
+            raise ValueError(
+                f"profile {name!r}: transforms must be a list, got {type(transforms).__name__}"
+            )
+        interrupt_on = raw.get("interrupt_on", [])
+        if not isinstance(interrupt_on, list):
+            raise ValueError(
+                f"profile {name!r}: interrupt_on must be a list, got {type(interrupt_on).__name__}"
+            )
         profiles[name] = Profile(
             name=name,
-            transforms=tuple(raw.get("transforms", ())),
+            transforms=tuple(transforms),
             voice=str(raw.get("voice", DEFAULT_PROFILE.voice)),
             speed=speed,
-            interrupt_on=tuple(raw.get("interrupt_on", ())),
+            interrupt_on=tuple(interrupt_on),
         )
     return profiles
 
