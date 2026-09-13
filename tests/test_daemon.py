@@ -1380,3 +1380,49 @@ def test_a_double_release_cannot_drive_the_pending_count_negative() -> None:
         assert len(player.played) == 2
     finally:
         d.stop()
+
+
+# --- Re-review: a hush that meets a failing sink ---
+
+
+class UnstoppableHoldingPlayer(HoldingPlayer):
+    """Holds inside play(), and refuses to be stopped, as PortAudio can."""
+
+    def stop(self) -> None:
+        raise RuntimeError("PortAudioError: device unavailable")
+
+
+def test_a_hush_whose_sink_fails_still_clears_the_queue() -> None:
+    """A raise from player.stop() must not carry off the drain behind it.
+
+    Unguarded, it skipped `_drain_queued` entirely: hush reported an error and
+    every queued utterance survived it, so the daemon answered a request to
+    stop talking by going on talking. Reporting the sink failure is right;
+    losing the drain with it is the inverse of what hush is for.
+    """
+    reached = threading.Event()
+    release = threading.Event()
+    player = UnstoppableHoldingPlayer(reached, release)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["error"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("s", "One. Two. Three."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(enqueue("s", "Queued one.")).ok is True
+        assert d.handle(enqueue("s", "Queued two.")).ok is True
+
+        # The sink failure still reaches the caller -- it is not swallowed.
+        with pytest.raises(RuntimeError):
+            d.handle(Request(verb=Verb.HUSH, source_id="s", payload={}))
+        assert d._jobs.qsize() == 0, "a hush that met a failing sink kept the queue"
+    finally:
+        release.set()
+        d.stop()
+    assert d.wait_idle(timeout=5.0)
+    discarded = [e for e in seen if "discarded" in str(e.data.get("message", ""))]
+    assert len(discarded) == 2, "the dropped utterances were never reported"
+    assert all("hush" in str(e.data.get("message", "")) for e in discarded)
+    assert len(player.played) == 1, "the daemon went on speaking through the hush"

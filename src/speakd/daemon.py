@@ -244,8 +244,17 @@ class Daemon:
             # stays outside: holding the lock across it would stall enqueue.
             with self._idle:
                 self._cancel.set()
-            self.player.stop()
-            discarded = self._drain_queued() if request.verb is Verb.HUSH else 0
+            try:
+                self.player.stop()
+            finally:
+                # In a finally, because a sink that refuses to stop — the
+                # headset out of range again — must not carry the drain off
+                # with it. Without this, a hush that met a failing player
+                # reported an error and left every queued utterance in place:
+                # the daemon answering a request to stop talking by going on
+                # talking. The failure still reaches the caller; only the
+                # drain is no longer hostage to it.
+                discarded = self._drain_queued() if request.verb is Verb.HUSH else 0
             return Response(ok=True, data={"discarded": discarded})
         if request.verb is Verb.STATUS:
             # Read-only, deliberately: asking what the channels are must not
