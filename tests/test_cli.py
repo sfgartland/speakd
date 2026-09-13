@@ -2,7 +2,18 @@
 
 import json
 
+import pytest
+
 from speakd.cli import main
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Keep the default profiles-file lookup off the real machine's home
+    directory, so every test here is pure regardless of what a developer's
+    or CI runner's `~/.config/speakd/profiles.toml` happens to contain."""
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
 
 
 def test_dry_run_prints_a_timeline(capsys) -> None:  # type: ignore[no-untyped-def]
@@ -103,3 +114,136 @@ def test_missing_kokoro_extra_is_reported_not_traced(capsys, monkeypatch) -> Non
     code = main(["say", "One."])
     assert code != 0
     assert "kokoro extra is not installed" in capsys.readouterr().err
+
+
+def test_dry_run_applies_default_profile_transforms(capsys) -> None:  # type: ignore[no-untyped-def]
+    """The headline case: markdown rendering plus the pronunciation table are
+    on by default, reachable from the command line with no extra flags."""
+    code = main(["say", "The API returned null.", "--dry-run"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    spoken = " ".join(s["text"] for s in payload["segments"])
+    assert spoken == "The A P I returned null."
+
+
+def test_no_transforms_preserves_raw_text(capsys) -> None:  # type: ignore[no-untyped-def]
+    """`--no-transforms` keeps today's behaviour reachable for debugging."""
+    code = main(["say", "The API returned null.", "--dry-run", "--no-transforms"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [s["text"] for s in payload["segments"]] == ["The API returned null."]
+
+
+def test_unknown_profile_is_a_clear_error(capsys) -> None:  # type: ignore[no-untyped-def]
+    code = main(["say", "hello", "--dry-run", "--profile", "nonexistent"])
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "nonexistent" in err
+    assert "Traceback" not in err
+
+
+def test_missing_transform_warns_but_still_speaks(capsys, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.p]\ntransforms = ["markdown", "citations"]\n')
+    code = main(
+        [
+            "say",
+            "The API returned null.",
+            "--dry-run",
+            "--profile",
+            "p",
+            "--profiles-file",
+            str(path),
+        ]
+    )
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "citations" in captured.err
+    assert "p" in captured.err
+    payload = json.loads(captured.out)
+    assert payload["segments"], "the utterance must still be spoken"
+
+
+def test_malformed_profiles_file_exits_cleanly(capsys, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "profiles.toml"
+    path.write_text("[profile.bad]\nspeed = 0\n")
+    code = main(["say", "hello", "--dry-run", "--profiles-file", str(path)])
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "speed" in err
+    assert "Traceback" not in err
+
+
+def test_profile_voice_and_speed_apply_when_flags_are_omitted(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd import cli
+    from speakd.pipeline import SpeechResult
+    from speakd.timeline import Timeline
+
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.p]\ntransforms = []\nvoice = "af_bella"\nspeed = 0.8\n')
+
+    captured: dict[str, object] = {}
+
+    def fake_speak(pieces, engine, player, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return SpeechResult(timeline=Timeline())
+
+    monkeypatch.setattr(cli, "speak", fake_speak)
+    code = main(["say", "hi", "--dry-run", "--profile", "p", "--profiles-file", str(path)])
+    assert code == 0
+    assert captured["voice"] == "af_bella"
+    assert captured["speed"] == 0.8
+
+
+def test_cli_voice_and_speed_override_the_profile(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd import cli
+    from speakd.pipeline import SpeechResult
+    from speakd.timeline import Timeline
+
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.p]\ntransforms = []\nvoice = "af_bella"\nspeed = 0.8\n')
+
+    captured: dict[str, object] = {}
+
+    def fake_speak(pieces, engine, player, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return SpeechResult(timeline=Timeline())
+
+    monkeypatch.setattr(cli, "speak", fake_speak)
+    code = main(
+        [
+            "say",
+            "hi",
+            "--dry-run",
+            "--profile",
+            "p",
+            "--profiles-file",
+            str(path),
+            "--voice",
+            "af_sky",
+            "--speed",
+            "1.5",
+        ]
+    )
+    assert code == 0
+    assert captured["voice"] == "af_sky"
+    assert captured["speed"] == 1.5
+
+
+def test_default_voice_and_speed_when_nothing_is_specified(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """No flags at all must still give af_heart at 1.1 -- today's behaviour."""
+    from speakd import cli
+    from speakd.pipeline import SpeechResult
+    from speakd.timeline import Timeline
+
+    captured: dict[str, object] = {}
+
+    def fake_speak(pieces, engine, player, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return SpeechResult(timeline=Timeline())
+
+    monkeypatch.setattr(cli, "speak", fake_speak)
+    code = main(["say", "hi", "--dry-run"])
+    assert code == 0
+    assert captured["voice"] == "af_heart"
+    assert captured["speed"] == 1.1
