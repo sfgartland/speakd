@@ -471,17 +471,36 @@ class Daemon:
         Taken off the queue in one step under the lock, with any stop signal
         put straight back, and only then reported. `EventBus.publish` swallows
         a subscriber's `Exception` but not its `BaseException`, and one
-        escaping mid-loop must not leave jobs off the queue with their pending
-        count unreleased — `wait_idle` would block to its timeout — nor
-        swallow a sentinel `stop()` is waiting on.
+        escaping must not leave jobs off the queue with their pending count
+        unreleased — `wait_idle` would block to its timeout — nor swallow a
+        sentinel `stop()` is waiting on.
+
+        One event for the whole drain, not one per job: a hush of forty
+        queued utterances is one thing that happened, and forty events is a
+        GUI redrawing forty times to say so. It carries the count and the
+        channels the count came from, which is what the per-job events said
+        between them.
         """
         with self._idle:
             jobs, signals = self._empty_queue()
             for _ in range(signals):
                 self._jobs.put(None)
         try:
-            for job in jobs:
-                self._publish("error", job.source_id, {"message": _DISCARDED_HUSHED})
+            if jobs:
+                # Its own kind, because a GUI showing "3 dropped" had to match
+                # on the message text to find them, and prose is not an API:
+                # the day someone rewords this, the GUI goes quiet about
+                # speech that vanished. No event when nothing was dropped —
+                # `discarded: 0` is not news.
+                self._publish(
+                    "discarded",
+                    "",
+                    {
+                        "count": len(jobs),
+                        "reason": _DISCARDED_HUSHED,
+                        "sources": sorted({job.source_id for job in jobs}),
+                    },
+                )
         finally:
             self._release(len(jobs))
         return len(jobs)
