@@ -1,19 +1,19 @@
 """Tests for the daemon's request handling and speech worker."""
 
+import queue
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
 
 from speakd.channels import ChannelTable
-from speakd.daemon import Daemon, ProfileView
+from speakd.daemon import Daemon, ProfileView, _Job
 from speakd.events import Event, EventBus
 from speakd.model import Piece, Role
-from speakd.player import Player, RecordingPlayer
-from speakd.protocol import Request, Response, Verb
-from speakd.synth import Synthesizer
+from speakd.player import RecordingPlayer
+from speakd.protocol import Request, Verb
 from speakd.synth.fake import FakeEngine
 
 
@@ -559,91 +559,223 @@ def test_set_priority_rejects_a_boolean(daemon) -> None:  # type: ignore[no-unty
     assert d.channels.get("s") is None
 
 
-class _RejectedIdleDaemon(Daemon):
-    """`wait_idle` as an Event plus a queue check — the version not shipped.
-
-    Kept executable because nothing else can pin the difference. The two
-    designs are observationally identical through the public API *except* when
-    the control thread's `clear()` lands between the worker's queue check and
-    its `set()`, and no public seam exists between those two statements. So the
-    gap is injected here, at the point `_run` evaluated it, at a width an
-    ordinary preemption reaches.
-    """
-
-    gap = 0.15
-
-    def __init__(
-        self,
-        engine: Synthesizer,
-        player: Player,
-        profile_for: Callable[[str], ProfileView],
-        bus: EventBus | None = None,
-        channels: ChannelTable | None = None,
-    ) -> None:
-        super().__init__(engine, player, profile_for, bus=bus, channels=channels)
-        self._event_idle = threading.Event()
-        self._event_idle.set()
-
-    def _enqueue(self, request: Request) -> Response:
-        self._event_idle.clear()  # cleared before the put, as the original did
-        response = super()._enqueue(request)
-        if response.data.get("spoken") is not True:
-            self._event_idle.set()
-        return response
-
-    def _finish_one(self) -> None:
-        empty = self._jobs.empty()
-        time.sleep(self.gap)
-        if empty:
-            self._event_idle.set()
-        super()._finish_one()
-
-    def wait_idle(self, timeout: float) -> bool:
-        return self._event_idle.wait(timeout=timeout) and self._jobs.empty()
+# --- Review round 3: reproductions for the two retirement defects ---
 
 
-def _idle_report_during_handoff(d: Daemon, player: HoldingPlayer) -> tuple[bool, int]:
-    """Enqueue a second utterance exactly as the first completes, then ask if idle.
-
-    Returns what `wait_idle` answered while the second utterance was held
-    mid-play, and how many segments had actually reached the player by then.
-    """
-    first_done = threading.Event()
-    d.bus.subscribe(lambda event: first_done.set(), kinds=["finished"])
+def test_a_worker_that_outlives_stop_does_not_retire_its_successor() -> None:
+    """A timed-out join leaves a live worker; the daemon must not be restarted
+    around it, and the sentinel it has not yet eaten must not close the next one."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
     d.start()
-    assert d.handle(enqueue("s", "One.")).ok is True
-    assert first_done.wait(timeout=5.0), "the first utterance never finished"
-    assert d.handle(enqueue("s", "Two. Three.")).ok is True
-    assert player.reached.wait(timeout=5.0), "the second utterance never started playing"
-    return d.wait_idle(timeout=0.5), len(player.played)
+    worker = d._worker
+    assert worker is not None
+    d.handle(enqueue("s", "One. Two. Three."))
+    assert reached.wait(timeout=5.0), "the worker never started playing"
+    # Simulate the join timing out rather than waiting five seconds for it.
+    worker.join = lambda timeout=None: None  # type: ignore[method-assign]
+    d.stop()
+    assert worker.is_alive(), "the join was meant to time out"
 
+    d.start()
+    assert d._worker is worker, "start() put a second consumer on the queue"
 
-def test_the_rejected_wait_idle_reports_idle_with_an_utterance_in_flight() -> None:
-    """Why the shipped version counts work instead of watching an Event."""
-    player = HoldingPlayer(threading.Event(), threading.Event(), hold_on=2)
-    rejected = _RejectedIdleDaemon(
-        FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable()
-    )
+    release.set()
+    deadline = time.monotonic() + 5.0
+    while d._worker is not None and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert d._worker is None, "the worker never retired itself"
+    assert not worker.is_alive()
+
+    # Only now can the daemon come back -- and it must actually work.
+    d.start()
     try:
-        said, played = _idle_report_during_handoff(rejected, player)
+        assert d.handle(enqueue("s", "Four.")).ok is True
+        assert d.wait_idle(timeout=5.0)
     finally:
-        player.release.set()
-        rejected.stop()
-    assert said is True, "the rejected version was expected to report idle"
-    assert played < 3, "and to do so with a segment still unspoken"
+        d.stop()
+    assert len(player.played) == 2, "the restarted worker spoke nothing"
 
 
-def test_the_shipped_wait_idle_survives_the_same_handoff() -> None:
-    """The identical interleaving, against the daemon as shipped."""
+def test_a_supervisor_can_restart_the_daemon_from_the_death_event() -> None:
+    """The obituary must not reach subscribers before the door is open again."""
+    bus = EventBus()
+    player = RecordingPlayer()
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    healthy = d._finish_one
+    calls = [0]
+
+    def boom_once() -> None:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise RuntimeError("bookkeeping exploded")
+        healthy()
+
+    d._finish_one = boom_once  # type: ignore[method-assign]
+    restarted = threading.Event()
+
+    def supervise(event: Event) -> None:
+        if "speech worker died" in str(event.data.get("message", "")):
+            d.start()
+            restarted.set()
+
+    bus.subscribe(supervise, kinds=["error"])
+    d.start()
+    d.handle(enqueue("s", "One."))
+    assert restarted.wait(timeout=5.0), "the supervisor never saw the death"
+    try:
+        assert d.handle(enqueue("s", "Two.")).ok is True, "the restart was a no-op"
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    assert len(player.played) == 2
+
+
+class RendezvousQueue(queue.Queue[_Job | None]):
+    """The job queue, instrumented to park the worker where it finishes a job.
+
+    Two hooks, one rendezvous. `empty()` is the question an Event-and-queue
+    `wait_idle` asks in its completion path, and the gap between asking and
+    acting on the answer is the whole defect — so the worker is stopped inside
+    the question, with the answer already taken. The daemon as shipped asks
+    nothing there, so that hook never fires, and the second `get()` stands in:
+    a worker waiting for its next job has finished the last one either way.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parked = threading.Event()
+        self.resume = threading.Event()
+        self.gets = 0
+
+    def _is_worker(self) -> bool:
+        return threading.current_thread().name == "speakd-speech"
+
+    def empty(self) -> bool:
+        answer = super().empty()
+        if self._is_worker() and not self.parked.is_set():
+            self.parked.set()
+            assert self.resume.wait(timeout=5.0), "the harness never resumed the worker"
+        return answer
+
+    def get(self, block: bool = True, timeout: float | None = None) -> _Job | None:
+        if self._is_worker():
+            self.gets += 1
+            if self.gets == 2:
+                self.parked.set()
+        return super().get(block, timeout)
+
+
+def test_wait_idle_does_not_rest_on_an_unsynchronised_queue_check() -> None:
+    """Catches a revert to `_idle.wait(timeout) and self._jobs.empty()`.
+
+    The interleaving is forced through the queue the daemon holds rather than
+    guessed at with a sleep: the worker is parked where it finishes the first
+    utterance, the second is enqueued behind it, and only then is it released.
+    An implementation whose idea of idle is an Event plus a queue check has by
+    then recorded the queue as empty and sets idle with the second utterance
+    still to come.
+    """
+    jobs = RendezvousQueue()
     player = HoldingPlayer(threading.Event(), threading.Event(), hold_on=2)
     d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d._jobs = jobs
+    d.start()
     try:
-        said, played = _idle_report_during_handoff(d, player)
-        assert said is False, "idle must never mean an utterance is still playing"
-        assert played == 2
+        assert d.handle(enqueue("s", "One.")).ok is True
+        assert jobs.parked.wait(timeout=5.0), "the worker never finished the first utterance"
+        assert d.handle(enqueue("s", "Two. Three.")).ok is True
+        jobs.resume.set()
+        assert player.reached.wait(timeout=5.0), "the second utterance never started playing"
+        assert d.wait_idle(timeout=0.3) is False, "reported idle with an utterance still playing"
+        assert len(player.played) == 2
         player.release.set()
         assert d.wait_idle(timeout=5.0) is True
         assert len(player.played) == 3
     finally:
+        jobs.resume.set()
         player.release.set()
         d.stop()
+
+
+def test_a_hush_discards_the_queue_behind_the_utterance_it_cancels() -> None:
+    """Hush means silence now, not silence once the backlog has been read out."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["error"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("s", "One. Two. Three."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(enqueue("s", "Queued one.")).ok is True
+        assert d.handle(enqueue("s", "Queued two.")).ok is True
+        response = d.handle(Request(verb=Verb.HUSH, source_id="s", payload={}))
+        assert response.ok is True
+        assert response.data["discarded"] == 2
+        release.set()
+        assert d.wait_idle(timeout=5.0), "the discarded jobs were never released"
+        # Nothing vanished: each dropped utterance was reported.
+        assert len([e for e in seen if "discarded" in str(e.data.get("message", ""))]) == 2
+        assert len(player.played) == 1, "the hushed utterance kept playing"
+        # And the channel is not poisoned — the next utterance still speaks.
+        assert d.handle(enqueue("s", "After.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        release.set()
+        d.stop()
+    assert len(player.played) == 2
+
+
+def test_a_hush_does_not_eat_a_stop_that_is_already_under_way() -> None:
+    """A sentinel met while draining goes back: stop() is waiting on it."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    d.handle(enqueue("s", "One. Two. Three."))
+    assert reached.wait(timeout=5.0), "the worker never started playing"
+    stopper = threading.Thread(target=d.stop, daemon=True)
+    stopper.start()
+    deadline = time.monotonic() + 5.0
+    while d._running and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert d._running is False, "stop() never took effect"
+    d.handle(Request(verb=Verb.HUSH, source_id="s", payload={}))
+    release.set()
+    stopper.join(timeout=10.0)
+    assert not stopper.is_alive(), "the hush swallowed the stop sentinel"
+    assert d._worker is None
+
+
+class ExitingPlayer(RecordingPlayer):
+    """A sink that fails outside `Exception` — `pipeline.speak` lets this through."""
+
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        super().play(audio, sample_rate)
+        raise SystemExit(3)
+
+
+def test_a_base_exception_from_the_player_still_pairs_started_with_finished() -> None:
+    """A subscriber pairing the two must never be left waiting on a `finished`."""
+    player = ExitingPlayer()
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append)
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("s", "One."))
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    kinds = [e.kind for e in seen]
+    assert kinds.count("started") == 1
+    assert kinds.count("finished") == 1, "started went out without a finished"
+    assert any("SystemExit" in str(e.data.get("message", "")) for e in seen if e.kind == "error")

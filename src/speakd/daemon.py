@@ -82,30 +82,41 @@ class Daemon:
         self._cancel = threading.Event()
 
     def start(self) -> None:
-        # Idempotent: a second worker on the same queue would take alternate
-        # jobs and play them over the first worker's audio.
-        if self._worker is not None:
-            return
-        self._running = True
-        self._worker = threading.Thread(target=self._run, name="speakd-speech", daemon=True)
-        self._worker.start()
+        with self._idle:
+            # Idempotent, and refused while a previous worker is still on its
+            # way out: a second consumer on the same queue would take
+            # alternate jobs and play them over the first worker's audio.
+            if self._worker is not None:
+                return
+            self._running = True
+            worker = threading.Thread(target=self._run, name="speakd-speech", daemon=True)
+            # Published before the thread runs, so `_retire`'s identity check
+            # can never fail to recognise the worker it belongs to.
+            self._worker = worker
+        worker.start()
 
     def stop(self) -> None:
         # Under the lock, so an enqueue in flight on another thread either
         # lands before this (and is discarded with an error) or is refused.
         with self._idle:
             self._running = False
-        worker = self._worker
+            worker = self._worker
+            cancel = self._cancel
         if worker is None:
             return
-        # Cleared before the join so a second stop() is a no-op rather than a
-        # second sentinel left in the queue for a later start() to trip over.
-        self._worker = None
-        with self._idle:
-            cancel = self._cancel
         cancel.set()
         self._jobs.put(None)
         worker.join(timeout=5.0)
+        if worker.is_alive():
+            # The join timed out. `_worker` deliberately keeps pointing at it:
+            # a worker still holding the queue must not be replaced, and it
+            # retires itself — sentinel and all — when it finally gets out.
+            # Clearing here instead would let the next start() spawn a rival
+            # consumer, and leave a sentinel to close it again immediately.
+            return
+        with self._idle:
+            if self._worker is worker:
+                self._worker = None
 
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
@@ -130,7 +141,12 @@ class Daemon:
                 cancel = self._cancel
             cancel.set()
             self.player.stop()
-            return Response(ok=True)
+            # Silence now, not silence once the backlog has been read out:
+            # everything queued behind the cancelled utterance goes with it,
+            # reported rather than dropped. A later enqueue still speaks.
+            discarded = self._drain_queued(keep_stop_signal=True)
+            self._release(discarded)
+            return Response(ok=True, data={"discarded": discarded})
         if request.verb in (Verb.PAUSE, Verb.RESUME, Verb.SEEK):
             return Response(ok=False, error=_NOT_IMPLEMENTED)
         if request.verb is Verb.SET_ROLE:
@@ -194,36 +210,47 @@ class Daemon:
         return Response(ok=True, data={"spoken": True})
 
     def _run(self) -> None:
+        obituary = ""
         try:
             self._consume()
-        except BaseException:  # noqa: B036 - reported, and the thread ends anyway
+        except BaseException:  # noqa: B036 - carried out as the obituary below
             # Unreachable by design — `_consume` already contains the one
             # failure that is expected. BaseException rather than Exception
             # because `threading` discards a SystemExit raised on a worker
             # thread without so much as a traceback, and a plugin that runs
             # argparse raises exactly that.
-            self._publish("error", "", {"message": f"speech worker died: {format_exc()}"})
+            obituary = format_exc()
         finally:
             # However the worker leaves, it closes the daemon behind it. A
             # daemon with no worker that still answers `ok` to enqueue is the
             # silent-loss failure this module exists to prevent.
-            self._retire()
+            self._retire(obituary)
 
-    def _retire(self) -> None:
+    def _retire(self, obituary: str = "") -> None:
         """Shut the door: refuse new speech, report what was queued, wake waiters."""
         with self._idle:
-            self._running = False
-        # Cleared so start() can bring the daemon back rather than finding a
-        # worker attribute that no longer refers to a living thread.
-        self._worker = None
-        try:
-            self._discard_queued()
-        finally:
-            with self._idle:
-                # Whatever the bookkeeping did on the way down, nothing is in
-                # flight now: a waiter must not block on a phantom job.
-                self._pending = 0
-                self._idle.notify_all()
+            # Only the worker the daemon currently owns may close it. One that
+            # outlived a stop()'s join speaks for nobody, and retiring here
+            # would shut down a daemon its successor is running.
+            ours = self._worker is threading.current_thread()
+            if ours:
+                self._running = False
+                self._worker = None
+        if ours:
+            try:
+                self._drain_queued(keep_stop_signal=False)
+            finally:
+                with self._idle:
+                    # Whatever the bookkeeping did on the way down, nothing is
+                    # in flight now: a waiter must not block on a phantom job.
+                    self._pending = 0
+                    self._idle.notify_all()
+        if obituary:
+            # Last, and never before `_worker` is cleared. `EventBus.publish`
+            # is synchronous, so a supervisor subscribing to this runs on the
+            # dying worker's own stack: announcing the death any earlier means
+            # its start() finds a worker still in place and quietly no-ops.
+            self._publish("error", "", {"message": f"speech worker died: {obituary}"})
 
     def _consume(self) -> None:
         while True:
@@ -243,23 +270,43 @@ class Daemon:
             finally:
                 self._finish_one()
 
-    def _discard_queued(self) -> None:
-        """Report whatever is still queued when the worker is told to stop."""
+    def _drain_queued(self, *, keep_stop_signal: bool) -> int:
+        """Report and drop every queued job, returning how many there were.
+
+        A stop sentinel met on the way is put back when the caller is not the
+        one stopping: eating it would leave the worker blocked in `get()` and
+        `stop()` waiting out its join for nothing. Releasing the pending count
+        is left to the caller — a retiring worker zeroes it, a hush releases
+        exactly what it took — so that a bad release cannot end this loop
+        early and leave the rest of the queue unreported.
+        """
+        discarded = 0
+        signals = 0
         while True:
             try:
                 job = self._jobs.get_nowait()
             except queue.Empty:
-                return
+                break
             if job is None:
+                signals += 1
                 continue
+            discarded += 1
             self._publish("error", job.source_id, {"message": _DISCARDED})
-            self._finish_one()
+        if keep_stop_signal:
+            for _ in range(signals):
+                self._jobs.put(None)
+        return discarded
 
     def _finish_one(self) -> None:
+        self._release(1)
+
+    def _release(self, count: int) -> None:
+        if count <= 0:
+            return
         with self._idle:
             # Floored: a double release would otherwise drive the count
             # negative, where it never reaches zero and wait_idle never returns.
-            self._pending = max(0, self._pending - 1)
+            self._pending = max(0, self._pending - count)
             if self._pending == 0:
                 self._idle.notify_all()
 
@@ -298,10 +345,13 @@ class Daemon:
                 speed=job.profile.speed,
                 cancel=cancel,
             )
-        except Exception as exc:
+        except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
             # `started` is already out. A subscriber pairing the two would
-            # wait for a `finished` that never came, so send both.
-            self._publish("error", job.source_id, {"message": f"synthesis failed: {exc}"})
+            # wait for a `finished` that never came, so send both — including
+            # when the engine or the player raises outside `Exception`.
+            # `!r` because `str(SystemExit(3))` is just "3": a diagnostic
+            # that names neither the exception nor its type is no diagnostic.
+            self._publish("error", job.source_id, {"message": f"synthesis failed: {exc!r}"})
             self._publish("finished", job.source_id, {"cancelled": False, "aborted": True})
             return
         for segment in result.timeline.segments:
