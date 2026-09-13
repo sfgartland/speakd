@@ -102,3 +102,22 @@ def test_transform_scope_defaults_to_piece_and_can_be_job() -> None:
     host = PluginHost(ServiceRegistry())
     host.register("p", lambda ctx: ctx.transform("summarize", upper, scope="job"))
     assert host.transforms()[0].scope == "job"
+
+
+def test_rollback_failure_during_a_failed_setup_is_also_recorded() -> None:
+    host = PluginHost(ServiceRegistry())
+
+    def explode() -> None:
+        raise RuntimeError("teardown failed")
+
+    def boom(ctx: PluginContext) -> None:
+        ctx.transform("half", upper)
+        ctx.on_dispose(explode)
+        raise RuntimeError("setup failed")
+
+    host.register("broken", boom)
+    assert host.active() == set()
+    assert host.transforms() == []
+    errors = host.errors()
+    assert any("setup failed" in e for e in errors)
+    assert any("teardown failed" in e for e in errors)

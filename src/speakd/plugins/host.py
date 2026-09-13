@@ -122,7 +122,9 @@ class PluginHost:
             plugin.setup(context)
         except Exception as exc:
             # A half-registered plugin is worse than an absent one: undo it.
-            group.dispose()
+            # A teardown failure during that rollback must not vanish either --
+            # mirror _deactivate and record it too, instead of the bare call.
+            self._errors.extend(f"{plugin.name}: {e}" for e in group.dispose())
             self._errors.append(f"{plugin.name}: {exc}")
             return
         plugin.group = group
