@@ -1,6 +1,8 @@
 """Tests for the channel table."""
 
-from speakd.channels import ChannelTable
+import threading
+
+from speakd.channels import Channel, ChannelTable
 from speakd.model import Role
 
 
@@ -69,3 +71,56 @@ def test_all_lists_channels_highest_priority_first() -> None:
     table.open("high", priority=9)
     table.open("mid", priority=4)
     assert [c.source_id for c in table.all()] == ["high", "mid", "low"]
+
+
+# --- Whole-branch review: every caller is a connection thread ---
+
+
+class RacingChannels(dict[str, Channel]):
+    """Lets a second thread run a whole open() inside the first one's lookup."""
+
+    def __init__(self, other_thread_may_run: threading.Event, it_did: threading.Event) -> None:
+        super().__init__()
+        self._other_thread_may_run = other_thread_may_run
+        self._it_did = it_did
+        self.first_lookup = threading.Event()
+
+    def get(self, key: str, default: Channel | None = None) -> Channel | None:  # type: ignore[override]
+        found = super().get(key, default)
+        if not self.first_lookup.is_set():
+            self.first_lookup.set()
+            self._other_thread_may_run.set()
+            # Bounded: with a lock in place, the other thread cannot get in
+            # here at all, and this simply falls through when the wait
+            # expires.
+            self._it_did.wait(timeout=0.5)
+        return found
+
+
+def test_a_first_touch_open_cannot_lose_a_concurrent_set_role() -> None:
+    """open() is a read-modify-write, and every caller is a connection thread.
+
+    Two first-touch opens on one source_id both find nothing, both build a
+    default Channel and both store it: the second overwrites the first, and
+    any standing set on the first object in between -- a role, a priority --
+    is gone, silently, leaving a channel that speaks when it was told not to.
+    """
+    may_run = threading.Event()
+    it_did = threading.Event()
+    table = ChannelTable()
+    table._channels = RacingChannels(may_run, it_did)
+
+    def other() -> None:
+        assert may_run.wait(timeout=5.0)
+        table.set_role("s", Role.BACKGROUND)
+        it_did.set()
+
+    racer = threading.Thread(target=other, name="other-connection")
+    racer.start()
+    table.open("s")
+    racer.join(timeout=5.0)
+    assert not racer.is_alive()
+
+    channel = table.get("s")
+    assert channel is not None
+    assert channel.role is Role.BACKGROUND, "a concurrent set_role was overwritten and lost"
