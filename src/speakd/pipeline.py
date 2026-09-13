@@ -66,34 +66,54 @@ def speak(
     timeline = Timeline()
     errors: list[str] = []
     offset = 0.0
-    while True:
-        item = work.get()
-        if item is None:
-            break
-        if isinstance(item, str):
-            errors.append(item)
-            continue
-        if cancel.is_set():
-            player.stop()
-            # Drain to the sentinel: the producer may already be past its own
-            # cancel check for the next unit and about to put once more. With
-            # a depth-one queue, not draining here can leave it blocked on
-            # that put forever, since nothing would read it again.
+    exhausted = False
+    try:
+        while True:
+            item = work.get()
+            if item is None:
+                exhausted = True
+                break
+            if isinstance(item, str):
+                errors.append(item)
+                continue
+            if cancel.is_set():
+                player.stop()
+                break
+            unit, audio = item
+            duration = len(audio) / engine.sample_rate
+            timeline.append(
+                Segment(
+                    span=unit.span,
+                    text=unit.spoken,
+                    audio_offset=offset,
+                    duration=duration,
+                )
+            )
+            player.play(audio, engine.sample_rate)
+            offset += duration
+    finally:
+        if not exhausted:
+            # Reached by cancellation discovered above, or by an exception
+            # (e.g. player.play() raising when an audio device disappears
+            # mid-utterance) propagating past us. Either way the producer may
+            # already be past its own cancel check for the next unit — or
+            # simply mid-synthesis, unaware anything has gone wrong — and
+            # about to put once more. With a depth-one queue and no reader
+            # left, that put (including its unconditional final put(None))
+            # would block forever, leaking the thread. Setting cancel makes
+            # the producer stop at its next check; draining to the sentinel
+            # guarantees it always has a reader until it actually exits.
+            #
+            # This delays speak()'s return by at most one in-flight
+            # synthesize() call. Audio itself has already stopped on the
+            # cancellation path, since player.stop() precedes this. An error
+            # string queued after this point is discarded here rather than
+            # reaching SpeechResult.errors — the one place a synthesis
+            # failure is allowed to go unreported, because the utterance is
+            # already being torn down.
+            cancel.set()
             while work.get() is not None:
                 pass
-            break
-        unit, audio = item
-        duration = len(audio) / engine.sample_rate
-        timeline.append(
-            Segment(
-                span=unit.span,
-                text=unit.spoken,
-                audio_offset=offset,
-                duration=duration,
-            )
-        )
-        player.play(audio, engine.sample_rate)
-        offset += duration
 
     worker.join(timeout=1.0)
     return SpeechResult(timeline=timeline, cancelled=cancel.is_set(), errors=errors)
