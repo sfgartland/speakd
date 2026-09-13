@@ -1,0 +1,604 @@
+<title>speakd Now Playing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,400&display=swap">
+
+<style>
+  :root {
+    --ground: #f6f7f9;
+    --surface: #ffffff;
+    --ink: #15181d;
+    --ink-soft: #3d434e;
+    --muted: #646d7c;
+    --faint: #99a1ae;
+    --rule: #dfe3e9;
+    --rule-strong: #c6ccd6;
+    --lit: #b0700f;
+    --lit-mark: #fbeacd;
+    --lit-edge: #e2a94a;
+    --spent: #aeb5c0;
+    --good: #2f7d5d;
+    --shadow: 0 1px 2px rgba(21, 24, 29, .06);
+  }
+
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --ground: #101319;
+      --surface: #171b22;
+      --ink: #e7eaef;
+      --ink-soft: #bdc4cf;
+      --muted: #8c95a3;
+      --faint: #5d6676;
+      --rule: #262c36;
+      --rule-strong: #38404d;
+      --lit: #f0b054;
+      --lit-mark: #3a2f18;
+      --lit-edge: #8a6520;
+      --spent: #4e5766;
+      --good: #5cb98c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #101319;
+    --surface: #171b22;
+    --ink: #e7eaef;
+    --ink-soft: #bdc4cf;
+    --muted: #8c95a3;
+    --faint: #5d6676;
+    --rule: #262c36;
+    --rule-strong: #38404d;
+    --lit: #f0b054;
+    --lit-mark: #3a2f18;
+    --lit-edge: #8a6520;
+    --spent: #4e5766;
+    --good: #5cb98c;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 28px 20px 40px;
+  }
+
+  .app {
+    width: 100%;
+    max-width: 760px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* ---- status strip ---- */
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .channel {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    min-width: 0;
+  }
+
+  .channel-name {
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: -.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .role {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--muted);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: 2px 6px;
+    white-space: nowrap;
+  }
+
+  .role[data-role="foreground"] {
+    color: var(--good);
+    border-color: color-mix(in srgb, var(--good) 45%, transparent);
+  }
+
+  .status-spacer { flex: 1 1 auto; }
+
+  .engine {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .pip {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--spent);
+    flex: none;
+  }
+
+  .pip.live { background: var(--lit); }
+
+  /* Hollow, not dark: paused still has a position, it just is not moving. */
+  .pip.held {
+    background: none;
+    box-shadow: inset 0 0 0 1.5px var(--lit-edge);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .pip.live { animation: breathe 1.9s ease-in-out infinite; }
+  }
+
+  @keyframes breathe {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .35; }
+  }
+
+  /* ---- the passage: the hero ---- */
+
+  .passage {
+    font-family: Newsreader, Georgia, serif;
+    font-size: 21px;
+    line-height: 1.62;
+    color: var(--ink-soft);
+    font-weight: 300;
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .seg {
+    border: 0;
+    background: none;
+    padding: 0;
+    margin: 0;
+    font: inherit;
+    color: var(--spent);
+    text-align: left;
+    cursor: pointer;
+    transition: color .25s ease;
+    border-radius: 2px;
+  }
+
+  .seg:hover { color: var(--ink-soft); }
+
+  .seg:focus-visible {
+    outline: 2px solid var(--lit-edge);
+    outline-offset: 2px;
+  }
+
+  .seg[data-state="ahead"] { color: var(--ink-soft); }
+
+  .seg[data-state="lit"] {
+    color: var(--ink);
+    background: var(--lit-mark);
+    box-shadow: 0 0 0 3px var(--lit-mark);
+  }
+
+  /* Paused holds the place without claiming to be speaking: the wash drops
+     away and the sentence is bracketed instead, so "where we are" survives
+     while "we are talking" does not. */
+  .app[data-transport="paused"] .seg[data-state="lit"] {
+    background: none;
+    box-shadow: none;
+    /* A text decoration rather than a border: borders and padding are in the
+       layout and would nudge the line, and the marker must not move the words
+       it is marking. */
+    text-decoration: underline dashed var(--lit-edge);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 4px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .seg { transition: none; }
+  }
+
+  /* ---- transport ---- */
+
+  .transport {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+
+  /* The scrubber is the span-to-time map: each tick's width is its real
+     duration, so the bar's shape is the utterance's actual rhythm. */
+  .scrubber {
+    display: flex;
+    gap: 2px;
+    height: 30px;
+    align-items: stretch;
+  }
+
+  .tick {
+    border: 0;
+    padding: 0;
+    background: var(--rule);
+    border-radius: 1px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: background .2s ease;
+  }
+
+  .tick:hover { background: var(--rule-strong); }
+
+  .tick:focus-visible {
+    outline: 2px solid var(--lit-edge);
+    outline-offset: 1px;
+  }
+
+  .tick[data-state="spent"] { background: var(--rule-strong); }
+
+  .tick[data-state="lit"] { background: var(--lit-edge); }
+
+  .tick .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    background: var(--lit);
+  }
+
+  /* Same idea on the scrubber: the played portion stays, the leading edge
+     stops being solid. */
+  .app[data-transport="paused"] .tick[data-state="lit"] {
+    background: var(--rule);
+    box-shadow: inset 0 0 0 1.5px var(--lit-edge);
+  }
+
+  .app[data-transport="paused"] .tick[data-state="lit"] .fill {
+    background: color-mix(in srgb, var(--lit) 38%, transparent);
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  button.ctl {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: 3px;
+    padding: 7px 13px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  button.ctl:hover { border-color: var(--muted); }
+
+  button.ctl:focus-visible {
+    outline: 2px solid var(--lit-edge);
+    outline-offset: 2px;
+  }
+
+  button.ctl.primary {
+    background: var(--ink);
+    color: var(--ground);
+    border-color: var(--ink);
+    min-width: 104px;
+    justify-content: center;
+  }
+
+  button.ctl.danger { color: var(--lit); border-color: var(--lit-edge); }
+
+  button.ctl:disabled {
+    opacity: .38;
+    cursor: default;
+    border-color: var(--rule);
+  }
+
+  button.ctl:disabled:hover { border-color: var(--rule); }
+
+  /* Hush cancels rather than suspends: the passage goes fully spent, because
+     nothing here is waiting to be resumed. */
+  .app[data-transport="hushed"] .passage { opacity: .5; }
+
+  .controls-spacer { flex: 1 1 auto; }
+
+  .readout {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .readout b {
+    font-weight: 500;
+    color: var(--ink-soft);
+  }
+
+  .drift[data-stalled="true"] { color: var(--lit); }
+
+  /* ---- footnote ---- */
+
+  .note {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--faint);
+    border-top: 1px solid var(--rule);
+    padding-top: 14px;
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .note code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  @media (max-width: 560px) {
+    .passage { font-size: 19px; }
+    .readout { font-size: 10.5px; gap: 10px; }
+  }
+</style>
+
+<div class="app">
+
+  <div class="status">
+    <div class="channel">
+      <span class="channel-name">PhD articulation</span>
+      <span class="role" data-role="foreground" id="role">foreground</span>
+    </div>
+    <div class="status-spacer"></div>
+    <div class="engine">
+      <span class="pip" id="pip"></span>
+      <span id="engine-state">paused</span>
+      <span>·</span>
+      <span>kokoro · af_heart · 1.1&times;</span>
+    </div>
+  </div>
+
+  <p class="passage" id="passage"></p>
+
+  <div class="transport">
+    <div class="scrubber" id="scrubber"></div>
+    <div class="controls">
+      <button class="ctl primary" id="play">Play</button>
+      <button class="ctl" id="back">&larr; Back</button>
+      <button class="ctl" id="fwd">Forward &rarr;</button>
+      <button class="ctl danger" id="hush">Hush</button>
+      <div class="controls-spacer"></div>
+      <div class="readout">
+        <span><b id="pos">0.00</b>&thinsp;/&thinsp;<span id="total">0.00</span>s</span>
+        <span>span <b id="span">0–0</b></span>
+        <span class="drift" id="drift" data-stalled="false">drift <b id="drift-val">0.00</b>s</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="note">
+    Prototype against a simulated event stream. The scrubber is the span-to-time map:
+    each tick's width is that segment's real duration, so the bar shows the utterance's
+    rhythm rather than a uniform progress bar. Clicking a sentence or a tick sends
+    <code>seek</code>, resolved through <code>Timeline.time_of</code>. <b>Drift</b> is
+    the gap between the nominal audio clock and wall time — it grows whenever synthesis
+    stalls playback, which is why the timeline carries two clocks rather than one.
+  </p>
+
+</div>
+
+<script>
+  // Segments as the daemon emits them: source span, spoken text, nominal duration.
+  // Text is a real passage from the project's own use — spoken 2026-09-13.
+  const SEGMENTS = [
+    { text: "Kant gives the official definition at B25.", dur: 2.31, synth: 1.6 },
+    { text: "He calls transcendental all cognition that is occupied not so much with objects as with our mode of cognition of objects, insofar as this is to be possible a priori.", dur: 8.42, synth: 6.1 },
+    { text: "The crucial thing is that the term is reflexive, or second order.", dur: 3.55, synth: 2.4 },
+    { text: "It does not name a special class of objects lying somewhere beyond the ordinary ones.", dur: 4.48, synth: 5.9 },
+    { text: "It names an inquiry that turns back on cognition itself.", dur: 3.02, synth: 2.1 },
+    { text: "Hence the second distinction, the one Kant polices hardest.", dur: 3.28, synth: 2.2 },
+  ];
+
+  // Character offsets into the source text, so spans are real rather than decorative.
+  let cursor = 0;
+  for (const s of SEGMENTS) {
+    s.start = cursor;
+    s.end = cursor + s.text.length;
+    cursor = s.end + 1;
+  }
+
+  const TOTAL = SEGMENTS.reduce((a, s) => a + s.dur, 0);
+
+  const el = {
+    passage: document.getElementById("passage"),
+    scrubber: document.getElementById("scrubber"),
+    play: document.getElementById("play"),
+    back: document.getElementById("back"),
+    fwd: document.getElementById("fwd"),
+    hush: document.getElementById("hush"),
+    pos: document.getElementById("pos"),
+    total: document.getElementById("total"),
+    span: document.getElementById("span"),
+    drift: document.getElementById("drift"),
+    driftVal: document.getElementById("drift-val"),
+    pip: document.getElementById("pip"),
+    engine: document.getElementById("engine-state"),
+  };
+
+  // Open mid-utterance and paused, so the first frame shows what this does.
+  let index = 2;
+  let within = 0.9;
+  let playing = false;
+  let hushed = false;
+  let drift = 0.34;
+  let raf = null;
+  let last = 0;
+
+  const segEls = [];
+  const tickEls = [];
+
+  SEGMENTS.forEach((seg, i) => {
+    const b = document.createElement("button");
+    b.className = "seg";
+    b.type = "button";
+    b.textContent = seg.text;
+    b.addEventListener("click", () => seek(i));
+    el.passage.appendChild(b);
+    el.passage.appendChild(document.createTextNode(" "));
+    segEls.push(b);
+
+    const t = document.createElement("button");
+    t.className = "tick";
+    t.type = "button";
+    t.style.flex = seg.dur + " 1 0";
+    t.title = seg.text;
+    t.setAttribute("aria-label", "Seek to: " + seg.text);
+    t.innerHTML = '<span class="fill"></span>';
+    t.addEventListener("click", () => seek(i));
+    el.scrubber.appendChild(t);
+    tickEls.push(t);
+  });
+
+  el.total.textContent = TOTAL.toFixed(2);
+
+  function elapsed() {
+    let t = within;
+    for (let i = 0; i < index; i++) t += SEGMENTS[i].dur;
+    return t;
+  }
+
+  function render() {
+    const seg = SEGMENTS[index];
+
+    segEls.forEach((b, i) => {
+      b.dataset.state = hushed ? "ahead" : i < index ? "spent" : i === index ? "lit" : "ahead";
+    });
+
+    tickEls.forEach((t, i) => {
+      t.dataset.state = hushed ? "ahead" : i < index ? "spent" : i === index ? "lit" : "ahead";
+      const fill = t.querySelector(".fill");
+      fill.style.width = !hushed && i === index ? (within / seg.dur) * 100 + "%" : i < index && !hushed ? "100%" : "0";
+    });
+
+    el.pos.textContent = elapsed().toFixed(2);
+    el.span.textContent = seg.start + "–" + seg.end;
+    el.driftVal.textContent = drift.toFixed(2);
+    el.drift.dataset.stalled = drift > 0.25 ? "true" : "false";
+
+    document.querySelector(".app").dataset.transport =
+      hushed ? "hushed" : playing ? "playing" : "paused";
+
+    el.pip.classList.toggle("live", playing);
+    el.pip.classList.toggle("held", !playing && !hushed);
+    el.engine.textContent = hushed ? "cancelled" : playing ? "speaking" : "paused";
+    // The label says what pressing it does, and after a hush that is not "resume".
+    el.play.textContent = playing ? "Pause" : hushed ? "Speak again" : "Play";
+    el.back.disabled = hushed;
+    el.fwd.disabled = hushed;
+    el.hush.disabled = hushed;
+  }
+
+  function tick(now) {
+    if (!playing) return;
+    const dt = Math.min((now - last) / 1000, 0.25);
+    last = now;
+    within += dt;
+
+    // Synthesis runs one segment ahead; when the next one costs more to
+    // synthesise than this one takes to speak, playback stalls and drift grows.
+    const next = SEGMENTS[index + 1];
+    if (next) {
+      const slack = SEGMENTS[index].dur - next.synth;
+      drift = Math.max(0, drift + (slack < 0 ? dt * 0.22 : -dt * 0.12));
+    }
+
+    if (within >= SEGMENTS[index].dur) {
+      within = 0;
+      if (index < SEGMENTS.length - 1) {
+        index += 1;
+      } else {
+        playing = false;
+        within = SEGMENTS[index].dur;
+      }
+    }
+    render();
+    raf = requestAnimationFrame(tick);
+  }
+
+  function start() {
+    if (playing) return;
+    // Hush abandons the utterance rather than suspending it, so there is
+    // nothing to resume from — speaking again starts a fresh one.
+    if (hushed) {
+      hushed = false;
+      index = 0;
+      within = 0;
+      drift = 0;
+    }
+    playing = true;
+    last = performance.now();
+    raf = requestAnimationFrame(tick);
+    render();
+  }
+
+  function pause() {
+    playing = false;
+    if (raf) cancelAnimationFrame(raf);
+    render();
+  }
+
+  function seek(i) {
+    index = i;
+    within = 0;
+    hushed = false;
+    render();
+  }
+
+  el.play.addEventListener("click", () => (playing ? pause() : start()));
+  el.back.addEventListener("click", () => seek(Math.max(0, index - 1)));
+  el.fwd.addEventListener("click", () => seek(Math.min(SEGMENTS.length - 1, index + 1)));
+  el.hush.addEventListener("click", () => {
+    pause();
+    hushed = true;
+    render();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest("button") && e.key === " ") return;
+    if (e.key === " ") { e.preventDefault(); playing ? pause() : start(); }
+    if (e.key === "ArrowLeft") seek(Math.max(0, index - 1));
+    if (e.key === "ArrowRight") seek(Math.min(SEGMENTS.length - 1, index + 1));
+  });
+
+  render();
+</script>
