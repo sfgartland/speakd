@@ -6,6 +6,7 @@ use playback as its clock while a producer thread runs ahead.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Protocol
 
@@ -127,3 +128,36 @@ class SoundDeviceSink:
         if self._stream is not None:
             self._stream.close()  # type: ignore[attr-defined]
             self._stream = None
+
+
+class StreamingPlayer:
+    """Blocks until the segment finishes, or until it is interrupted.
+
+    Keeping `play()` blocking is deliberate: the pipeline uses playback as its
+    clock, and its depth-one queue and drain-to-sentinel teardown are what stop a
+    producer thread leaking on every cancellation. This class changes how promptly
+    playback can be abandoned, not who rate-limits whom.
+    """
+
+    def __init__(self, sink: AudioSink, chunk_frames: int = 2048) -> None:
+        self._sink = sink
+        self._chunk = chunk_frames
+        self._interrupt = threading.Event()
+        self.frames_played = 0
+        self.interrupted = False
+
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        self.interrupted = False
+        self._sink.start()
+        for start in range(0, len(audio), self._chunk):
+            if self._interrupt.is_set():
+                self._interrupt.clear()
+                self.interrupted = True
+                return
+            block = audio[start : start + self._chunk]
+            self._sink.write(block)
+            self.frames_played += len(block)
+
+    def stop(self) -> None:
+        self._interrupt.set()
+        self._sink.stop()
