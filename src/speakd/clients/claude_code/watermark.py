@@ -64,7 +64,13 @@ def _path_for(session_id: str, suffix: str) -> Path:
 
 
 def load(session_id: str) -> Watermark | None:
-    """The stored watermark, or `None` if there is none we can trust."""
+    """The stored watermark, or `None` if there is none we can trust.
+
+    Call this inside `locked(session_id)`, holding the lock all the way
+    through to the matching `save`. Reading unlocked is how two concurrent
+    hooks both see the old offset and both speak the same text; nothing in
+    this signature can stop that, so the rule lives here.
+    """
     try:
         body = json.loads(_path_for(session_id, ".json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -82,6 +88,11 @@ def save(session_id: str, mark: Watermark) -> None:
 
     A half-written watermark read by the next hook loses the offset and
     re-speaks the whole turn, so this writes beside the target and replaces.
+
+    Call this inside the same `locked(session_id)` block that the matching
+    `load` was called in. Atomicity here only guarantees that a reader sees
+    one whole watermark or another; it does not stop a concurrent hook that
+    read before this write from overwriting it with a staler offset.
     """
     target = _path_for(session_id, ".json")
     temporary = target.with_suffix(".json.tmp")
