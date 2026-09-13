@@ -12,7 +12,7 @@ from speakd.channels import ChannelTable
 from speakd.daemon import Daemon, ProfileView, _Job
 from speakd.events import Event, EventBus
 from speakd.model import Piece, Role
-from speakd.player import RecordingPlayer
+from speakd.player import FakeSink, Player, RecordingPlayer, StreamingPlayer
 from speakd.protocol import Request, Response, Verb
 from speakd.synth.fake import FakeEngine
 
@@ -36,6 +36,35 @@ def daemon():  # type: ignore[no-untyped-def]
         yield d, player, bus
     finally:
         d.stop()
+
+
+@pytest.fixture
+def running_daemon():  # type: ignore[no-untyped-def]
+    """A started daemon, built with whichever player the test needs.
+
+    A factory rather than a plain fixture because the player is the variable
+    under test here: `StreamingPlayer` can pause and `RecordingPlayer` cannot,
+    and the daemon has to answer for both.
+    """
+    built: list[Daemon] = []
+
+    def build(player: Player | None = None) -> Daemon:
+        d = Daemon(
+            FakeEngine(),
+            player if player is not None else RecordingPlayer(),
+            profile_for,
+            bus=EventBus(),
+            channels=ChannelTable(),
+        )
+        d.start()
+        built.append(d)
+        return d
+
+    try:
+        yield build
+    finally:
+        for d in built:
+            d.stop()
 
 
 def enqueue(source: str, text: str, kind: str = "response") -> Request:
@@ -122,12 +151,78 @@ def test_every_utterance_gets_a_fresh_cancel_event(daemon) -> None:  # type: ign
     assert len(player.played) == 2
 
 
-def test_transport_verbs_report_that_they_are_not_implemented(daemon) -> None:  # type: ignore[no-untyped-def]
-    d, _player, _bus = daemon
-    for verb in (Verb.PAUSE, Verb.RESUME, Verb.SEEK):
-        response = d.handle(Request(verb=verb, source_id="s", payload={}))
-        assert response.ok is False
-        assert "streaming player" in response.error
+def test_pause_pauses_a_pausable_player(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    response = daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert response.ok
+    assert response.data["paused"] is True
+    assert daemon.player.paused is True
+
+
+def test_resume_unpauses(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    response = daemon.handle(Request(verb=Verb.RESUME, source_id="s"))
+    assert response.ok
+    assert response.data["paused"] is False
+    assert daemon.player.paused is False
+
+
+def test_pausing_a_player_that_cannot_pause_says_why(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=RecordingPlayer())
+    response = daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert not response.ok
+    assert "pause" in response.error
+    assert "RecordingPlayer" in response.error
+
+
+def test_a_transport_change_is_announced(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    transport = [event for event in seen if event.kind == "transport"]
+    assert len(transport) == 1
+    assert transport[0].data["paused"] is True
+
+
+def test_pausing_twice_announces_once(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    """A GUI that redraws on every event must not flicker on a no-op."""
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert len([event for event in seen if event.kind == "transport"]) == 1
+
+
+def test_seek_is_still_refused(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    response = daemon.handle(Request(verb=Verb.SEEK, source_id="s"))
+    assert not response.ok
+    # The refusal has to name itself. The message it replaced promised seek
+    # "until the streaming player lands" -- which this daemon is now running.
+    assert "seek" in response.error
+    assert "streaming player" not in response.error
+
+
+def test_a_player_that_cannot_be_paused_is_reported_not_raised(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    """A refusing sink must not come back as a traceback on the control path."""
+
+    class UnpausablePlayer(StreamingPlayer):
+        def pause(self) -> None:
+            raise RuntimeError("PortAudioError: device unavailable")
+
+    daemon = running_daemon(player=UnpausablePlayer(FakeSink()))
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append)
+    response = daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert not response.ok
+    assert "device unavailable" in response.error
+    # Nothing changed, so nothing is announced: a GUI told it is paused when
+    # the audio is still running is worse off than one told nothing.
+    assert [event for event in seen if event.kind == "transport"] == []
+    assert daemon.player.paused is False
 
 
 def test_a_prepare_failure_is_reported_but_speech_continues(daemon) -> None:  # type: ignore[no-untyped-def]
