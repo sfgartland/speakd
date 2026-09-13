@@ -98,7 +98,8 @@ def test_default_max_chars_is_exported() -> None:
     assert DEFAULT_MAX_CHARS == 180
 
 
-def test_max_chars_below_one_raises_instead_of_looping_forever() -> None:
+@pytest.mark.parametrize("max_chars", [0, -5])
+def test_max_chars_below_one_raises_instead_of_looping_forever(max_chars: int) -> None:
     """The guard is what stops `_split_words` spinning at max_chars < 1.
 
     Run it on a throwaway daemon thread and join with a timeout, so a
@@ -109,7 +110,7 @@ def test_max_chars_below_one_raises_instead_of_looping_forever() -> None:
 
     def run() -> None:
         try:
-            segment([piece("word " * 10)], 0)
+            segment([piece("word " * 10)], max_chars)
         except BaseException as exc:  # recorded here, asserted on by the caller
             outcome.append(exc)
         else:
@@ -121,11 +122,6 @@ def test_max_chars_below_one_raises_instead_of_looping_forever() -> None:
 
     assert not worker.is_alive(), "segment() did not return: the max_chars guard regressed"
     assert isinstance(outcome[0], ValueError)
-
-
-def test_negative_max_chars_raises() -> None:
-    with pytest.raises(ValueError, match="max_chars"):
-        segment([piece("word word")], -5)
 
 
 def test_a_length_preserving_rewrite_is_not_mistaken_for_the_source() -> None:
