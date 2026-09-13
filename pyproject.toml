@@ -1,0 +1,40 @@
+[project]
+name = "speakd"
+version = "0.0.1"
+description = "Streaming speech synthesis daemon for local AI agents"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Severin Gartland" }]
+dependencies = []
+
+[project.optional-dependencies]
+# Kokoro pulls torch; keep it out of the default install so the core stays light.
+# NOTE: misaki (a kokoro dep) requires Python < 3.14.
+kokoro = ["kokoro", "sounddevice", "numpy", "scipy"]
+llm = ["litellm"]
+
+[project.scripts]
+speakd = "speakd.__main__:main"
+speakctl = "speakd.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
