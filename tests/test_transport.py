@@ -340,3 +340,78 @@ def test_a_handler_that_raises_becomes_an_error_response(tmp_path: Path) -> None
         client.close()
     finally:
         srv.stop()
+
+
+# --- Whole-branch review: the lifecycle guards ---
+
+
+def test_starting_a_server_twice_is_refused(tmp_path: Path) -> None:
+    """A second start() overwrote `_socket` and `_accept_thread`.
+
+    The first socket stayed bound and its accept thread stayed running, with
+    nothing left holding either: a leaked listener nobody can close, and two
+    accept loops on one address.
+    """
+    srv = SocketServer(tmp_path / "speakd.sock", echo_handler, EventBus())
+    srv.start()
+    try:
+        first_socket = srv._socket
+        first_thread = srv._accept_thread
+        with pytest.raises(RuntimeError):
+            srv.start()
+        assert srv._socket is first_socket, "the second start() replaced the listening socket"
+        assert srv._accept_thread is first_thread, "the second start() replaced the accept thread"
+        client = connect(srv.address)
+        try:
+            assert client.send(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+        finally:
+            client.close()
+    finally:
+        srv.stop()
+
+
+def test_stop_without_start_leaves_the_socket_file_alone(tmp_path: Path) -> None:
+    """stop() unlinked `address` unconditionally.
+
+    Pointed at a live daemon's socket -- which is the ordinary case, since
+    every SocketServer is constructed with the same default path -- that
+    deletes the one thing clients use to find it.
+    """
+    live = SocketServer(tmp_path / "speakd.sock", echo_handler, EventBus())
+    live.start()
+    try:
+        never_started = SocketServer(live.address, echo_handler, EventBus())
+        never_started.stop()
+        assert live.address.exists(), "stop() deleted a running daemon's socket"
+        client = connect(live.address)
+        try:
+            assert client.send(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+        finally:
+            client.close()
+    finally:
+        live.stop()
+
+
+def test_a_second_server_refuses_to_steal_a_live_address(tmp_path: Path) -> None:
+    """start() unlinked any existing socket file with no liveness probe.
+
+    A second speakd then silently took the address from a first that is still
+    running -- and still holding the audio device, so everything routed to the
+    new one goes nowhere.
+    """
+    first = SocketServer(tmp_path / "speakd.sock", echo_handler, EventBus())
+    first.start()
+    try:
+        second = SocketServer(first.address, echo_handler, EventBus())
+        with pytest.raises(RuntimeError) as refusal:
+            second.start()
+        assert "listening" in str(refusal.value)
+        assert str(first.address) in str(refusal.value)
+        # The first is untouched: same socket file, still answering.
+        client = connect(first.address)
+        try:
+            assert client.send(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+        finally:
+            client.close()
+    finally:
+        first.stop()

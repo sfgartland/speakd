@@ -39,6 +39,9 @@ Handler = Callable[[Request], Response]
 _ACCEPT_POLL_SECONDS = 0.2
 # How long stop() waits for a thread to notice it should exit before giving up.
 _JOIN_TIMEOUT_SECONDS = 2.0
+# How long a liveness probe waits to find out whether anyone is on an existing
+# socket file before that file is treated as a dead daemon's litter.
+_PROBE_TIMEOUT_SECONDS = 0.5
 # How long a client waits for a response to a request before giving up. Only
 # ever applied around the request/response read -- a subscriber's event
 # stream is otherwise unbounded, since an idle stream is not a stuck one.
@@ -58,6 +61,26 @@ class _SubscriberUnreachable(Exception):
     `EventBus` drops a subscriber that raises; it has no answer for one that
     blocks. This turns the second into the first.
     """
+
+
+def _is_live(address: Path) -> bool:
+    """Is something serving on this socket, or is the file a dead daemon's litter?
+
+    Asked by connecting: there is no other way to tell a stale socket file
+    from a live one, and the difference decides whether unlinking it is
+    housekeeping or theft.
+    """
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(_PROBE_TIMEOUT_SECONDS)
+        probe.connect(str(address))
+    except OSError:
+        # ECONNREFUSED (a file no listener is behind), ENOENT (it went away
+        # in between), ENOTSOCK (not a socket at all): nothing serves here.
+        return False
+    finally:
+        probe.close()
+    return True
 
 
 def _event_line(event: Event) -> bytes:
@@ -100,23 +123,52 @@ class SocketServer:
         self._lock = threading.Lock()
 
     def start(self) -> None:
-        self.address.parent.mkdir(parents=True, exist_ok=True)
-        # A daemon that died without cleaning up must not make the next one
-        # unstartable.
-        if self.address.exists():
-            self.address.unlink()
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(self.address))
-        server.listen(16)
-        server.settimeout(_ACCEPT_POLL_SECONDS)
-        self._socket = server
-        self._running.set()
-        self._accept_thread = threading.Thread(
-            target=self._accept_loop, name="speakd-accept", daemon=True
-        )
-        self._accept_thread.start()
+        with self._lock:
+            if self._running.is_set():
+                # A second start() would overwrite `_socket` and
+                # `_accept_thread`, leaving the first socket bound and its
+                # accept loop running with nothing left holding either.
+                raise RuntimeError(f"already serving on {self.address}: stop() it first")
+            # Claimed before the bind, so two concurrent start()s cannot both
+            # get past this and leak a listener between them.
+            self._running.set()
+        try:
+            self.address.parent.mkdir(parents=True, exist_ok=True)
+            if self.address.exists():
+                # A daemon that died without cleaning up must not make the
+                # next one unstartable. A daemon that is alive must not be
+                # robbed either: it still holds the audio device, so a second
+                # speakd taking its address leaves every client talking to a
+                # daemon that cannot speak. Which of the two this is can only
+                # be settled by asking.
+                if _is_live(self.address):
+                    raise RuntimeError(f"another speakd is already listening on {self.address}")
+                self.address.unlink()
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._socket = server
+            server.bind(str(self.address))
+            server.listen(16)
+            server.settimeout(_ACCEPT_POLL_SECONDS)
+            self._accept_thread = threading.Thread(
+                target=self._accept_loop, name="speakd-accept", daemon=True
+            )
+            self._accept_thread.start()
+        except BaseException:  # noqa: B036 - rolled back, then re-raised
+            # A start that failed must leave a server that can be started
+            # again, not one that claims an address it never bound.
+            self._running.clear()
+            if self._socket is not None:
+                self._socket.close()
+                self._socket = None
+            raise
 
     def stop(self) -> None:
+        if not self._running.is_set():
+            # Never started, or already stopped. Going on would unlink
+            # `address` -- and pointed at a live daemon's socket, which is
+            # the ordinary case since every server is built with the same
+            # default path, that deletes the one thing clients find it by.
+            return
         self._running.clear()
         if self._accept_thread is not None:
             self._accept_thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
