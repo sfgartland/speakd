@@ -19,6 +19,17 @@ class ServiceRegistry:
     def __init__(self) -> None:
         self._services: dict[str, object] = {}
         self._watchers: dict[str, list[Watcher]] = {}
+        # A raising watcher must not stop the others being told, but it must not
+        # vanish either -- a plugin that fails to activate is reported, never
+        # silently dropped. Failures collect here until someone drains them;
+        # PluginHost folds them into its own errors.
+        self.errors: list[str] = []
+
+    def take_errors(self) -> list[str]:
+        """Return the watcher failures collected since the last call, and forget them."""
+        drained = self.errors[:]
+        self.errors.clear()
+        return drained
 
     def get(self, name: str) -> object | None:
         return self._services.get(name)
@@ -42,8 +53,8 @@ class ServiceRegistry:
         self._watchers.setdefault(name, []).append(callback)
         try:
             callback(self._services.get(name))
-        except Exception:
-            pass
+        except Exception as exc:
+            self.errors.append(f"watcher for service {name!r} failed on registration: {exc}")
 
         def unwatch() -> None:
             watchers = self._watchers.get(name)
@@ -57,5 +68,6 @@ class ServiceRegistry:
         for callback in list(self._watchers.get(name, ())):
             try:
                 callback(value)
-            except Exception:
+            except Exception as exc:
+                self.errors.append(f"watcher for service {name!r} failed: {exc}")
                 continue

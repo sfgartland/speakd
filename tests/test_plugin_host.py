@@ -176,3 +176,17 @@ def test_registering_the_builtins_twice_leaves_nothing_orphaned() -> None:
     host.unregister("pronunciation")
     assert host.transforms() == []
     assert host.active() == set()
+
+
+def test_the_host_reports_a_registry_watcher_failure() -> None:
+    """host.registry is public, so somebody else's watcher can fail there too."""
+    registry = ServiceRegistry()
+    host = PluginHost(registry)
+
+    def boom(value: object | None) -> None:
+        raise RuntimeError("bibliography watcher failed")
+
+    registry.watch("bibliography", boom)
+    assert any("bibliography watcher failed" in e for e in host.errors())
+    # Drained, not duplicated on a second read.
+    assert sum("bibliography watcher failed" in e for e in host.errors()) == 1

@@ -94,6 +94,10 @@ class PluginHost:
         return {name for name, p in self._plugins.items() if p.group is not None}
 
     def errors(self) -> list[str]:
+        # The registry swallows a raising watcher to protect the others; its
+        # record of those belongs with the host's own failures, not in a list
+        # nobody reads.
+        self._errors.extend(self.registry.take_errors())
         return list(self._errors)
 
     def register(

@@ -207,3 +207,23 @@ def test_watcher_that_disposes_another_during_notification() -> None:
     assert seen_a == [None, "event"]
     assert seen_b == [None, "event"]
     assert seen_c == [None, "event"]
+
+
+def test_a_raising_watcher_is_recorded_rather_than_swallowed() -> None:
+    """Nothing the registry catches may disappear: the failure is drainable."""
+    registry = ServiceRegistry()
+
+    def boom(value: object | None) -> None:
+        raise RuntimeError("watcher failed")
+
+    registry.watch("svc", boom)
+    assert any("watcher failed" in e for e in registry.errors)
+    assert any("svc" in e for e in registry.errors)
+
+    registry.take_errors()
+    registry.provide("svc", "value")
+    assert any("watcher failed" in e for e in registry.errors)
+
+    drained = registry.take_errors()
+    assert drained != []
+    assert registry.errors == []
