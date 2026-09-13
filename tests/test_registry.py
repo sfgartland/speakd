@@ -227,3 +227,13 @@ def test_a_raising_watcher_is_recorded_rather_than_swallowed() -> None:
     drained = registry.take_errors()
     assert drained != []
     assert registry.errors == []
+
+
+def test_providing_none_is_rejected() -> None:
+    """None means absent, so storing it would poison the name invisibly."""
+    registry = ServiceRegistry()
+    with pytest.raises(ValueError, match="absence is expressed by not providing"):
+        registry.provide("bibliography", None)
+    assert registry.get("bibliography") is None
+    registry.provide("bibliography", "real")
+    assert registry.get("bibliography") == "real"

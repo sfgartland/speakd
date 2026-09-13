@@ -36,6 +36,16 @@ class ServiceRegistry:
 
     def provide(self, name: str, value: object) -> Disposable:
         """Register `value` under `name` until the returned handle is disposed."""
+        if value is None:
+            # None is the registry's word for "no provider": get() returns it
+            # for an absent name and watchers receive it when one goes away.
+            # Storing it would claim the name while still reading as absent, so
+            # no dependent plugin activates and every later provider of that
+            # name is rejected as a duplicate -- for the daemon's lifetime.
+            raise ValueError(
+                f"service {name!r}: cannot provide None; "
+                "absence is expressed by not providing the service"
+            )
         if name in self._services:
             raise ValueError(f"service {name!r} is already provided")
         self._services[name] = value
