@@ -13,6 +13,7 @@ because a GUI closing its window must never silence speech.
 from __future__ import annotations
 
 import json
+import select
 import socket
 import threading
 from collections.abc import Callable, Iterator, Sequence
@@ -196,6 +197,25 @@ class SocketServer:
                             # A second subscribe on one connection must not
                             # leak the first: otherwise events arrive twice.
                             subscription.dispose()
+                        # acked must be reset here: a re-subscribe reopens the
+                        # same ack-then-flush window as the first one. Left at
+                        # True (its value from the first subscribe's ack), an
+                        # event published between this registration and the
+                        # second ack below would take the "already acked"
+                        # branch in emit_event and be written ahead of the
+                        # second ack -- the same desync the pending-buffer
+                        # exists to prevent, just reopened by reuse.
+                        with write_lock:
+                            acked = False
+                        # self._bus.subscribe() (like subscription.dispose()
+                        # above) must stay OUTSIDE `with write_lock`: the bus
+                        # can invoke emit_event synchronously, on this same
+                        # thread, from inside subscribe() -- that is exactly
+                        # how the regression tests force this race. Were this
+                        # call inside the lock, that nested same-thread
+                        # callback would deadlock re-acquiring a lock this
+                        # thread already holds. Do not "tidy" this into one
+                        # critical section.
                         subscription = self._bus.subscribe(emit_event, kinds=kinds)
                         with write_lock:
                             connection.sendall(encode(Response(ok=True)))
@@ -242,17 +262,20 @@ class SocketClient:
 
     def send_raw(self, line: bytes) -> Response:
         self._socket.sendall(line)
-        # Bounded only around this one read. A regression that drops a
-        # response (e.g. losing the sendall in an error branch) must turn
-        # into a bounded test failure, not a hung suite. A subscriber's
-        # event stream must stay untimed, so the timeout is restored
-        # immediately after this call either way.
-        previous_timeout = self._socket.gettimeout()
-        self._socket.settimeout(_REQUEST_TIMEOUT_SECONDS)
-        try:
-            reply = self._reader.readline()
-        finally:
-            self._socket.settimeout(previous_timeout)
+        # Bounded via select(), not socket.settimeout(). self._reader wraps a
+        # socket.SocketIO whose readinto() latches _timeout_occurred the
+        # first time a socket-level timeout actually fires; every later read
+        # on that same file object then raises "cannot read from timed out
+        # object" forever after, with no way to reset it -- including reads
+        # for a live subscription sharing this same reader (_iter_events
+        # below). select() bounds the wait without ever touching the
+        # socket's own timeout state, so a request that times out cannot
+        # poison anything read afterward. A subscriber's event stream stays
+        # untimed, as it always has, since this wait is local to this call.
+        readable, _, _ = select.select([self._socket], [], [], _REQUEST_TIMEOUT_SECONDS)
+        if not readable:
+            raise TimeoutError("timed out waiting for a response")
+        reply = self._reader.readline()
         if not reply:
             raise ConnectionError("daemon closed the connection")
         return decode_response(reply)
@@ -275,10 +298,16 @@ class SocketClient:
                 parsed = json.loads(line.decode("utf-8"))
                 if not isinstance(parsed, dict):
                     raise ProtocolError("event line must be a JSON object")
+                data = parsed.get("data", {})
+                if not isinstance(data, dict):
+                    # dict(data) would otherwise raise a raw TypeError or
+                    # ValueError for a list/number/etc, escaping the very
+                    # wrapper this branch exists to provide.
+                    raise ProtocolError("event data must be a JSON object")
                 event = Event(
                     kind=str(parsed["event"]),
                     source_id=str(parsed["source_id"]),
-                    data=dict(parsed.get("data", {})),
+                    data=data,
                 )
             except ProtocolError:
                 raise
