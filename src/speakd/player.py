@@ -64,6 +64,42 @@ def _dropped(frames: int, reason: str) -> str:
     return f"dropped {frames} frames: {reason}"
 
 
+# Enough to show a pattern — a repeated message is the diagnosis, and thirty-two
+# of them is plenty to see one — and small enough that the whole log stays
+# readable when something dumps it.
+_MAX_ERRORS = 32
+
+
+class _ErrorLog(list[str]):
+    """A bounded record of what went wrong.
+
+    A device that has begun failing fails repeatedly, and this daemon runs for
+    days, so an unbounded list is a slow leak that answers "what went wrong"
+    ten thousand times over. The first `_MAX_ERRORS` messages are kept — the
+    first ones, because they are the ones that say how the trouble started —
+    and everything after them becomes a single running tally at the end, so
+    nothing disappears without saying that it did.
+
+    A list subclass rather than a helper on each sink: one implementation is
+    one fewer thing for the two sinks to drift apart on.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dropped = 0
+
+    def append(self, message: str) -> None:
+        if len(self) < _MAX_ERRORS:
+            super().append(message)
+            return
+        self.dropped += 1
+        tally = f"... and {self.dropped} further errors not recorded"
+        if self.dropped == 1:
+            super().append(tally)
+        else:
+            self[-1] = tally
+
+
 class AudioSink(Protocol):
     """Where audio frames go. Injected so tests never open a device."""
 
@@ -92,7 +128,7 @@ class FakeSink:
     def __init__(self) -> None:
         self.blocks: list[np.ndarray] = []
         self.frames_written = 0
-        self.errors: list[str] = []
+        self.errors: list[str] = _ErrorLog()
         self.started = False
         self.stopped = False
         self.closed = False
@@ -158,7 +194,7 @@ class SoundDeviceSink:
         self.sample_rate = sample_rate
         self.blocksize = blocksize
         self.frames_written = 0
-        self.errors: list[str] = []
+        self.errors: list[str] = _ErrorLog()
         self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
         self._aborted = False
@@ -321,6 +357,17 @@ class StreamingPlayer:
         return self._sink.errors
 
     def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        """Write the segment to the sink in chunks, returning when it has
+        finished or when it has been interrupted.
+
+        One window is accepted here rather than closed. A `stop()` landing
+        between the interrupt check below and the `self._sink.start()` just
+        after it will open a stream and write one more chunk before the next
+        check returns — about 85 ms at 2048 frames and 24 kHz. Closing it
+        means moving the interrupt decision inside the sink, which is a much
+        larger change than one chunk nobody will hear as a defect is worth.
+        Measured and accepted, not missed.
+        """
         self.interrupted = False
         for start in range(0, len(audio), self._chunk):
             while not self._resume.wait(timeout=0.05):

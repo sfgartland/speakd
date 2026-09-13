@@ -171,6 +171,8 @@ class FakeStream:
         self.abort_calls = 0
         self.close_calls = 0
         self.fail_next_write: Exception | None = None
+        self.fail_next_abort: Exception | None = None
+        self.fail_next_close: Exception | None = None
         self.entered_write = threading.Event()
         self.woke_in_write = threading.Event()
         self._gate = threading.Event()
@@ -229,6 +231,9 @@ class FakeStream:
                 self._writers -= 1
 
     def abort(self) -> None:
+        if self.fail_next_abort is not None:
+            failure, self.fail_next_abort = self.fail_next_abort, None
+            raise failure
         with self._lock:
             if self.state == "closed":
                 raise FakePortAudioError("abort() on a closed stream")
@@ -245,6 +250,9 @@ class FakeStream:
         self._gate.set()
 
     def close(self) -> None:
+        if self.fail_next_close is not None:
+            failure, self.fail_next_close = self.fail_next_close, None
+            raise failure
         with self._lock:
             if self._writers:
                 # Pa_CloseStream on a stream another thread is blocked writing
@@ -600,3 +608,114 @@ def test_close_is_terminal_for_both_sinks(either_sink: AudioSink) -> None:
         either_sink.write(_frames(4))
     with pytest.raises(RuntimeError):
         either_sink.start()
+
+
+# --------------------------------------------------------------------------
+# Teardown that fails. stop() and close() record rather than raise for the
+# same reason write() does: a hush that crashes the utterance is worse than
+# the hush. The stream is unusable either way, so the sink goes on saying so
+# instead of going on failing.
+# --------------------------------------------------------------------------
+
+
+def test_sounddevice_sink_records_an_abort_that_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A device that disappears mid-utterance must not turn the hush that
+    follows into a traceback."""
+    from speakd.player import SoundDeviceSink
+
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    sink.write(_frames(4))
+    streams[0].fail_next_abort = FakePortAudioError("device vanished")
+
+    sink.stop()  # must not raise
+
+    assert any("could not abort the stream" in message for message in sink.errors)
+
+    # and the sink is still reusable through start(), which is what the
+    # contract promises whether or not the abort landed.
+    sink.start()
+    sink.write(_frames(4))
+    assert len(streams) == 2
+    assert sink.frames_written == 8
+
+
+def test_sounddevice_sink_records_a_reap_that_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reaping is housekeeping. Its failure is recorded, but it must not
+    abort the utterance that triggered it."""
+    from speakd.player import SoundDeviceSink
+
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    sink.write(_frames(4))
+    sink.stop()
+    streams[0].fail_next_close = FakePortAudioError("close failed")
+
+    sink.start()  # must not raise
+    sink.write(_frames(4))
+
+    assert any("could not close the aborted stream" in message for message in sink.errors)
+    assert len(streams) == 2
+    assert streams[1].state == "running"
+    assert sink.frames_written == 8
+
+
+def test_sounddevice_sink_records_a_close_that_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """close() is terminal even when the device refuses to be released:
+    a sink that stayed writable after a failed close would keep writing to a
+    stream nobody owns."""
+    from speakd.player import SoundDeviceSink
+
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    streams[0].fail_next_close = FakePortAudioError("close failed")
+
+    sink.close()  # must not raise
+
+    assert any("could not close the stream" in message for message in sink.errors)
+    with pytest.raises(RuntimeError):
+        sink.write(_frames(4))
+    with pytest.raises(RuntimeError):
+        sink.start()
+
+
+def test_sounddevice_sink_records_an_abort_that_fails_on_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """close() aborts first to release any blocked writer. A failure there is
+    recorded and the close goes ahead: the point of close() is the release."""
+    from speakd.player import SoundDeviceSink
+
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    streams[0].fail_next_abort = FakePortAudioError("abort failed")
+
+    sink.close()  # must not raise
+
+    assert any("could not abort the stream on close" in message for message in sink.errors)
+    assert streams[0].close_calls == 1, "the device must still be released"
+    with pytest.raises(RuntimeError):
+        sink.start()
+
+
+def test_both_sinks_bound_the_error_log(either_sink: AudioSink) -> None:
+    """A device that has begun failing fails repeatedly, and this daemon runs
+    for days. The log has to keep answering "what went wrong" without
+    answering it ten thousand times."""
+    from speakd.player import _MAX_ERRORS
+
+    either_sink.start()
+    either_sink.stop()
+    # Distinct frame counts, so "kept the first N" is distinguishable from
+    # "kept the last N" — with identical messages it would not be.
+    for n in range(1, _MAX_ERRORS + 201):
+        either_sink.write(_frames(n))
+
+    assert len(either_sink.errors) == _MAX_ERRORS + 1, "the first N, plus one running tally"
+    assert either_sink.errors[-1] == "... and 200 further errors not recorded"
+    assert "dropped 1 frames" in either_sink.errors[0], "the first are kept, not the last"
+    assert f"dropped {_MAX_ERRORS} frames" in either_sink.errors[_MAX_ERRORS - 1]
