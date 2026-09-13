@@ -19,3 +19,13 @@ def test_job_defaults_to_foreground_profile() -> None:
     assert job.profile == "default"
     assert job.segments == []
     assert Role.FOREGROUND.value == "foreground"
+
+
+def test_piece_keeps_provenance_when_rewritten() -> None:
+    from dataclasses import replace
+
+    from speakd.model import Piece
+
+    original = Piece(span=Span(0, 14), spoken="@Stiegler-1994")
+    rewritten = replace(original, spoken="Stiegler, nineteen ninety-four")
+    assert rewritten.span == original.span

@@ -27,6 +27,19 @@ class Span:
 
 
 @dataclass(frozen=True)
+class Piece:
+    """A unit of text and where it came from.
+
+    Transforms map pieces to pieces. Rewriting changes `spoken` and keeps
+    `span`, so provenance survives arbitrary rewriting and follow-along
+    display keeps working under a profile that rewrites heavily.
+    """
+
+    span: Span
+    spoken: str
+
+
+@dataclass(frozen=True)
 class Segment:
     """One synthesised unit, and where it came from.
 
