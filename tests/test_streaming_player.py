@@ -76,3 +76,59 @@ def test_empty_audio_is_harmless() -> None:
     player.play(audio(0), 24000)
     assert sink.frames_written == 0
     assert player.interrupted is False
+
+
+def test_pause_suspends_and_resume_continues() -> None:
+    import threading
+    import time
+
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.pause()
+    done = threading.Event()
+
+    def run() -> None:
+        player.play(audio(1000), 24000)
+        done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    assert not done.is_set(), "paused playback should not finish"
+    assert player.paused is True
+    written_while_paused = sink.frames_written
+    player.resume()
+    assert done.wait(timeout=5.0), "resume should let playback finish"
+    thread.join(timeout=5.0)
+    assert sink.frames_written == 1000
+    assert written_while_paused < 1000
+
+
+def test_stop_while_paused_does_not_deadlock() -> None:
+    import threading
+    import time
+
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.pause()
+    done = threading.Event()
+
+    def run() -> None:
+        player.play(audio(10_000), 24000)
+        done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    player.stop()
+    assert done.wait(timeout=5.0), "stop must release a paused play()"
+    thread.join(timeout=5.0)
+    assert player.interrupted is True
+
+
+def test_resume_without_pause_is_harmless() -> None:
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.resume()
+    player.play(audio(100), 24000)
+    assert sink.frames_written == 100

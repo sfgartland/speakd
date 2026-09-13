@@ -161,13 +161,22 @@ class StreamingPlayer:
         self._sink = sink
         self._chunk = chunk_frames
         self._interrupt = threading.Event()
+        self._resume = threading.Event()
+        self._resume.set()
         self.frames_played = 0
         self.interrupted = False
+
+    @property
+    def paused(self) -> bool:
+        return not self._resume.is_set()
 
     def play(self, audio: np.ndarray, sample_rate: int) -> None:
         self.interrupted = False
         self._sink.start()
         for start in range(0, len(audio), self._chunk):
+            while not self._resume.wait(timeout=0.05):
+                if self._interrupt.is_set():
+                    break
             if self._interrupt.is_set():
                 self._interrupt.clear()
                 self.interrupted = True
@@ -176,6 +185,13 @@ class StreamingPlayer:
             self._sink.write(block)
             self.frames_played += len(block)
 
+    def pause(self) -> None:
+        self._resume.clear()
+
+    def resume(self) -> None:
+        self._resume.set()
+
     def stop(self) -> None:
         self._interrupt.set()
+        self._resume.set()
         self._sink.stop()
