@@ -101,7 +101,9 @@ class Daemon:
         # Cleared before the join so a second stop() is a no-op rather than a
         # second sentinel left in the queue for a later start() to trip over.
         self._worker = None
-        self._cancel.set()
+        with self._idle:
+            cancel = self._cancel
+        cancel.set()
         self._jobs.put(None)
         worker.join(timeout=5.0)
 
@@ -122,7 +124,11 @@ class Daemon:
         if request.verb is Verb.ENQUEUE:
             return self._enqueue(request)
         if request.verb in (Verb.HUSH, Verb.CANCEL):
-            self._cancel.set()
+            # Read under the lock, set outside it: player.stop() can block on
+            # a real device, and holding the lock there would stall enqueue.
+            with self._idle:
+                cancel = self._cancel
+            cancel.set()
             self.player.stop()
             return Response(ok=True)
         if request.verb in (Verb.PAUSE, Verb.RESUME, Verb.SEEK):
@@ -137,7 +143,9 @@ class Daemon:
             return Response(ok=True)
         if request.verb is Verb.SET_PRIORITY:
             raw_priority = request.payload.get("priority")
-            if not isinstance(raw_priority, int):
+            # bool is a subclass of int: JSON `true` would otherwise silently
+            # set priority 1, which is a real standing, not a no-op.
+            if not isinstance(raw_priority, int) or isinstance(raw_priority, bool):
                 return Response(ok=False, error="priority must be an integer")
             self.channels.set_priority(request.source_id, raw_priority)
             return Response(ok=True)
@@ -160,6 +168,13 @@ class Daemon:
             SpeechRequest(request.source_id, text, kind), channel, profile.interrupt_on
         )
         if not decision.speak:
+            # On the bus as well as in the response: a GUI watching the event
+            # stream has to be able to show why nothing was said.
+            self._publish(
+                "declined",
+                request.source_id,
+                {"text": text, "kind": kind, "reason": decision.reason},
+            )
             return Response(ok=True, data={"spoken": False, "reason": decision.reason})
         job = _Job(
             source_id=request.source_id,
@@ -181,26 +196,50 @@ class Daemon:
     def _run(self) -> None:
         try:
             self._consume()
-        except Exception:
+        except BaseException:  # noqa: B036 - reported, and the thread ends anyway
             # Unreachable by design — `_consume` already contains the one
-            # failure that is expected. A worker that exits anyway takes every
-            # later utterance with it, so it leaves a traceback behind rather
-            # than a silent daemon.
+            # failure that is expected. BaseException rather than Exception
+            # because `threading` discards a SystemExit raised on a worker
+            # thread without so much as a traceback, and a plugin that runs
+            # argparse raises exactly that.
             self._publish("error", "", {"message": f"speech worker died: {format_exc()}"})
+        finally:
+            # However the worker leaves, it closes the daemon behind it. A
+            # daemon with no worker that still answers `ok` to enqueue is the
+            # silent-loss failure this module exists to prevent.
+            self._retire()
+
+    def _retire(self) -> None:
+        """Shut the door: refuse new speech, report what was queued, wake waiters."""
+        with self._idle:
+            self._running = False
+        # Cleared so start() can bring the daemon back rather than finding a
+        # worker attribute that no longer refers to a living thread.
+        self._worker = None
+        try:
+            self._discard_queued()
+        finally:
+            with self._idle:
+                # Whatever the bookkeeping did on the way down, nothing is in
+                # flight now: a waiter must not block on a phantom job.
+                self._pending = 0
+                self._idle.notify_all()
 
     def _consume(self) -> None:
         while True:
             job = self._jobs.get()
             if job is None:
-                self._discard_queued()
+                # Retirement, including the drain, happens in `_run`'s finally
+                # — one path down whether the worker was stopped or died.
                 return
             try:
                 self._speak(job)
-            except Exception as exc:
+            except BaseException as exc:  # noqa: B036 - one utterance, not the process
                 # The worker dying is the cardinal failure here: the daemon
                 # would go quiet forever with nothing to see. A bad profile
-                # costs one utterance, not the process.
-                self._publish("error", job.source_id, {"message": f"speech failed: {exc}"})
+                # costs one utterance, not the process — including a profile
+                # that raises SystemExit, which `except Exception` lets past.
+                self._publish("error", job.source_id, {"message": f"speech failed: {exc!r}"})
             finally:
                 self._finish_one()
 
@@ -218,14 +257,25 @@ class Daemon:
 
     def _finish_one(self) -> None:
         with self._idle:
-            self._pending -= 1
+            # Floored: a double release would otherwise drive the count
+            # negative, where it never reaches zero and wait_idle never returns.
+            self._pending = max(0, self._pending - 1)
             if self._pending == 0:
                 self._idle.notify_all()
 
     def _speak(self, job: _Job) -> None:
+        # First, before anything else can run. A fresh Event per utterance:
+        # reusing one is how a channel goes permanently mute with an empty
+        # timeline and no error. Assigned here rather than after `prepare`
+        # because `prepare` is plugin code and `started` is a synchronous
+        # write to clients: a hush landing in either would otherwise set the
+        # previous, already-consumed utterance's Event and be lost.
+        cancel = threading.Event()
+        with self._idle:
+            self._cancel = cancel
         if not self._running:
-            # stop() can land between this job leaving the queue and the
-            # cancel Event below existing, so the Event alone cannot stop it.
+            # stop() can still land between this job leaving the queue and
+            # the check above, so the Event alone cannot stop it.
             self._publish("error", job.source_id, {"message": _DISCARDED})
             return
         text = f"{job.prefix} {job.text}".strip() if job.prefix else job.text
@@ -233,10 +283,12 @@ class Daemon:
         for message in errors:
             self._publish("error", job.source_id, {"message": message})
         self._publish("started", job.source_id, {"text": text})
-        # A fresh Event per utterance: reusing one is how a channel goes
-        # permanently mute with an empty timeline and no error.
-        cancel = threading.Event()
-        self._cancel = cancel
+        if cancel.is_set():
+            # Hushed during `prepare` or by a subscriber of `started` itself.
+            # `speak()` would notice this too, but only after synthesising and
+            # playing the first segment.
+            self._publish("finished", job.source_id, {"cancelled": True, "aborted": False})
+            return
         try:
             result = speak(
                 pieces,
