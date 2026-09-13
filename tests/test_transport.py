@@ -288,9 +288,18 @@ def test_the_ack_precedes_an_event_forced_during_a_second_subscribe(tmp_path: Pa
     """Reproduces the same race, but on a re-subscribe over one connection.
 
     The first subscribe must complete cleanly (nothing forced): it exists
-    only to leave `acked` set True from the first ack, which is exactly the
-    stale state a second subscribe on the same connection must not inherit.
-    The forced publish happens only on the second subscribe's registration.
+    only to leave the connection with a writer thread already running and an
+    ack already behind it, which is the stale state a second subscribe on the
+    same connection must not inherit. The forced publish happens only on the
+    second subscribe's registration.
+
+    The pause after that publish is what makes this a reproduction rather
+    than a hope. Events no longer go out on the publishing thread: the forced
+    one lands in the outbox, where the connection thread would otherwise win
+    the race to the ack simply by being quicker. Held here, the writer has
+    every opportunity to send it first, and only `ack_owed` stops it. Without
+    that wait the client reads an event line where the subscribe's response
+    should be, and `decode_response` rejects it.
     """
     bus = EventBus()
     original_subscribe = bus.subscribe
@@ -304,6 +313,7 @@ def test_the_ack_precedes_an_event_forced_during_a_second_subscribe(tmp_path: Pa
         subscription = original_subscribe(callback, kinds=kinds)
         if call_count == 2:
             bus.publish(Event(kind="position", source_id="s", data={"forced": "second"}))
+            time.sleep(0.3)
         return subscription
 
     bus.subscribe = racing_subscribe  # type: ignore[method-assign]
