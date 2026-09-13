@@ -68,3 +68,38 @@ def test_negative_speed_is_rejected(capsys) -> None:  # type: ignore[no-untyped-
     code = main(["say", "x", "--speed", "-1", "--dry-run"])
     assert code != 0
     assert "speed" in capsys.readouterr().err
+
+
+def test_say_exits_nonzero_when_a_segment_failed(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A partial failure must be distinguishable from a clean run."""
+    from speakd import cli
+    from speakd.pipeline import SpeechResult
+    from speakd.timeline import Timeline
+
+    def failing_speak(*args: object, **kwargs: object) -> SpeechResult:
+        return SpeechResult(timeline=Timeline(), errors=["'One.': engine exploded"])
+
+    monkeypatch.setattr(cli, "speak", failing_speak)
+
+    assert cli.main(["say", "One. Two.", "--dry-run"]) == 1
+    assert "engine exploded" in capsys.readouterr().err
+
+
+def test_say_exits_zero_when_nothing_failed() -> None:
+    assert main(["say", "One. Two.", "--dry-run"]) == 0
+
+
+def test_missing_kokoro_extra_is_reported_not_traced(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Constructing KokoroEngine is what imports kokoro; without the extra
+    that raised ModuleNotFoundError straight out of main()."""
+    from speakd.synth import kokoro_engine
+
+    def missing(*args: object, **kwargs: object) -> object:
+        raise ModuleNotFoundError("No module named 'kokoro'")
+
+    monkeypatch.setattr(kokoro_engine, "KokoroEngine", missing)
+
+    # Not a dry run, but it returns before touching an audio device.
+    code = main(["say", "One."])
+    assert code != 0
+    assert "kokoro extra is not installed" in capsys.readouterr().err

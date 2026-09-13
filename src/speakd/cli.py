@@ -69,7 +69,16 @@ def _say(args: argparse.Namespace) -> int:
         from speakd.player import SoundDevicePlayer
         from speakd.synth.kokoro_engine import KokoroEngine
 
-        engine = KokoroEngine()
+        try:
+            engine = KokoroEngine()
+        except ModuleNotFoundError:
+            # Constructing the engine is what imports kokoro, so without the
+            # extra this arrived as an uncaught traceback.
+            print(
+                "speakctl: the kokoro extra is not installed (uv sync --extra kokoro)",
+                file=sys.stderr,
+            )
+            return 2
         player = SoundDevicePlayer()
 
     pieces = [Piece(span=Span(0, len(text)), spoken=text)]
@@ -103,7 +112,10 @@ def _say(args: argparse.Namespace) -> int:
         )
     for message in result.errors:
         print(f"speakctl: {message}", file=sys.stderr)
-    return 0
+    # 0 spoke cleanly, 1 spoke but something failed, 2 never got started.
+    # An agent driving this needs to tell a partial failure from a clean run,
+    # and a silently dropped segment is exactly what it must not miss.
+    return 1 if result.errors else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
