@@ -17,15 +17,34 @@ def piece(text: str) -> Piece:
 
 
 class SleepingPlayer(RecordingPlayer):
-    """A sink that takes real time, so overlap can be measured."""
+    """A sink that takes real time, so overlap can be measured.
+
+    Records when each play() finished as well as when it started, so overlap
+    can be shown by ordering two observed events rather than by comparing
+    total runtime against a constant.
+    """
 
     def __init__(self, cost: float) -> None:
         super().__init__()
         self.cost = cost
+        self.finished: list[float] = []
 
     def play(self, audio: np.ndarray, sample_rate: int) -> None:
         super().play(audio, sample_rate)
         time.sleep(self.cost)
+        self.finished.append(time.monotonic())
+
+
+class TimedEngine(FakeEngine):
+    """Records when each synthesize() call began."""
+
+    def __init__(self, synthesis_cost: float) -> None:
+        super().__init__(synthesis_cost=synthesis_cost)
+        self.started: list[float] = []
+
+    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+        self.started.append(time.monotonic())
+        return super().synthesize(text, voice, speed)
 
 
 class ExplodingEngine(FakeEngine):
@@ -114,14 +133,27 @@ def test_timeline_offsets_accumulate() -> None:
 
 def test_synthesis_overlaps_playback() -> None:
     # Four segments, each costing 0.05s to synthesise and 0.05s to play.
-    # Serial would be ~0.40s; overlapped should be ~0.25s.
     player = SleepingPlayer(cost=0.05)
-    engine = FakeEngine(synthesis_cost=0.05)
+    engine = TimedEngine(synthesis_cost=0.05)
     start = time.monotonic()
     speak([piece("One. Two. Three. Four.")], engine, player)
     elapsed = time.monotonic() - start
+
     assert len(player.played) == 4
-    assert elapsed < 0.35, f"no overlap: {elapsed:.2f}s"
+    assert len(engine.started) == 4
+
+    # The proof: the second unit's synthesis began before the first unit had
+    # finished playing. Nothing serial can do that. It orders two measured
+    # events rather than testing either against a constant, so a contended
+    # runner slows both and the comparison holds.
+    assert engine.started[1] < player.finished[0], (
+        f"synthesis did not run ahead of playback: "
+        f"unit 1 began {engine.started[1] - player.finished[0]:.3f}s after unit 0 finished"
+    )
+
+    # Coarse backstop only, now that the assertion above carries the proof:
+    # serial would be ~0.40s and overlapped measures ~0.25s.
+    assert elapsed < 0.40, f"no overlap: {elapsed:.2f}s"
 
 
 def test_cancel_before_start_plays_nothing() -> None:
