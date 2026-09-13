@@ -23,6 +23,10 @@ class Timeline:
         return len(self._segments)
 
     @property
+    def segments(self) -> tuple[Segment, ...]:
+        return tuple(self._segments)
+
+    @property
     def duration(self) -> float:
         if not self._segments:
             return 0.0
