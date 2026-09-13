@@ -2,7 +2,10 @@
 
 from collections.abc import Sequence
 
+import pytest
+
 from speakd.model import Piece
+from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginContext, PluginHost
 from speakd.plugins.registry import ServiceRegistry
 
@@ -121,3 +124,55 @@ def test_rollback_failure_during_a_failed_setup_is_also_recorded() -> None:
     errors = host.errors()
     assert any("setup failed" in e for e in errors)
     assert any("teardown failed" in e for e in errors)
+
+
+def test_a_spent_context_cannot_register_a_transform() -> None:
+    """A captured context must not inject a transform nobody can unregister."""
+    host = PluginHost(ServiceRegistry())
+    captured: list[PluginContext] = []
+    host.register("p", lambda ctx: captured.append(ctx))
+    host.unregister("p")
+    with pytest.raises(RuntimeError, match="unloaded"):
+        captured[0].transform("late", upper)
+    assert host.transforms() == []
+
+
+def test_a_spent_context_cannot_provide_a_service() -> None:
+    registry = ServiceRegistry()
+    host = PluginHost(registry)
+    captured: list[PluginContext] = []
+    host.register("p", lambda ctx: captured.append(ctx))
+    host.unregister("p")
+    with pytest.raises(RuntimeError, match="unloaded"):
+        captured[0].provide("ghost", "x")
+    assert registry.get("ghost") is None
+
+
+def test_registering_a_name_twice_unloads_the_first_plugin() -> None:
+    host = PluginHost(ServiceRegistry())
+    torn_down: list[str] = []
+
+    def setup(ctx: PluginContext) -> None:
+        ctx.transform("upper", upper)
+        ctx.on_dispose(lambda: torn_down.append("first"))
+
+    host.register("shouty", setup)
+    host.register("shouty", lambda ctx: ctx.transform("upper", upper))
+    assert torn_down == ["first"]
+    assert [t.name for t in host.transforms()] == ["upper"]
+
+
+def test_registering_the_builtins_twice_leaves_nothing_orphaned() -> None:
+    """The concrete case: a second register_builtins() doubled the chain.
+
+    The duplicates outlived unregister, because only the second _Plugin was
+    reachable by name.
+    """
+    host = PluginHost(ServiceRegistry())
+    register_builtins(host)
+    register_builtins(host)
+    assert [t.name for t in host.transforms()] == ["markdown", "pronunciation"]
+    host.unregister("markdown")
+    host.unregister("pronunciation")
+    assert host.transforms() == []
+    assert host.active() == set()

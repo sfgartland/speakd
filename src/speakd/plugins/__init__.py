@@ -45,7 +45,29 @@ class DisposableGroup:
         self._members: list[Disposable] = []
         self._disposed = False
 
+    @property
+    def disposed(self) -> bool:
+        """Whether teardown has already run."""
+        return self._disposed
+
     def add(self, disposable: Disposable) -> None:
+        """Take ownership of `disposable`, disposing it now if the group is spent.
+
+        A disposed group cannot hold anything: whatever it is handed would never
+        be torn down by it. Disposing the newcomer at once keeps the temporal
+        invariant exact -- every registration is still undone -- where appending
+        leaks it. Raising was the alternative, and is rejected here because the
+        other caller of this path is a member registering a teardown *during*
+        teardown: dispose() flips the flag before walking the members, so such a
+        member lands here too, and it would be turned into a second failure on
+        top of whatever it was cleaning up after. It is disposed immediately
+        instead of being dropped by the trailing _members.clear(); if that
+        disposal raises during teardown, the exception surfaces in the caller,
+        where dispose()'s own handler records it.
+        """
+        if self._disposed:
+            disposable.dispose()
+            return
         self._members.append(disposable)
 
     def dispose(self) -> list[str]:

@@ -39,7 +39,7 @@ def test_group_disposes_in_reverse_order() -> None:
             return append_order
 
         group.add(Disposer(make_appender(i)))
-    group.dispose()
+    assert group.dispose() == []
     assert order == [2, 1, 0]
 
 
@@ -77,3 +77,37 @@ def test_group_disposes_the_rest_when_one_raises() -> None:
     assert order == [2, 0]
     assert len(errors) == 1
     assert "teardown failed" in errors[0]
+
+
+def test_group_disposes_a_member_added_after_teardown() -> None:
+    """A spent group cannot hold anything, so it tears down what it is handed."""
+    order: list[str] = []
+    group = DisposableGroup()
+    group.dispose()
+
+    def late() -> None:
+        order.append("late")
+
+    group.add(Disposer(late))
+    assert order == ["late"]
+
+
+def test_a_member_registered_during_teardown_is_not_dropped() -> None:
+    """dispose() flips the flag before walking, so a late add lands on the guard.
+
+    Without it the trailing _members.clear() drops the newcomer silently: a
+    teardown that registers its own follow-up never runs it.
+    """
+    order: list[str] = []
+    group = DisposableGroup()
+
+    def late() -> None:
+        order.append("late")
+
+    def teardown() -> None:
+        order.append("first")
+        group.add(Disposer(late))
+
+    group.add(Disposer(teardown))
+    assert group.dispose() == []
+    assert order == ["first", "late"]

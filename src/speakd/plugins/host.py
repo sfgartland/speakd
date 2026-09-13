@@ -36,10 +36,29 @@ class PluginContext:
             raise LookupError(f"service {name!r} is not available")
         return value
 
+    def _reject_if_spent(self, action: str) -> None:
+        """Refuse to touch the host once this context's group has been disposed.
+
+        A context outlives the plugin that was handed it -- a captured `ctx`, a
+        callback that fires late -- and a registration made through a spent one
+        can never be undone: the group that would have owned the disposer is
+        gone. Registering into the host first and adding the disposer second is
+        what let a spent context inject a live transform, so the guard comes
+        before the host is touched at all. It raises rather than no-ops because
+        a registration that quietly does nothing is exactly the silent failure
+        this host exists to prevent.
+        """
+        if self._group.disposed:
+            raise RuntimeError(
+                f"plugin {self._plugin!r}: cannot {action} after the plugin was unloaded"
+            )
+
     def provide(self, name: str, value: object) -> None:
+        self._reject_if_spent(f"provide service {name!r}")
         self._group.add(self._host.registry.provide(name, value))
 
     def transform(self, name: str, fn: TransformFn, scope: str = "piece") -> None:
+        self._reject_if_spent(f"register transform {name!r}")
         if scope not in ("piece", "job"):
             raise ValueError(f"scope must be 'piece' or 'job', got {scope!r}")
         registered = RegisteredTransform(name=name, fn=fn, scope=scope, plugin=self._plugin)
@@ -83,6 +102,11 @@ class PluginHost:
         setup: Callable[[PluginContext], None],
         requires: Sequence[str] = (),
     ) -> None:
+        # Replacing a name must unload what it held. Overwriting the entry
+        # dropped the old plugin's group and watches on the floor, leaving its
+        # transforms live in the host but owned by nobody: unreachable by
+        # unregister, still resolvable by a profile.
+        self.unregister(name)
         plugin = _Plugin(name=name, setup=setup, requires=tuple(requires))
         self._plugins[name] = plugin
         # Watching before the first evaluation means a provider appearing later
