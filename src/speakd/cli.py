@@ -155,6 +155,13 @@ def _say(args: argparse.Namespace) -> int:
 
     pieces = [Piece(span=Span(0, len(text)), spoken=text)]
 
+    # A missing or failing transform never silences the rest of the
+    # utterance -- the chain just loses that transform's contribution, and
+    # `transformed` below carries on regardless. But an agent driving this
+    # over a shell command reads the exit code, not stderr, so the loss must
+    # still be visible there: both kinds collect into `transform_errors` and
+    # join `result.errors` in deciding the exit code below.
+    transform_errors: list[str] = []
     if args.no_transforms:
         transformed = pieces
     else:
@@ -162,17 +169,13 @@ def _say(args: argparse.Namespace) -> int:
         register_builtins(host)
         chain, missing = resolve_chain(profile, host)
         for name in missing:
-            # A profile naming a transform nobody provides must not silence
-            # the rest of the utterance -- it just loses that transform's
-            # contribution, so this is a warning, not a reason to stop.
-            print(
-                f"speakctl: profile {profile.name!r}: transform {name!r} "
-                "is not provided by any plugin",
-                file=sys.stderr,
-            )
+            message = f"profile {profile.name!r}: transform {name!r} is not provided by any plugin"
+            print(f"speakctl: {message}", file=sys.stderr)
+            transform_errors.append(message)
         chain_result = apply_chain(pieces, chain)
         for message in chain_result.errors:
             print(f"speakctl: {message}", file=sys.stderr)
+        transform_errors.extend(chain_result.errors)
         transformed = chain_result.pieces
 
     result = speak(
@@ -207,8 +210,9 @@ def _say(args: argparse.Namespace) -> int:
         print(f"speakctl: {message}", file=sys.stderr)
     # 0 spoke cleanly, 1 spoke but something failed, 2 never got started.
     # An agent driving this needs to tell a partial failure from a clean run,
-    # and a silently dropped segment is exactly what it must not miss.
-    return 1 if result.errors else 0
+    # and a silently dropped segment -- or a silently dropped transform -- is
+    # exactly what it must not miss.
+    return 1 if (result.errors or transform_errors) else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
