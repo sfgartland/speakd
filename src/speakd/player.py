@@ -155,6 +155,10 @@ class StreamingPlayer:
     clock, and its depth-one queue and drain-to-sentinel teardown are what stop a
     producer thread leaking on every cancellation. This class changes how promptly
     playback can be abandoned, not who rate-limits whom.
+
+    Pause is a property of the player, not of an utterance: it spans segments
+    and survives `stop()`, so a listener who paused stays paused until they
+    say otherwise.
     """
 
     def __init__(self, sink: AudioSink, chunk_frames: int = 2048) -> None:
@@ -186,9 +190,15 @@ class StreamingPlayer:
             self.frames_played += len(block)
 
     def pause(self) -> None:
+        """Suspend playback between chunks; `play()` keeps blocking.
+
+        Pause is sticky: it outlives the current segment and survives
+        `stop()`. See `stop()` for why.
+        """
         self._resume.clear()
 
     def resume(self) -> None:
+        """Take playback up again from where it was suspended."""
         self._resume.set()
 
     def stop(self) -> None:
