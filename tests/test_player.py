@@ -836,3 +836,27 @@ def test_sounddevice_sink_close_does_not_release_a_stream_a_writer_is_inside(
     writer.join(timeout=2.0)
     assert not writer.is_alive()
     assert writer.error is None, f"the released write must not raise: {writer.error!r}"
+
+
+def test_streaming_player_is_pausable() -> None:
+    from speakd.player import FakeSink, Pausable, StreamingPlayer
+
+    assert isinstance(StreamingPlayer(FakeSink()), Pausable)
+
+
+def test_recording_player_is_not_pausable() -> None:
+    from speakd.player import Pausable, RecordingPlayer
+
+    assert not isinstance(RecordingPlayer(), Pausable)
+
+
+def test_a_player_that_cannot_pause_is_still_a_player() -> None:
+    """The point of a separate protocol: no existing player has to change."""
+    from speakd.player import Player, RecordingPlayer
+
+    player: Player = RecordingPlayer()
+    player.play(np.zeros(4, dtype=np.float32), 24000)
+    player.stop()
+    assert isinstance(player, RecordingPlayer)
+    assert len(player.played) == 1
+    assert player.stopped is True

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -20,6 +20,30 @@ class Player(Protocol):
     def play(self, audio: np.ndarray, sample_rate: int) -> None: ...
 
     def stop(self) -> None: ...
+
+
+@runtime_checkable
+class Pausable(Protocol):
+    """A player whose playback can be suspended and taken up again.
+
+    Deliberately separate from `Player`: the pipeline never needs to pause,
+    and folding these into `Player` would make every test double implement
+    two methods and a property it has no use for. The daemon asks with
+    `isinstance` and refuses the verb, naming the player, when the answer is
+    no — "this daemon's player cannot pause" is something a caller can act
+    on, where "not implemented" is not.
+
+    `runtime_checkable` checks only that the attributes exist, not their
+    signatures. That is what is wanted here: the question is whether this
+    player can pause at all.
+    """
+
+    def pause(self) -> None: ...
+
+    def resume(self) -> None: ...
+
+    @property
+    def paused(self) -> bool: ...
 
 
 class RecordingPlayer:
