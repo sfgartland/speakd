@@ -6,13 +6,13 @@
 
 **Architecture:** Pieces are split into segments; a producer thread synthesises one segment ahead while the main thread plays the current one; each played segment is appended to a `Timeline` that maps source spans to playback time. The engine is dumb (one segment in, audio out) so the pipeline owns all timing and ordering, and tests run against a fake engine with no model and no audio device.
 
-**Tech Stack:** Python 3.10–3.13, numpy, kokoro (optional extra), sounddevice (optional extra), pytest, ruff, mypy.
+**Tech Stack:** Python 3.11–3.13, numpy, kokoro (optional extra), sounddevice (optional extra), pytest, ruff, mypy.
 
 **Spec:** `docs/design/2026-09-13-speakd-design.md`
 
 ## Global Constraints
 
-- Python `>=3.10,<3.14` — `misaki`, a kokoro dependency, does not support 3.14.
+- Python `>=3.11,<3.14` — `misaki`, a kokoro dependency, does not support 3.14; `tomllib` is standard library only from 3.11.
 - Core dependencies stay minimal: numpy only. `kokoro`, `sounddevice` and `scipy` live behind the `kokoro` extra; `litellm` behind `llm`.
 - No test may require torch or an audio device. Kokoro tests are skipped when the extra is absent.
 - Imports of optional dependencies happen inside functions, never at module import time.

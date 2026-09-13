@@ -6,7 +6,7 @@
 
 **Architecture:** A service registry plus disposable registrations gives the two composability invariants: unloading a plugin mechanically undoes its side effects, and a plugin activates only while the services it declares are present. Transforms map `Piece` to `Piece`, preserving provenance; a profile names an ordered chain of them.
 
-**Tech Stack:** Python 3.10–3.13, stdlib only (`tomllib` for profiles), pytest, ruff, mypy strict.
+**Tech Stack:** Python 3.11–3.13, stdlib only (`tomllib` for profiles), pytest, ruff, mypy strict.
 
 **Spec:** `docs/design/2026-09-13-speakd-design.md`
 
@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- Python `>=3.10,<3.14` — `misaki`, a kokoro dependency, does not support 3.14.
+- Python `>=3.11,<3.14` — `misaki`, a kokoro dependency, does not support 3.14; `tomllib` is standard library only from 3.11.
 - Core dependencies stay minimal: numpy only. Add nothing to `pyproject.toml`. Profiles use `tomllib` from the standard library.
 - No test may require torch or an audio device.
 - Imports of optional dependencies happen inside functions, never at module import time.

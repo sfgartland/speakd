@@ -163,7 +163,11 @@ State lives under XDG paths (`~/.config/speakd`, `~/.local/state/speakd`).
 Two tiers, chosen by whether the code sits on the path to first audio.
 
 **In-process transforms** (Python, discovered via entry points) run fast and
-synchronously in the pipeline.
+synchronously in the pipeline. **Entry-point discovery belongs to plan 3b**, which
+is the plan that first needs it — the vault pack is specified as separately
+installable, which is impossible without it. Until then the core registers its
+built-ins directly. The loader lands in `PluginHost.register`, so it must be
+written against the same re-registration guard that method already carries.
 
 **Out-of-process effects** subscribe to the event stream and may send control
 verbs. Any language; a crash cannot take audio down.
@@ -191,7 +195,13 @@ deactivates on its own.
 ## Transforms shipped with the core
 
 - **markdown** — headings, lists, code blocks, links, emphasis rendered as
-  something worth hearing rather than stripped of markers.
+  something worth hearing rather than stripped of markers. **Tables are not yet
+  handled** and are read as raw pipes; agent output contains them constantly, so
+  this is a known gap rather than a decision — closing it means either speaking
+  the cells and dropping separator rows, or announcing "Table omitted." Indented
+  four-space code blocks are deliberately read as prose: detecting them was tried
+  and reverted because it swallowed loose list items, and doing it correctly needs
+  list-context tracking.
 - **pronunciation** — the abbreviation, symbol and acronym table. Ported from
   `claude-code-narrator`'s `speak.sh` with attribution; it is good work and
   reinventing it would be worse.
