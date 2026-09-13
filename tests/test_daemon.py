@@ -268,6 +268,55 @@ def test_stop_terminates_with_a_job_in_flight() -> None:
     assert len(player.played) < 4, "stop must cancel the rest of the utterance"
 
 
+class SilenceablePlayer(RecordingPlayer):
+    """A real player in the one respect that matters: only `stop()` cuts `play()`.
+
+    `HoldingPlayer` is released by the test, which is why the test above can
+    pass whether or not `stop()` ever silences anything. Here nothing but
+    `stop()` ends the segment, so a daemon that fails to call it is visible.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reached = threading.Event()
+        self.silenced = threading.Event()
+
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        super().play(audio, sample_rate)
+        self.reached.set()
+        assert self.silenced.wait(timeout=10.0), "play() was never interrupted"
+
+    def stop(self) -> None:
+        super().stop()
+        self.silenced.set()
+
+
+def test_stop_silences_the_player_rather_than_waiting_out_the_utterance() -> None:
+    """Ctrl-C must cut the sentence being spoken, not let it finish.
+
+    A worker cannot leave mid-`play()`, so without the `player.stop()` that
+    HUSH and CANCEL both make, a real device plays the segment out, the 5s
+    join expires, and `stop()` returns while the daemon is still audibly
+    speaking — leaving a worker behind that makes the next `start()` refuse.
+    """
+    player = SilenceablePlayer()
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    d.handle(enqueue("s", "One. Two. Three. Four."))
+    assert player.reached.wait(timeout=5.0), "the worker never started playing"
+
+    began = time.monotonic()
+    d.stop()
+    elapsed = time.monotonic() - began
+
+    assert player.stopped is True, "stop() left the player playing"
+    assert elapsed < 5.0, f"stop() waited out its join instead of silencing ({elapsed:.1f}s)"
+    assert d._worker is None, "the worker outlived stop()"
+    # The consequence a supervisor sees: a daemon that can actually restart.
+    assert d.start().data.get("started") is True
+    d.stop()
+
+
 def test_work_still_queued_when_the_daemon_stops_is_reported() -> None:
     """An accepted utterance that never reaches the engine says so."""
     reached = threading.Event()
@@ -779,3 +828,223 @@ def test_a_base_exception_from_the_player_still_pairs_started_with_finished() ->
     assert kinds.count("started") == 1
     assert kinds.count("finished") == 1, "started went out without a finished"
     assert any("SystemExit" in str(e.data.get("message", "")) for e in seen if e.kind == "error")
+
+
+# --- Consolidation round: reproductions for the stranded sentinel and the leak ---
+
+
+class GatedQueue(queue.Queue[_Job | None]):
+    """Holds a control thread's stop sentinel at a gate the test opens.
+
+    `stop()` reads `_worker` and only then deposits the sentinel. Holding the
+    deposit open lets a retiring worker get in between, which is the whole
+    question: does the sentinel still land, and if it does, who is left to
+    eat it?
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parked = threading.Event()
+        self.gate = threading.Event()
+
+    def put(self, item: _Job | None, block: bool = True, timeout: float | None = None) -> None:
+        if item is None and threading.current_thread().name != "speakd-speech":
+            self.parked.set()
+            assert self.gate.wait(timeout=5.0), "the test never opened the gate"
+        super().put(item, block, timeout)
+
+
+def test_a_stop_racing_a_dying_worker_strands_no_sentinel() -> None:
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    jobs = GatedQueue()
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d._jobs = jobs
+    healthy = d._finish_one
+    calls = [0]
+
+    def boom_once() -> None:
+        calls[0] += 1
+        if calls[0] == 1:
+            raise RuntimeError("bookkeeping exploded")
+        healthy()
+
+    d._finish_one = boom_once  # type: ignore[method-assign]
+    d.start()
+    d.handle(enqueue("s", "One. Two."))
+    assert reached.wait(timeout=5.0), "the worker never started playing"
+
+    stopper = threading.Thread(target=d.stop, daemon=True)
+    stopper.start()
+    assert jobs.parked.wait(timeout=5.0), "stop() never reached its sentinel"
+    # The worker dies and retires with the sentinel still held at the gate.
+    release.set()
+    # Bounded rather than open-ended: a daemon that deposits the sentinel under
+    # the lock leaves the worker blocked on `_retire`, so `_worker` stays put
+    # and this wait is expected to run out. One that deposits it outside the
+    # lock lets the worker retire immediately, and the wait ends at once.
+    deadline = time.monotonic() + 0.3
+    while d._worker is not None and time.monotonic() < deadline:
+        time.sleep(0.001)
+    jobs.gate.set()
+    stopper.join(timeout=10.0)
+    assert not stopper.is_alive(), "stop() never returned"
+
+    # Whichever order won, no sentinel may be left for the next worker to eat.
+    d.start()
+    try:
+        assert d.handle(enqueue("s", "Three.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    assert len(player.played) == 2, "a stranded sentinel closed the restarted daemon"
+
+
+def test_a_subscriber_that_fails_mid_hush_does_not_strand_the_queue() -> None:
+    """`EventBus.publish` swallows a subscriber's Exception, not its BaseException."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    bus = EventBus()
+
+    def explode(event: Event) -> None:
+        if "discarded" in str(event.data.get("message", "")):
+            raise SystemExit(7)
+
+    bus.subscribe(explode, kinds=["error"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("s", "One. Two."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(enqueue("s", "Queued one.")).ok is True
+        assert d.handle(enqueue("s", "Queued two.")).ok is True
+        with pytest.raises(SystemExit):
+            d.handle(Request(verb=Verb.HUSH, source_id="s", payload={}))
+        release.set()
+        assert d.wait_idle(timeout=2.0), (
+            "the hush took jobs off the queue without releasing their count"
+        )
+    finally:
+        release.set()
+        d.stop()
+
+
+def test_cancel_skips_one_utterance_and_lets_the_queue_continue() -> None:
+    """`cancel` is "skip this one"; `hush` is "stop talking". Not synonyms."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("s", "One. Two. Three."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(enqueue("s", "Second.")).ok is True
+        assert d.handle(enqueue("s", "Third.")).ok is True
+        response = d.handle(Request(verb=Verb.CANCEL, source_id="s", payload={}))
+        assert response.ok is True
+        assert response.data["discarded"] == 0, "cancel must leave the queue alone"
+        release.set()
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        release.set()
+        d.stop()
+    # One held segment of the cancelled utterance, then both queued ones.
+    assert len(player.played) == 3
+
+
+def test_start_reports_which_of_the_three_things_happened() -> None:
+    d = Daemon(
+        FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
+    )
+    first = d.start()
+    try:
+        assert first.ok is True
+        assert first.data["started"] is True
+        again = d.start()
+        assert again.ok is True
+        assert again.data["started"] is False
+        assert "already running" in str(again.data["reason"])
+    finally:
+        d.stop()
+
+
+def test_start_refuses_visibly_while_a_previous_worker_is_still_finishing() -> None:
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    worker = d._worker
+    assert worker is not None
+    d.handle(enqueue("s", "One. Two. Three."))
+    assert reached.wait(timeout=5.0), "the worker never started playing"
+    worker.join = lambda timeout=None: None  # type: ignore[method-assign]
+    d.stop()
+    assert worker.is_alive(), "the join was meant to time out"
+
+    refused = d.start()
+    assert refused.ok is False, "a supervisor cannot tell this from 'already running'"
+    assert "not finished" in refused.error
+
+    release.set()
+    deadline = time.monotonic() + 5.0
+    while d._worker is not None and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert d._worker is None, "the worker never retired itself"
+    try:
+        assert d.start().data["started"] is True
+    finally:
+        d.stop()
+
+
+def test_a_thread_that_will_not_start_leaves_the_daemon_recoverable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`can't start new thread` must not wedge the daemon permanently."""
+
+    class UnstartableThread(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    d = Daemon(
+        FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
+    )
+    monkeypatch.setattr(threading, "Thread", UnstartableThread)
+    with pytest.raises(RuntimeError):
+        d.start()
+    monkeypatch.undo()
+    # Rolled back rather than left accepting speech with nothing to consume it.
+    assert d.handle(enqueue("s", "One.")).ok is False
+    assert d.start().data["started"] is True
+    try:
+        assert d.handle(enqueue("s", "One.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+
+
+def test_a_worker_that_is_no_longer_the_daemons_still_reports_its_death() -> None:
+    """The guarded branch of `_retire`: an orphan announces, and changes nothing."""
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["error"])
+    player = RecordingPlayer()
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        # Called from a thread that is not the daemon's worker, which is what
+        # a worker orphaned by a timed-out stop() amounts to.
+        d._retire("Traceback (most recent call last):\n  RuntimeError: boom")
+        assert any("speech worker died" in str(e.data.get("message", "")) for e in seen)
+        assert any("boom" in str(e.data.get("message", "")) for e in seen)
+        # The running daemon is untouched.
+        assert d._running is True
+        assert d._worker is not None
+        assert d.handle(enqueue("s", "One.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    assert len(player.played) == 1

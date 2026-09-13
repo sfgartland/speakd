@@ -22,6 +22,7 @@ class Verb(str, Enum):
     SET_ROLE = "set_role"
     SET_PRIORITY = "set_priority"
     SUBSCRIBE = "subscribe"
+    STATUS = "status"
 
 
 class ProtocolError(Exception):
