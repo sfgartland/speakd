@@ -42,7 +42,7 @@ pub fn plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
 /// Registers every binding in `bindings()` and wires each to emit
 /// `speakd://hotkey`. Call once, from `setup()`.
-pub fn register<R: Runtime>(app: &AppHandle<R>) -> tauri_plugin_global_shortcut::Result<()> {
+pub fn register<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri_plugin_global_shortcut::Error> {
     for (shortcut, action) in bindings() {
         app.global_shortcut()
             .on_shortcut(shortcut, move |app, _shortcut, event| {
