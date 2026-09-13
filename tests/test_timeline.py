@@ -73,3 +73,15 @@ def test_append_rejects_negative_duration() -> None:
     t = Timeline()
     with pytest.raises(ValueError, match="duration"):
         t.append(seg(0, 5, 0.0, -1.0))
+
+
+def test_played_at_defaults_to_none() -> None:
+    segment = seg(0, 5, 0.0, 1.0)
+    assert segment.played_at is None
+
+
+def test_a_segment_can_carry_a_playback_stamp() -> None:
+    from speakd.model import Segment, Span
+
+    stamped = Segment(span=Span(0, 5), text="x", audio_offset=0.0, duration=1.0, played_at=12.5)
+    assert stamped.played_at == 12.5

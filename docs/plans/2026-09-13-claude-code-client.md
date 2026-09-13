@@ -365,9 +365,7 @@ def test_a_corrupt_watermark_reads_as_absent(tmp_path: Path, monkeypatch) -> Non
     assert load("s1") is None
 
 
-def test_a_session_id_with_a_slash_cannot_escape_the_state_dir(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+def test_a_session_id_with_a_slash_cannot_escape_the_state_dir(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path))
     save("../../escaped", Watermark(path="/tmp/t.jsonl", offset=1, uuid="u"))
     assert load("../../escaped") == Watermark(path="/tmp/t.jsonl", offset=1, uuid="u")
