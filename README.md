@@ -43,7 +43,13 @@ domain-specific behaviour out of everyone else's install.
 
 ## Status
 
-Early. The design is settled; the implementation is being written.
+Early — the speaking pipeline works; the daemon and plugin host are next.
+
+Measured on an i7-10510U with Kokoro on CPU (RTF 0.75), on a 417-character
+passage: batching every segment before playing gave 20.2s to first audio.
+Sentence segmentation with play-as-you-go gave 10.9s, with no playback
+underruns. Time-to-first-audio tracks the length of the first segment, which
+is what `--max-chars` bounds.
 
 ## Development
 
