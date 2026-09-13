@@ -11,7 +11,7 @@ dependencies = ["numpy>=1.24"]
 [project.optional-dependencies]
 # Kokoro pulls torch; keep it out of the default install so the core stays light.
 # NOTE: misaki (a kokoro dep) requires Python < 3.14.
-kokoro = ["kokoro", "sounddevice", "numpy", "scipy"]
+kokoro = ["kokoro", "sounddevice", "scipy"]
 llm = ["litellm"]
 
 [project.scripts]

@@ -38,6 +38,12 @@ class Timeline:
             raise ValueError("segment duration must not be negative")
         if self._segments and segment.audio_offset < self.duration - 1e-9:
             raise ValueError("segments must be appended in playback order without overlap")
+        # Order is load-bearing, do not swap these two lines. A reader on
+        # another thread (milestone 2 reads position while synthesis streams)
+        # indexes _segments by a position found in _starts, so _segments must
+        # never be shorter than _starts. Appending the segment first keeps the
+        # worst case at a start that is not visible yet, rather than an index
+        # into a list that does not have it.
         self._segments.append(segment)
         self._starts.append(segment.audio_offset)
 
