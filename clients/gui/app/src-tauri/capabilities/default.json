@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the pinned monitor window. The pin button and hotkey/tray forwarding go through this app's own commands (set_always_on_top, report_state), which are not plugin commands and so are not ACL-gated; the only capability the frontend actually needs is listening for the hotkey/tray events those forward.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:allow-listen"]
+}

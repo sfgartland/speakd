@@ -264,7 +264,7 @@
 
 <div class="win" id="win" data-transport="paused">
 
-  <div class="bar">
+  <div class="bar" data-tauri-drag-region>
     <span class="pip" id="pip"></span>
     <span class="chan">PhD articulation</span>
     <span class="role">foreground</span>
@@ -324,7 +324,7 @@
 
   <div class="err" id="err" hidden>
     <span>&#9888;</span>
-    <span>Profile <code>philosophy</code> wants <code>citations</code> — no plugin provides it.</span>
+    <span id="err-msg">Profile <code>philosophy</code> wants <code>citations</code> — no plugin provides it.</span>
   </div>
 
 </div>
@@ -335,106 +335,202 @@
   sentence follows a short one. Errors appear only when there are any.
 </p>
 
-<script>
-  const SEGMENTS = [
-    { text: "Kant gives the official definition at B25.", dur: 2.31, synth: 1.6 },
-    { text: "He calls transcendental all cognition occupied not so much with objects as with our mode of cognition of objects, insofar as this is to be possible a priori.", dur: 8.42, synth: 6.1 },
-    { text: "The crucial thing is that the term is reflexive, or second order.", dur: 3.55, synth: 2.4 },
-    { text: "It does not name a special class of objects lying beyond the ordinary ones.", dur: 4.48, synth: 5.9 },
-    { text: "It names an inquiry that turns back on cognition itself.", dur: 3.02, synth: 2.1 },
-  ];
+<script type="module">
+  // All of the segment/clock logic that used to live here now lives behind
+  // the Source interface in shared/speakd-source.js, so this window cannot
+  // tell whether it is watching a simulation or a real daemon. What is left
+  // below is a thin controller: it turns { kind, data } events into the same
+  // DOM writes this script always made, and turns button clicks into
+  // source.send(verb, payload) calls.
+  import { resolveSource } from "./shared/speakd-source.js";
 
   const el = (id) => document.getElementById(id);
   const win = el("win");
 
-  let index = 1, within = 2.4, playing = false, hushed = false;
-  let drift = 0.18, rtf = 0.75, queue = 2, raf = null, last = 0;
+  const segments = new Map(); // index -> { text, span_start, span_end, duration, elapsed }
+  const tickEls = new Map(); // index -> <button class="tick">
+  let currentIndex = 0;
+  let playing = null; // null until the first event says otherwise
+  let hushed = false;
+  let message = null;
+  const metrics = { rtf: null, drift: null, queue: null };
 
-  const ticks = SEGMENTS.map((seg, i) => {
+  function ensureSegment(index, info) {
+    segments.set(index, { ...segments.get(index), ...info });
+    if (tickEls.has(index)) return;
     const t = document.createElement("button");
     t.className = "tick";
     t.type = "button";
-    t.style.flex = seg.dur + " 1 0";
-    t.setAttribute("aria-label", "Seek: " + seg.text);
+    // A real position event may not know its own duration yet (see the
+    // interface doc comment in speakd-source.js) — an equal-share flex
+    // basis is the honest fallback rather than guessing a width.
+    t.style.flex = (info.duration ?? 1) + " 1 0";
+    t.setAttribute("aria-label", "Seek: " + (info.text ?? ""));
     t.innerHTML = '<span class="fill"></span>';
-    t.addEventListener("click", () => seek(i));
-    el("scrub").appendChild(t);
-    return t;
-  });
+    t.addEventListener("click", () => seekTo(index));
+    let before = null;
+    for (const [i, existing] of tickEls) if (i > index) { before = existing; break; }
+    el("scrub").insertBefore(t, before);
+    tickEls.set(index, t);
+  }
+
+  function setMetric(id, value, format, level) {
+    const target = el(id);
+    if (value == null) {
+      target.textContent = "—";
+      delete target.dataset.level;
+      return;
+    }
+    target.textContent = format(value);
+    if (level) target.dataset.level = level(value);
+    else delete target.dataset.level;
+  }
 
   function render() {
-    const seg = SEGMENTS[index];
     win.dataset.transport = hushed ? "hushed" : playing ? "playing" : "paused";
 
-    el("prev").textContent = index > 0 ? SEGMENTS[index - 1].text : "";
-    el("now").textContent = seg.text;
-    el("next").textContent = index < SEGMENTS.length - 1 ? SEGMENTS[index + 1].text : "";
+    const prev = segments.get(currentIndex - 1);
+    const now = segments.get(currentIndex);
+    const next = segments.get(currentIndex + 1);
+    el("prev").textContent = prev ? prev.text : "";
+    el("now").textContent = now ? now.text : "";
+    el("next").textContent = next ? next.text : "";
 
-    ticks.forEach((t, i) => {
-      t.dataset.state = hushed ? "ahead" : i < index ? "spent" : i === index ? "lit" : "ahead";
-      t.querySelector(".fill").style.width =
-        hushed ? "0" : i < index ? "100%" : i === index ? (within / seg.dur) * 100 + "%" : "0";
-    });
+    for (const [i, t] of tickEls) {
+      const seg = segments.get(i);
+      t.dataset.state = hushed ? "ahead" : i < currentIndex ? "spent" : i === currentIndex ? "lit" : "ahead";
+      const fill = t.querySelector(".fill");
+      if (hushed || i > currentIndex) fill.style.width = "0";
+      else if (i < currentIndex) fill.style.width = "100%";
+      else fill.style.width = seg && seg.duration ? Math.min(100, ((seg.elapsed ?? 0) / seg.duration) * 100) + "%" : "0";
+    }
 
-    el("rtf").textContent = rtf.toFixed(2) + "×";
-    el("rtf").dataset.level = rtf < 0.85 ? "good" : rtf < 1 ? "warn" : "bad";
-    el("rtf-sub").textContent = rtf < 1
-      ? Math.round((1 - rtf) * 100) + "% spare"
-      : "falling behind";
+    setMetric("rtf", metrics.rtf, (v) => v.toFixed(2) + "×", (v) => (v < 0.85 ? "good" : v < 1 ? "warn" : "bad"));
+    el("rtf-sub").textContent =
+      metrics.rtf == null ? "—" : metrics.rtf < 1 ? Math.round((1 - metrics.rtf) * 100) + "% spare" : "falling behind";
 
-    el("drift").textContent = drift.toFixed(2) + "s";
-    el("drift").dataset.level = drift > 0.6 ? "warn" : "";
+    setMetric("drift", metrics.drift, (v) => v.toFixed(2) + "s", (v) => (v > 0.6 ? "warn" : ""));
 
-    el("queue").textContent = String(queue);
-    el("queue-sub").textContent = queue === 0 ? "clear" : "waiting";
+    el("queue").textContent = metrics.queue == null ? "—" : String(metrics.queue);
+    el("queue-sub").textContent = metrics.queue == null ? "—" : metrics.queue === 0 ? "clear" : "waiting";
 
     el("pip").className = "pip" + (playing ? " live" : hushed ? "" : " held");
-    el("play").textContent = playing ? "Pause" : hushed ? "Again" : "Play";
+    const canReplay = source.capabilities.replay;
+    el("play").textContent = playing ? "Pause" : hushed ? (canReplay ? "Again" : "Play") : "Play";
+    el("play").disabled = hushed && !canReplay;
+    el("play").title = hushed && !canReplay ? "Nothing queued — waiting for another source to speak" : "";
     el("back").disabled = hushed;
     el("fwd").disabled = hushed;
     el("hush").disabled = hushed;
-    el("err").hidden = !hushed;
+    el("err").hidden = !message;
+    if (message) el("err-msg").innerHTML = message;
+
+    reportState();
   }
 
-  function tick(now) {
-    if (!playing) return;
-    const dt = Math.min((now - last) / 1000, 0.25);
-    last = now;
-    within += dt;
-
-    const next = SEGMENTS[index + 1];
-    if (next) {
-      const slack = SEGMENTS[index].dur - next.synth;
-      drift = Math.max(0, drift + (slack < 0 ? dt * 0.22 : -dt * 0.12));
-      rtf = Math.min(1.12, Math.max(0.6, next.synth / SEGMENTS[index].dur));
-    }
-
-    if (within >= SEGMENTS[index].dur) {
-      within = 0;
-      if (index < SEGMENTS.length - 1) { index++; }
-      else { playing = false; within = SEGMENTS[index].dur; queue = Math.max(0, queue - 1); }
+  function handleEvent(event) {
+    const data = event.data ?? {};
+    switch (event.kind) {
+      case "started":
+        hushed = false;
+        message = null;
+        for (const seg of data.segments ?? []) {
+          ensureSegment(seg.index, {
+            text: seg.text,
+            span_start: seg.span_start,
+            span_end: seg.span_end,
+            duration: seg.duration,
+          });
+        }
+        break;
+      case "position":
+        currentIndex = data.index;
+        ensureSegment(data.index, {
+          text: data.text,
+          span_start: data.span_start,
+          span_end: data.span_end,
+          duration: data.duration ?? segments.get(data.index)?.duration ?? null,
+          elapsed: data.elapsed ?? 0,
+        });
+        if (typeof data.playing === "boolean") playing = data.playing;
+        else if (playing === null) playing = true; // a real daemon does not say; a position event implies "yes"
+        break;
+      case "metrics":
+        Object.assign(metrics, data);
+        break;
+      case "error":
+        message = data.message;
+        break;
+      case "declined":
+        message = data.reason;
+        break;
+      case "finished":
+        if (data.cancelled) { hushed = true; playing = false; }
+        break;
+      default:
+        return; // unknown/forward-compatible event kind — ignore rather than throw
     }
     render();
-    raf = requestAnimationFrame(tick);
   }
 
-  function start() {
-    if (playing) return;
-    if (hushed) { hushed = false; index = 0; within = 0; drift = 0; queue = 2; }
-    playing = true; last = performance.now();
-    raf = requestAnimationFrame(tick); render();
+  function seekTo(index) {
+    const seg = segments.get(index);
+    if (!seg) return;
+    source.send("seek", { offset: seg.span_start }).then((res) => {
+      if (!res.ok) { message = res.error; render(); }
+    });
   }
-  function pause() { playing = false; if (raf) cancelAnimationFrame(raf); render(); }
-  function seek(i) { index = i; within = 0; hushed = false; render(); }
 
-  el("play").addEventListener("click", () => (playing ? pause() : start()));
-  el("back").addEventListener("click", () => seek(Math.max(0, index - 1)));
-  el("fwd").addEventListener("click", () => seek(Math.min(SEGMENTS.length - 1, index + 1)));
-  el("hush").addEventListener("click", () => { pause(); hushed = true; queue = 0; render(); });
-  el("pin").addEventListener("click", (e) => {
+  // ---- Tauri bridge: no-ops entirely when this page is a plain browser tab ----
+  const tauri = () => (typeof window !== "undefined" ? window.__TAURI__ : undefined);
+
+  async function invoke(cmd, args) {
+    const t = tauri();
+    if (!t) return;
+    try { await t.core.invoke(cmd, args); } catch (err) { console.warn("speakd: invoke failed", cmd, err); }
+  }
+
+  function reportState() {
+    invoke("report_state", { state: hushed ? "hushed" : playing ? "playing" : "paused" });
+  }
+
+  function handleShellAction(action) {
+    if (action === "play_pause") el("play").click();
+    else if (action === "hush") el("hush").click();
+  }
+
+  const tauriApi = tauri();
+  if (tauriApi) {
+    tauriApi.event.listen("speakd://hotkey", (evt) => handleShellAction(evt.payload));
+    tauriApi.event.listen("speakd://tray", (evt) => handleShellAction(evt.payload));
+  }
+
+  // ---- wire the mockup's existing controls to verbs instead of local state ----
+  el("play").addEventListener("click", async () => {
+    if (el("play").disabled) return;
+    const res = await source.send(playing ? "pause" : "resume", {});
+    if (!res.ok) { message = res.error; render(); }
+  });
+  el("back").addEventListener("click", () => {
+    const seg = segments.get(currentIndex - 1);
+    if (seg) seekTo(currentIndex - 1);
+  });
+  el("fwd").addEventListener("click", () => {
+    const seg = segments.get(currentIndex + 1);
+    if (seg) seekTo(currentIndex + 1);
+  });
+  el("hush").addEventListener("click", async () => {
+    const res = await source.send("hush", {});
+    if (!res.ok) { message = res.error; render(); }
+  });
+  el("pin").addEventListener("click", async (e) => {
     const b = e.currentTarget;
-    b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    const pressed = b.getAttribute("aria-pressed") !== "true";
+    b.setAttribute("aria-pressed", pressed ? "true" : "false");
+    await invoke("set_always_on_top", { value: pressed });
   });
 
-  render();
+  // ---- the one-line choice the whole interface exists for ----
+  const source = await resolveSource();
+  source.subscribe(handleEvent);
 </script>

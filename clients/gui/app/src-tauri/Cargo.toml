@@ -1,0 +1,21 @@
+[package]
+name = "speakd-shell"
+version = "0.1.0"
+description = "Desktop shell for speakd: window, global hotkeys, and system tray around the pinned monitor"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+# Desktop-only: no [lib] target. Tauri's lib+bin split exists for mobile,
+# which this shell does not target — a single binary keeps this thin.
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+# Pinned explicitly per the task's instructions, not left to float on "2".
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2.3.2"
+tauri-plugin-window-state = "2.4.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
