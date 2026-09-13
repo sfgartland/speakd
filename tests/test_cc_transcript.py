@@ -78,6 +78,56 @@ def test_an_assistant_message_with_no_content_list_carries_no_text() -> None:
     assert [(r.uuid, r.text) for r in records] == [("a", "")]
 
 
+def corrupt_line_with_a_carriage_return() -> bytes:
+    """A complete line, terminated by \n, carrying a raw CR inside it.
+
+    JSON forbids unescaped control characters, so only a corrupt line can
+    look like this -- which is exactly the case the skip-and-count rule
+    promises to survive.
+    """
+    return b'{"type":"assistant","uuid":"bad","text":"half\rwritten"}\n'
+
+
+def test_a_carriage_return_inside_a_corrupt_line_does_not_stall_the_read() -> None:
+    """`bytes.splitlines` breaks on \r as well as \n, so a stray CR splits one
+    corrupt line into a fragment that is not \n-terminated. Treating that as
+    the trailing partial line stops the read there and discards the rest of
+    the chunk *unconsumed* -- the offset never moves past the stray byte and
+    the session goes silent for good, rather than losing one sentence.
+    """
+    chunk = line(uuid="a") + corrupt_line_with_a_carriage_return() + line(uuid="b")
+    records, consumed = parse(chunk)
+    assert [r.uuid for r in records] == ["a", "b"]
+    assert consumed == len(chunk)
+
+
+def test_reading_forward_from_the_offset_makes_progress_past_a_carriage_return() -> None:
+    """The property the offset exists for, stated as a drain: repeated reads
+    from the returned offset must reach the end of the chunk.
+    """
+    chunk = line(uuid="a") + corrupt_line_with_a_carriage_return() + line(uuid="b")
+    offset = 0
+    seen: list[str] = []
+    for _ in range(5):
+        records, consumed = parse(chunk[offset:])
+        seen += [r.uuid for r in records]
+        if consumed == 0:
+            break
+        offset += consumed
+    assert offset == len(chunk)
+    assert seen == ["a", "b"]
+
+
+def test_a_transcript_written_with_crlf_endings_still_parses() -> None:
+    """The other side of splitting strictly on \n: a CR left at the end of a
+    line is JSON whitespace, so CRLF transcripts must keep working.
+    """
+    chunk = line(uuid="a").replace(b"\n", b"\r\n") + line(uuid="b").replace(b"\n", b"\r\n")
+    records, consumed = parse(chunk)
+    assert [r.uuid for r in records] == ["a", "b"]
+    assert consumed == len(chunk)
+
+
 def test_user_records_are_kept_but_carry_no_text() -> None:
     chunk = line(type="user", uuid="u", message={"role": "user", "content": "hello"})
     records, _ = parse(chunk)

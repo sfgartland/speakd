@@ -30,7 +30,10 @@ def user(uuid: str) -> str:
 
 
 def write(path: Path, *lines: str) -> None:
-    path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    # newline="" so the fixture is not newline-translated on write: these
+    # tests assert byte offsets, and a writer that turned "\n" into os.linesep
+    # would shift every one of them by a byte per line.
+    path.write_text("".join(line + "\n" for line in lines), encoding="utf-8", newline="")
 
 
 def test_without_a_watermark_only_the_current_turn_is_spoken(tmp_path: Path) -> None:
@@ -52,7 +55,7 @@ def test_a_watermark_resumes_where_it_stopped(tmp_path: Path) -> None:
     _, first = new_text(transcript, None)
     assert first is not None
 
-    with transcript.open("a", encoding="utf-8") as handle:
+    with transcript.open("a", encoding="utf-8", newline="") as handle:
         handle.write(assistant("a2", "Second.") + "\n")
     text, second = new_text(transcript, first)
     assert text == "Second."
@@ -71,7 +74,7 @@ def test_nothing_new_reads_as_empty_and_no_new_watermark(tmp_path: Path) -> None
 def test_a_half_written_line_waits_for_its_newline(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     write(transcript, assistant("a1", "Complete."))
-    with transcript.open("a", encoding="utf-8") as handle:
+    with transcript.open("a", encoding="utf-8", newline="") as handle:
         handle.write('{"type":"assistant","uuid":"a2"')
     text, mark = new_text(transcript, None)
     assert text == "Complete."
@@ -138,7 +141,7 @@ def test_a_resumed_read_counts_its_offset_from_where_it_resumed(tmp_path: Path) 
     _, first = new_text(transcript, None)
     assert first is not None
 
-    with transcript.open("a", encoding="utf-8") as handle:
+    with transcript.open("a", encoding="utf-8", newline="") as handle:
         handle.write(assistant("a2", "Second.") + "\n")
     text, second = new_text(transcript, first)
     assert text == "Second."

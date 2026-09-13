@@ -64,13 +64,22 @@ def parse(chunk: bytes) -> tuple[list[Record], int]:
     returned offset and sees that line whole next time. A line that is
     complete but unparseable is skipped *and* counted: stopping forever on
     one bad byte loses every later sentence, which is the worse failure.
+
+    The split is strictly on `b"\n"`, never `splitlines`, which also breaks
+    on a bare `\r`. A stray CR inside one corrupt line would otherwise yield
+    a fragment that is not `\n`-terminated, read as the trailing partial
+    line, and everything after it in the chunk would be discarded
+    *unconsumed* -- the offset would never move past that byte and the
+    session would fall silent for good. A CR left at the end of a line by a
+    CRLF writer is JSON whitespace and parses fine.
     """
     records: list[Record] = []
     consumed = 0
-    for raw in chunk.splitlines(keepends=True):
-        if not raw.endswith(b"\n"):
-            break
-        consumed += len(raw)
+    lines = chunk.split(b"\n")
+    # Every element but the last was terminated by the newline we split on;
+    # the last is whatever follows the final newline, complete or not.
+    for raw in lines[:-1]:
+        consumed += len(raw) + 1
         try:
             body = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
