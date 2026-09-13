@@ -9,6 +9,7 @@ from functools import partial
 from speakd.model import Piece
 from speakd.plugins import Disposable, DisposableGroup, Disposer
 from speakd.plugins.registry import ServiceRegistry
+from speakd.transforms import Scope
 
 TransformFn = Callable[[Sequence[Piece]], Sequence[Piece]]
 
@@ -17,7 +18,11 @@ TransformFn = Callable[[Sequence[Piece]], Sequence[Piece]]
 class RegisteredTransform:
     name: str
     fn: TransformFn
-    scope: str
+    # Inert for now: apply_chain runs every transform in profile order and
+    # ignores this. Honouring it -- letting piece-scoped transforms stream while
+    # a job-scoped one gates the whole job -- is the daemon scheduler's work,
+    # and this field is what it will read when that lands.
+    scope: Scope
     plugin: str
 
 
@@ -57,8 +62,10 @@ class PluginContext:
         self._reject_if_spent(f"provide service {name!r}")
         self._group.add(self._host.registry.provide(name, value))
 
-    def transform(self, name: str, fn: TransformFn, scope: str = "piece") -> None:
+    def transform(self, name: str, fn: TransformFn, scope: Scope = "piece") -> None:
         self._reject_if_spent(f"register transform {name!r}")
+        # Typed as Scope so a typo is a type error at the call site; checked
+        # anyway, because a plugin loaded at runtime never met mypy.
         if scope not in ("piece", "job"):
             raise ValueError(f"scope must be 'piece' or 'job', got {scope!r}")
         registered = RegisteredTransform(name=name, fn=fn, scope=scope, plugin=self._plugin)

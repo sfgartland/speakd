@@ -4,10 +4,11 @@ from collections.abc import Sequence
 
 from speakd.model import Piece, Span
 from speakd.plugins.host import RegisteredTransform
+from speakd.transforms import Scope
 from speakd.transforms.chain import apply_chain
 
 
-def registered(name: str, fn, scope: str = "piece") -> RegisteredTransform:  # type: ignore[no-untyped-def]
+def registered(name: str, fn, scope: Scope = "piece") -> RegisteredTransform:  # type: ignore[no-untyped-def]
     return RegisteredTransform(name=name, fn=fn, scope=scope, plugin="test")
 
 

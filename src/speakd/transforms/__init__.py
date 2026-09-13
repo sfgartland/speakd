@@ -11,22 +11,17 @@ Each declares a scope:
 
 A transform that raises is skipped and its input passes through unchanged.
 Speech never disappears silently.
+
+A transform is a plain function, registered through `PluginContext.transform`
+and carried by `RegisteredTransform` (name, fn, scope, plugin). This module
+used to also declare a class-shaped `Transform` Protocol -- name, scope,
+apply() -- that nothing ever implemented; two shapes for one thing, one of
+them a fiction. Only `Scope` survives it, and it now types the registered
+transform's scope so a bad one is a type error and not only a runtime check.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Literal, Protocol
-
-from speakd.model import Piece
+from typing import Literal
 
 Scope = Literal["piece", "job"]
-
-
-class Transform(Protocol):
-    """Rewrites pieces into something worth speaking, preserving provenance."""
-
-    name: str
-    scope: Scope
-
-    def apply(self, pieces: Sequence[Piece]) -> Sequence[Piece]: ...
