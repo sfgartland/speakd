@@ -492,3 +492,26 @@ def test_a_writer_thread_that_will_not_start_leaves_nothing_behind(
         assert srv._conn_threads == [], "the connection thread was never deregistered"
     finally:
         srv.stop()
+
+
+def test_stop_survives_a_socket_file_that_vanishes_under_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """exists() then unlink() is two calls, and the file can go between them.
+
+    Whoever else cleans up that path -- a second stop(), an impatient signal
+    handler, a tmpfiles sweep -- wins the race, and stop() throws
+    FileNotFoundError out of a shutdown that had otherwise finished.
+    """
+    srv = SocketServer(tmp_path / "speakd.sock", echo_handler, EventBus())
+    srv.start()
+    real_unlink = Path.unlink
+
+    def vanished(self: Path, missing_ok: bool = False) -> None:
+        if self == srv.address:
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", vanished)
+    srv.stop()
+    monkeypatch.undo()

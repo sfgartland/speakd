@@ -163,13 +163,17 @@ class SocketServer:
             raise
 
     def stop(self) -> None:
-        if not self._running.is_set():
-            # Never started, or already stopped. Going on would unlink
-            # `address` -- and pointed at a live daemon's socket, which is
-            # the ordinary case since every server is built with the same
-            # default path, that deletes the one thing clients find it by.
-            return
-        self._running.clear()
+        with self._lock:
+            if not self._running.is_set():
+                # Never started, or already stopped. Going on would unlink
+                # `address` -- and pointed at a live daemon's socket, which
+                # is the ordinary case since every server is built with the
+                # same default path, that deletes the one thing clients find
+                # it by. Claimed under the lock that start() claims under,
+                # so that two concurrent stop()s cannot both get past here
+                # and tear the same connections down twice.
+                return
+            self._running.clear()
         if self._accept_thread is not None:
             self._accept_thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
             self._accept_thread = None
@@ -204,8 +208,14 @@ class SocketServer:
         with self._lock:
             self._connections.clear()
             self._conn_threads.clear()
-        if self.address.exists():
+        try:
             self.address.unlink()
+        except OSError:
+            # exists() then unlink() was two calls with a race between them:
+            # whoever else cleans up this path wins it, and a shutdown that
+            # had otherwise finished threw FileNotFoundError. Nothing here
+            # needs the file gone by its own hand, only gone.
+            pass
 
     def _accept_loop(self) -> None:
         assert self._socket is not None
