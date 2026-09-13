@@ -268,6 +268,55 @@ def test_stop_terminates_with_a_job_in_flight() -> None:
     assert len(player.played) < 4, "stop must cancel the rest of the utterance"
 
 
+class SilenceablePlayer(RecordingPlayer):
+    """A real player in the one respect that matters: only `stop()` cuts `play()`.
+
+    `HoldingPlayer` is released by the test, which is why the test above can
+    pass whether or not `stop()` ever silences anything. Here nothing but
+    `stop()` ends the segment, so a daemon that fails to call it is visible.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reached = threading.Event()
+        self.silenced = threading.Event()
+
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        super().play(audio, sample_rate)
+        self.reached.set()
+        assert self.silenced.wait(timeout=10.0), "play() was never interrupted"
+
+    def stop(self) -> None:
+        super().stop()
+        self.silenced.set()
+
+
+def test_stop_silences_the_player_rather_than_waiting_out_the_utterance() -> None:
+    """Ctrl-C must cut the sentence being spoken, not let it finish.
+
+    A worker cannot leave mid-`play()`, so without the `player.stop()` that
+    HUSH and CANCEL both make, a real device plays the segment out, the 5s
+    join expires, and `stop()` returns while the daemon is still audibly
+    speaking — leaving a worker behind that makes the next `start()` refuse.
+    """
+    player = SilenceablePlayer()
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    d.handle(enqueue("s", "One. Two. Three. Four."))
+    assert player.reached.wait(timeout=5.0), "the worker never started playing"
+
+    began = time.monotonic()
+    d.stop()
+    elapsed = time.monotonic() - began
+
+    assert player.stopped is True, "stop() left the player playing"
+    assert elapsed < 5.0, f"stop() waited out its join instead of silencing ({elapsed:.1f}s)"
+    assert d._worker is None, "the worker outlived stop()"
+    # The consequence a supervisor sees: a daemon that can actually restart.
+    assert d.start().data.get("started") is True
+    d.stop()
+
+
 def test_work_still_queued_when_the_daemon_stops_is_reported() -> None:
     """An accepted utterance that never reaches the engine says so."""
     reached = threading.Event()

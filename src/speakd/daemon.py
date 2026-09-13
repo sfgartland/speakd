@@ -130,6 +130,17 @@ class Daemon:
         if worker is None:
             return
         cancel.set()
+        # Symmetric with the HUSH/CANCEL path, and for the same reason: the
+        # Event alone stops nothing that is already sounding. A worker cannot
+        # leave mid-`play()`, and a real player's `play()` blocks for the
+        # length of the segment, so without this the join below waits out the
+        # sentence and then times out — leaving stop() to return while the
+        # daemon is still audibly speaking, and a worker behind it that makes
+        # the next start() refuse. Outside the lock, as there: player.stop()
+        # can block on a real device. No further ordering is needed — a job
+        # that reaches `_speak` after this rechecks `_running` and is
+        # discarded before it ever reaches the player.
+        self.player.stop()
         with self._idle:
             # Under the lock, and only while this is still the worker being
             # stopped. `_retire` clears `_worker` and empties the queue under
@@ -184,6 +195,25 @@ class Daemon:
             self.player.stop()
             discarded = self._drain_queued() if request.verb is Verb.HUSH else 0
             return Response(ok=True, data={"discarded": discarded})
+        if request.verb is Verb.STATUS:
+            # Read-only, deliberately: asking what the channels are must not
+            # open one for the asker. `speakctl status` would otherwise leave
+            # a phantom "cli" channel in every listing it printed.
+            return Response(
+                ok=True,
+                data={
+                    "channels": [
+                        {
+                            "source_id": c.source_id,
+                            "role": c.role.value,
+                            "priority": c.priority,
+                            "profile": c.profile,
+                            "label": c.label,
+                        }
+                        for c in self.channels.all()
+                    ]
+                },
+            )
         if request.verb in (Verb.PAUSE, Verb.RESUME, Verb.SEEK):
             return Response(ok=False, error=_NOT_IMPLEMENTED)
         if request.verb is Verb.SET_ROLE:
