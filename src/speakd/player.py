@@ -82,22 +82,34 @@ class _ErrorLog(list[str]):
 
     A list subclass rather than a helper on each sink: one implementation is
     one fewer thing for the two sinks to drift apart on.
+
+    It carries its own lock rather than relying on the caller's. The playback
+    thread records a write it lost and the control thread records a teardown
+    that failed, and no single caller-held lock covers both: `SoundDeviceSink`
+    records the mid-write drop *after* releasing `_lock`, and `FakeSink` has no
+    lock at all. Two threads crossing the cap together would otherwise both
+    append the tally — permanently, since later drops overwrite the last entry
+    and never reach the duplicate beneath it — or overwrite a real message with
+    it. A bounded log that depends on its callers to hold the right lock is a
+    contract nobody will keep.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.dropped = 0
+        self._lock = threading.Lock()
 
     def append(self, message: str) -> None:
-        if len(self) < _MAX_ERRORS:
-            super().append(message)
-            return
-        self.dropped += 1
-        tally = f"... and {self.dropped} further errors not recorded"
-        if self.dropped == 1:
-            super().append(tally)
-        else:
-            self[-1] = tally
+        with self._lock:
+            if len(self) < _MAX_ERRORS:
+                super().append(message)
+                return
+            self.dropped += 1
+            tally = f"... and {self.dropped} further errors not recorded"
+            if self.dropped == 1:
+                super().append(tally)
+            else:
+                self[-1] = tally
 
 
 class AudioSink(Protocol):

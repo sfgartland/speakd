@@ -2,12 +2,13 @@
 
 import sys
 import threading
+import time
 import types
 
 import numpy as np
 import pytest
 
-from speakd.player import AudioSink, RecordingPlayer
+from speakd.player import _MAX_ERRORS, AudioSink, RecordingPlayer, _ErrorLog
 
 
 def test_recording_player_keeps_what_it_played() -> None:
@@ -719,3 +720,119 @@ def test_both_sinks_bound_the_error_log(either_sink: AudioSink) -> None:
     assert either_sink.errors[-1] == "... and 200 further errors not recorded"
     assert "dropped 1 frames" in either_sink.errors[0], "the first are kept, not the last"
     assert f"dropped {_MAX_ERRORS} frames" in either_sink.errors[_MAX_ERRORS - 1]
+
+
+# A GIL hand-over inside a few bytecodes is not reachable by luck: sixty
+# trials of six threads hammering the real class produced zero interleavings.
+# So the two decision points inside append() are widened on purpose.
+_YIELD = 0.0005
+
+
+class _SlowErrorLog(_ErrorLog):
+    """`_ErrorLog` with the windows inside its inherited `append()` widened.
+
+    `append()` is *not* overridden — it is the code under test. All this
+    subclass does is make the length check and the `dropped` read-modify-write
+    slow enough that the interleaving they must survive actually happens. A
+    correct append() is unaffected by how slow its own reads are; an
+    unsynchronised one is not.
+    """
+
+    def __len__(self) -> int:
+        length = list.__len__(self)
+        time.sleep(_YIELD)
+        return length
+
+    @property
+    def dropped(self) -> int:
+        time.sleep(_YIELD)
+        return self._dropped
+
+    @dropped.setter
+    def dropped(self, value: int) -> None:
+        self._dropped = value
+
+
+def _hammer_log(log: _ErrorLog, barrier: threading.Barrier, count: int) -> None:
+    barrier.wait(timeout=10.0)
+    for _ in range(count):
+        log.append("overflow")
+
+
+@pytest.mark.parametrize("seed", [_MAX_ERRORS - 1, _MAX_ERRORS])
+def test_the_error_log_holds_its_cap_under_concurrent_appends(seed: int) -> None:
+    """The log is written from two threads — the playback thread records a
+    write it lost, the control thread records a teardown that failed — and
+    `SoundDeviceSink._lock` does not cover both: the mid-write record happens
+    after that lock is released, and `FakeSink` has no lock at all. So the cap
+    has to be the log's own business.
+
+    Two hazards, one invariant. Threads crossing `len(self) < _MAX_ERRORS`
+    together all append, and the list grows past its bound. Threads crossing
+    the first overflow together can both read `dropped == 0`, both take the
+    first-overflow branch and both append the tally — after which later drops
+    overwrite the last entry and never touch the duplicate beneath it, so the
+    breach is permanent. Seeding at the cap and just under it puts the threads
+    on each boundary in turn.
+    """
+    for attempt in range(6):
+        log = _SlowErrorLog()
+        for i in range(seed):
+            log.append(f"seed {i}")
+
+        barrier = threading.Barrier(8)
+        threads = [
+            threading.Thread(target=_hammer_log, args=(log, barrier, 6), daemon=True)
+            for _ in range(8)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10.0)
+        assert not any(thread.is_alive() for thread in threads)
+
+        tallies = [m for m in log if m.startswith("... and ")]
+        where = f"seed={seed} attempt={attempt}"
+        assert len(tallies) == 1, f"{where}: {len(tallies)} tally entries, expected exactly 1"
+        assert len(log) == _MAX_ERRORS + 1, f"{where}: cap breached, len={len(log)}"
+        assert log[-1] == tallies[0], f"{where}: the tally must be the last entry"
+        assert log[0] == "seed 0", f"{where}: the first messages must survive"
+
+
+def test_sounddevice_sink_close_does_not_release_a_stream_a_writer_is_inside(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The twin of the start() reap guard. close() aborts first, which
+    releases a blocked writer — but released is not returned, and closing in
+    that window is the undefined behaviour this class exists to avoid. It
+    declines, records, and stays terminal regardless."""
+    from speakd.player import SoundDeviceSink
+
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    stream = streams[0]
+    stream.block_writes()
+    stream.pin_writer_inside()
+
+    writer = _Writer(sink, _frames(64))
+    writer.start()
+    assert stream.entered_write.wait(timeout=2.0), "the writer never reached write()"
+
+    sink.close()
+
+    assert stream.violations == [], "must not close a stream a thread is inside"
+    assert stream.close_calls == 0
+    assert stream.abort_calls == 1, "but it must still abort, to release the writer"
+    assert any("in flight" in message for message in sink.errors)
+
+    # Declining to close does not make close() any less terminal.
+    with pytest.raises(RuntimeError):
+        sink.start()
+    with pytest.raises(RuntimeError):
+        sink.write(_frames(4))
+
+    stream.release_writer()
+    writer.join(timeout=2.0)
+    assert not writer.is_alive()
+    assert writer.error is None, f"the released write must not raise: {writer.error!r}"
