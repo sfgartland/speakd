@@ -373,11 +373,17 @@ class SocketServer:
                         if writer is None:
                             # One writer per connection, started on its first
                             # subscribe: a connection that only ever sends
-                            # requests never pays for a thread.
-                            writer = threading.Thread(
+                            # requests never pays for a thread. Bound only
+                            # once it is actually running -- bound before,
+                            # a "can't start new thread" leaves the finally
+                            # below joining a thread that never started,
+                            # which throws from inside the cleanup and skips
+                            # the deregistration and close under it.
+                            started = threading.Thread(
                                 target=writer_loop, name="speakd-writer", daemon=True
                             )
-                            writer.start()
+                            started.start()
+                            writer = started
                         continue
                     try:
                         response = self._handler(request)

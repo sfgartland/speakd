@@ -441,3 +441,44 @@ def test_a_closed_connection_is_forgotten_by_the_server(tmp_path: Path) -> None:
         assert srv._conn_threads == [], "finished connection threads were never forgotten"
     finally:
         srv.stop()
+
+
+# --- Re-review: the same defect class, reintroduced by the rewrite ---
+
+
+def test_a_writer_thread_that_will_not_start_leaves_nothing_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`writer` must not be bound until the thread is actually running.
+
+    Bound before `start()`, a "can't start new thread" leaves the finally
+    calling join() on a thread that was never started -- RuntimeError, thrown
+    from inside the cleanup, which skips the deregistration and the close
+    below it. One leaked socket and one leaked entry in each list, for the
+    life of the daemon.
+    """
+    real_start = threading.Thread.start
+
+    def refuse_writers(self: threading.Thread) -> None:
+        if self.name == "speakd-writer":
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", refuse_writers)
+    srv = SocketServer(tmp_path / "speakd.sock", echo_handler, EventBus())
+    srv.start()
+    try:
+        client = connect(srv.address)
+        try:
+            # The ack goes out before the writer is started, so this still
+            # succeeds; what follows it on the server is what matters.
+            client.subscribe()
+        finally:
+            client.close()
+        deadline = time.monotonic() + 5.0
+        while srv._connections and time.monotonic() < deadline:
+            threading.Event().wait(0.01)
+        assert srv._connections == [], "the connection was never deregistered"
+        assert srv._conn_threads == [], "the connection thread was never deregistered"
+    finally:
+        srv.stop()
