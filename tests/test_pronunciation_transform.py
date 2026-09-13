@@ -13,6 +13,11 @@ def test_latin_abbreviations_are_expanded() -> None:
     assert say("i.e. that") == "that is that"
 
 
+def test_latin_abbreviations_do_not_concatenate_with_a_following_word() -> None:
+    assert say("e.g.this") == "for example this"
+    assert say("(i.e.reasons)") == "(that is reasons)"
+
+
 def test_filename_dots_become_the_word_dot() -> None:
     assert say("edit settings.json now") == "edit settings dot jason now"
 
@@ -23,6 +28,14 @@ def test_chained_extensions_are_handled() -> None:
 
 def test_short_abbreviations_are_not_mangled_as_filenames() -> None:
     assert "dot" not in say("a.b")
+
+
+def test_a_no_space_abbreviation_before_a_capital_is_not_mistaken_for_a_filename() -> None:
+    assert say("vs.Smith") == "vs.Smith"
+
+
+def test_lowercase_filename_extensions_still_convert() -> None:
+    assert say("edit settings.json now") == "edit settings dot jason now"
 
 
 def test_arrows_and_operators_are_spoken() -> None:

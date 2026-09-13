@@ -29,6 +29,16 @@ def test_fenced_code_is_replaced_by_a_marker_in_place() -> None:
     assert render("Before.\n```python\nx = 1\n```\nAfter.") == "Before. Code block omitted. After."
 
 
+def test_indented_code_block_is_replaced_by_a_marker() -> None:
+    assert render("Explanation.\n\n    x = 1\n    y = 2\n\nDone.") == (
+        "Explanation. Code block omitted. Done."
+    )
+
+
+def test_a_nested_list_item_is_not_mistaken_for_an_indented_code_block() -> None:
+    assert render("- item\n\n    - nested") == "item. nested."
+
+
 def test_inline_code_keeps_its_text() -> None:
     assert render("Run `pytest` now.") == "Run pytest now."
 

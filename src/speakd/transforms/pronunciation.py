@@ -6,7 +6,10 @@ it would have produced something worse.
 
 The filename rule earns its place: "settings.json" spoken with the dot intact
 reads as a sentence boundary, which fragments a segment mid-phrase. Two or more
-characters are required before the dot so that genuine abbreviations survive.
+characters are required before the dot so that genuine abbreviations survive,
+and the extension is required to be lowercase (the convention for real file
+extensions) so a no-space abbreviation before a capitalised word — "vs.Smith" —
+is not mistaken for one.
 """
 
 from __future__ import annotations
@@ -17,8 +20,12 @@ from collections.abc import Sequence
 from speakd.model import Piece
 
 _LITERAL: tuple[tuple[str, str], ...] = (
-    ("e.g.", "for example"),
-    ("i.e.", "that is"),
+    # Trailing space guards against "i.e.reasons" concatenating into
+    # "that isreasons" when prose omits the space after the abbreviation;
+    # the final whitespace normalisation collapses the extra space back down
+    # when the source already had one.
+    ("e.g.", "for example "),
+    ("i.e.", "that is "),
     ("=>", " arrow "),
     ("->", " arrow "),
     ("<=", " less or equal "),
@@ -34,7 +41,7 @@ _LITERAL: tuple[tuple[str, str], ...] = (
     ("stdout", "standard output"),
 )
 
-_FILENAME = re.compile(r"([A-Za-z0-9_-]{2,})\.([A-Za-z]{1,10})")
+_FILENAME = re.compile(r"([A-Za-z0-9_-]{2,})\.([a-z]{1,10})")
 _CHAINED = re.compile(r"(dot [A-Za-z0-9_-]+)\.([A-Za-z]{1,10})")
 
 # Longer forms first: JSONL before JSON, HTTPS before HTTP.
