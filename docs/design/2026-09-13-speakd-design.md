@@ -100,6 +100,14 @@ This is the structure that is painful to retrofit, so it exists from the first
 commit. Everything downstream — position events, seek, resume, karaoke-style
 highlighting — is a read of it.
 
+**Two clocks, deliberately.** `audio_offset` stays nominal, accumulated from
+`len(audio) / sample_rate`, and each segment additionally records a monotonic
+timestamp taken when playback actually starts. Seek and resume read the offsets,
+because those describe the audio; subscribers read the stamp, because that
+describes reality. Keeping them separate is what lets a stall be visible —
+a single measured offset would collapse the distinction and would also break
+`Timeline.append`'s monotonic check against an instantaneous test player.
+
 ## Pipeline and streaming
 
 Transforms declare a scope:
@@ -229,6 +237,11 @@ Hooks calling `speakctl`, carrying the session id so channels are per session.
 - Daemon startup failures are logged to a file the client names in its error, and
   never discarded to `/dev/null`.
 - A dead subscriber is dropped from the bus without affecting playback.
+- **A player failure is recorded, not raised.** A sink disappearing mid-utterance
+  — a headset walking out of range — is routine for a daemon, so the failure goes
+  into `SpeechResult.errors` with an `aborted` flag and the caller receives the
+  timeline built so far. Discarding the position map would defeat resume in
+  precisely the case where resume matters most.
 
 ## Testing
 
@@ -310,23 +323,6 @@ Deferred deliberately; none blocks milestone 1.
 - **Background event taxonomy.** Which events a background channel may interrupt
   for is currently three names; real use will refine it.
 - **Distribution.** PyPI name `speakd` is free. Whether to publish, and when.
-
-- **The timeline's time base — decide before the event bus.** `audio_offset`
-  accumulates nominal durations (`len(audio) / sample_rate`), so it measures
-  synthesis, not wall-clock. Whenever synthesis stalls playback the two diverge,
-  and a subscriber then has no correct argument to pass `span_at()`. Either stamp
-  `time.monotonic()` at each playback start, or make offsets measured so that
-  gaps become real gaps — `span_at` already returns `None` inside a gap, which is
-  the right answer during a stall. Measured offsets need care: an instantaneous
-  test player would trip `Timeline.append`'s overlap check.
-
-- **What a player failure should do.** A raising player currently propagates out
-  of `speak()`, discarding the timeline built so far and every recorded error.
-  For a daemon, a sink disappearing mid-utterance is routine — a headset walking
-  out of range — and losing the position map defeats resume in exactly the case
-  where resume matters most. The alternative is recording it in `errors` and
-  returning the partial result. Failure handling above covers transforms,
-  plugins, startup and subscribers, but not the player.
 
 ## Notes for the daemon
 
