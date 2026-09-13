@@ -47,8 +47,8 @@ class ServiceRegistry:
 
         def unwatch() -> None:
             watchers = self._watchers.get(name)
-            if watchers and callback in watchers:
-                watchers.remove(callback)
+            if watchers is not None:
+                self._watchers[name] = [w for w in watchers if w is not callback]
 
         return Disposer(unwatch)
 

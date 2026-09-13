@@ -2,6 +2,7 @@
 
 import pytest
 
+from speakd.plugins import Disposable
 from speakd.plugins.registry import ServiceRegistry
 
 
@@ -75,3 +76,134 @@ def test_a_raising_watcher_does_not_block_the_others() -> None:
     registry.watch("svc", seen.append)
     registry.provide("svc", "value")
     assert seen == [None, "value"]
+
+
+def test_bound_method_watchers_use_identity_not_equality() -> None:
+    """Bound methods compare equal but are distinct objects.
+
+    Pins the identity-based removal in unwatch(). Registering the same bound
+    method twice creates two distinct objects that compare equal. If unwatch()
+    uses equality (in/remove), disposing h2 will remove h1 (first match).
+    """
+    registry = ServiceRegistry()
+
+    class TrackedCallback:
+        """Callback that tracks invocations and can act equal to others."""
+
+        _counter = 0
+
+        def __init__(self) -> None:
+            self.id = TrackedCallback._counter
+            TrackedCallback._counter += 1
+            self.calls: list[object | None] = []
+
+        def __call__(self, value: object | None) -> None:
+            self.calls.append(value)
+
+        def __eq__(self, other: object) -> bool:
+            # All TrackedCallback instances compare equal (simulates bound method equality)
+            return isinstance(other, TrackedCallback)
+
+        def __hash__(self) -> int:
+            # All instances hash the same so they compare equal in set/dict ops
+            return 0
+
+    cb1 = TrackedCallback()
+    cb2 = TrackedCallback()
+
+    # Register two callbacks that are equal but distinct
+    _h1 = registry.watch("svc", cb1)
+    h2 = registry.watch("svc", cb2)
+
+    # Both receive initial None
+    assert cb1.calls == [None]
+    assert cb2.calls == [None]
+
+    provider = registry.provide("svc", "value1")
+    # Both receive the event
+    assert cb1.calls == [None, "value1"]
+    assert cb2.calls == [None, "value1"]
+
+    # Dispose h2 (should remove cb2 from watchers with correct identity-based impl)
+    h2.dispose()
+
+    # With identity fix: cb2 is removed, cb1 remains
+    # With bug (equality-based): cb1 (first match) is removed, cb2 remains
+    # We can tell by which one receives the next event:
+
+    provider.dispose()
+    registry.provide("svc", "value2")
+
+    # With identity fix: cb1 receives value2 (it remained)
+    # With bug: cb2 receives value2 (cb1 was incorrectly removed)
+    assert "value2" in cb1.calls, "cb1 should remain active after h2.dispose()"
+    assert "value2" not in cb2.calls, "cb2 should NOT receive events after h2.dispose()"
+
+
+def test_disposing_stale_provider_after_reprovision() -> None:
+    """Pins the identity check in revoke().
+
+    Verifies that disposing an old provider handle doesn't remove a new
+    provider that was registered after the old one was disposed.
+    """
+    registry = ServiceRegistry()
+
+    # Provide first value and dispose it
+    h1 = registry.provide("service", "value1")
+    h1.dispose()
+
+    # Provide second value with same name
+    h2 = registry.provide("service", "value2")
+    assert registry.get("service") == "value2"
+
+    # Dispose h1 again (stale handle) — should not affect h2
+    h1.dispose()
+    assert registry.get("service") == "value2"
+
+    # Dispose h2 to clean up
+    h2.dispose()
+    assert registry.get("service") is None
+
+
+def test_watcher_that_disposes_another_during_notification() -> None:
+    """Pins the snapshot in _notify().
+
+    Verifies that when a watcher disposes another watcher during its callback,
+    the disposed watcher still receives the current notification (because
+    _notify() uses a snapshot).
+    """
+    registry = ServiceRegistry()
+    seen_a: list[object | None] = []
+    seen_b: list[object | None] = []
+    seen_c: list[object | None] = []
+    watch_b_ref: list[Disposable] = []
+
+    def watcher_a(value: object | None) -> None:
+        seen_a.append(value)
+        # When notified, dispose watcher_b
+        if value == "event":
+            watch_b_ref[0].dispose()
+
+    def watcher_b(value: object | None) -> None:
+        seen_b.append(value)
+
+    def watcher_c(value: object | None) -> None:
+        seen_c.append(value)
+
+    _watch_a = registry.watch("svc", watcher_a)
+    watch_b_ref.append(registry.watch("svc", watcher_b))
+    _watch_c = registry.watch("svc", watcher_c)
+
+    # All receive initial None
+    assert seen_a == [None]
+    assert seen_b == [None]
+    assert seen_c == [None]
+
+    # Provide a value: watcher_a will dispose watcher_b during notification
+    _provider = registry.provide("svc", "event")
+
+    # With snapshot semantics, all three should receive the event
+    # even though watcher_a disposes watcher_b during the notification round
+    assert seen_a == [None, "event"]
+    assert seen_b == [None, "event"]
+    assert seen_c == [None, "event"]
