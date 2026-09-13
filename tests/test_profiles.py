@@ -99,3 +99,31 @@ def test_resolve_chain_reports_a_transform_nobody_provides() -> None:
     chain, missing = resolve_chain(profile, host)
     assert [t.name for t in chain] == ["markdown"]
     assert missing == ["citations"]
+
+
+def test_load_profiles_rejects_a_non_string_transform_element(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.bad]\ntransforms = [["markdown"], "pronunciation"]\n')
+    with pytest.raises(ValueError, match="bad"):
+        load_profiles(path)
+
+
+def test_load_profiles_rejects_a_scalar_transform_element(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.bad]\ntransforms = ["markdown", 5]\n')
+    with pytest.raises(ValueError, match="bad"):
+        load_profiles(path)
+
+
+def test_load_profiles_rejects_a_non_string_voice(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.bad]\nvoice = ["af_heart", "af_bella"]\n')
+    with pytest.raises(ValueError, match="voice"):
+        load_profiles(path)
+
+
+def test_load_profiles_names_the_profile_when_speed_is_not_a_number(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.bad]\nspeed = "fast"\n')
+    with pytest.raises(ValueError, match="bad"):
+        load_profiles(path)

@@ -37,13 +37,40 @@ def load_profiles(path: Path) -> dict[str, Profile]:
     for name, raw in data.get("profile", {}).items():
         if not isinstance(raw, dict):
             raise ValueError(f"profile {name!r}: must be a table, got {type(raw).__name__}")
-        speed = float(raw.get("speed", DEFAULT_PROFILE.speed))
+        raw_speed = raw.get("speed", DEFAULT_PROFILE.speed)
+        try:
+            speed = float(raw_speed)
+        except (TypeError, ValueError) as exc:
+            # float() names the value but not the profile, and a config error
+            # that cannot say which profile it came from is a config error you
+            # go looking for.
+            raise ValueError(
+                f"profile {name!r}: speed must be a number, got {raw_speed!r}"
+            ) from exc
         if speed <= 0:
             raise ValueError(f"profile {name!r}: speed must be greater than 0, got {speed}")
         transforms = raw.get("transforms", [])
         if not isinstance(transforms, list):
             raise ValueError(
                 f"profile {name!r}: transforms must be a list, got {type(transforms).__name__}"
+            )
+        for element in transforms:
+            if not isinstance(element, str):
+                # resolve_chain looks each name up in a dict, so a nested list
+                # surfaced there as "unhashable type: 'list'" -- no profile
+                # name, no file, and a long way from the config that caused it.
+                # A scalar is worse: it is hashable, so it became a nonsense
+                # entry in `missing` and read as a transform nobody provides.
+                raise ValueError(
+                    f"profile {name!r}: transforms must be a list of strings, "
+                    f"got {type(element).__name__}"
+                )
+        voice = raw.get("voice", DEFAULT_PROFILE.voice)
+        if not isinstance(voice, str):
+            # str() would turn a list into "['a', 'b']" -- a plausible-looking
+            # voice name that fails deep in synthesis rather than at load.
+            raise ValueError(
+                f"profile {name!r}: voice must be a string, got {type(voice).__name__}"
             )
         interrupt_on = raw.get("interrupt_on", [])
         if not isinstance(interrupt_on, list):
@@ -53,7 +80,7 @@ def load_profiles(path: Path) -> dict[str, Profile]:
         profiles[name] = Profile(
             name=name,
             transforms=tuple(transforms),
-            voice=str(raw.get("voice", DEFAULT_PROFILE.voice)),
+            voice=voice,
             speed=speed,
             interrupt_on=tuple(interrupt_on),
         )
