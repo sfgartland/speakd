@@ -1,11 +1,13 @@
 """Tests for the Unix socket transport."""
 
 import threading
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
 
-from speakd.events import Event, EventBus
+from speakd.events import Event, EventBus, Subscription
 from speakd.protocol import Request, Response, Verb
 from speakd.transport import SocketServer, connect
 
@@ -94,10 +96,19 @@ def test_a_vanished_subscriber_is_dropped_without_disturbing_the_server(server) 
         if bus.subscriber_count() > 0:
             break
         threading.Event().wait(0.01)
+    # The subscription must actually have registered -- otherwise everything
+    # below holds trivially with zero subscribers and proves nothing.
+    assert bus.subscriber_count() == 1
     client.close()
     del stream
-    # Publishing to a dead subscriber must not raise, and the server must still serve.
-    bus.publish(Event(kind="position", source_id="s", data={}))
+    # Publishing to a dead subscriber must not raise, and the subscriber must
+    # actually be dropped -- the server must still serve everyone else.
+    for _ in range(100):
+        bus.publish(Event(kind="position", source_id="s", data={}))
+        if bus.subscriber_count() == 0:
+            break
+        threading.Event().wait(0.01)
+    assert bus.subscriber_count() == 0
     other = connect(srv.address)
     try:
         assert other.send(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
@@ -124,6 +135,71 @@ def test_stop_removes_the_socket_file(tmp_path: Path) -> None:
     assert srv.address.exists()
     srv.stop()
     assert not srv.address.exists()
+
+
+def test_stop_terminates_a_live_unclosed_connection_within_a_bound(tmp_path: Path) -> None:
+    srv = SocketServer(tmp_path / "speakd.sock", echo_handler, EventBus())
+    srv.start()
+    client = connect(srv.address)
+    try:
+        # connect() returns once the connection is queued, not once the
+        # server's accept loop has actually accepted it and spawned its
+        # thread -- wait for that to happen so stop() has a real connection
+        # thread blocked in a read to contend with, bounded so a regression
+        # here fails fast instead of hanging.
+        for _ in range(200):
+            if any(t.name == "speakd-conn" for t in threading.enumerate()):
+                break
+            threading.Event().wait(0.01)
+        assert any(t.name == "speakd-conn" for t in threading.enumerate())
+
+        started = time.monotonic()
+        srv.stop()
+        elapsed = time.monotonic() - started
+
+        # With a correct shutdown()-before-close(), this should complete in
+        # well under a second; a connection thread stuck on a bare read would
+        # only be freed once the join() timeout itself expires (2s).
+        assert elapsed < 1.0
+        assert not any(t.name == "speakd-conn" for t in threading.enumerate())
+    finally:
+        client.close()
+
+
+def test_the_ack_always_precedes_an_event_forced_during_registration(tmp_path: Path) -> None:
+    """Reproduces the ack/event ordering race deterministically.
+
+    Rather than hoping a scheduler quirk wins the race, force a publish to
+    happen synchronously from inside bus.subscribe() itself, before it
+    returns to the caller -- the same technique used to demonstrate the bug.
+    A correct server must still deliver the ack before the event no matter
+    which thread, or which call frame, the publish happens on.
+    """
+    bus = EventBus()
+    original_subscribe = bus.subscribe
+
+    def racing_subscribe(
+        callback: Callable[[Event], None], kinds: Sequence[str] | None = None
+    ) -> Subscription:
+        subscription = original_subscribe(callback, kinds=kinds)
+        bus.publish(Event(kind="position", source_id="s", data={"forced": True}))
+        return subscription
+
+    bus.subscribe = racing_subscribe  # type: ignore[method-assign]
+
+    srv = SocketServer(tmp_path / "speakd.sock", echo_handler, bus)
+    srv.start()
+    try:
+        client = connect(srv.address)
+        try:
+            stream = client.subscribe()  # must not raise: the ack must win the race
+            event = next(stream)
+            assert event.kind == "position"
+            assert event.data == {"forced": True}
+        finally:
+            client.close()
+    finally:
+        srv.stop()
 
 
 def test_a_handler_that_raises_becomes_an_error_response(tmp_path: Path) -> None:

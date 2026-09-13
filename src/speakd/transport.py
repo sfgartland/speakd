@@ -35,6 +35,10 @@ Handler = Callable[[Request], Response]
 _ACCEPT_POLL_SECONDS = 0.2
 # How long stop() waits for a thread to notice it should exit before giving up.
 _JOIN_TIMEOUT_SECONDS = 2.0
+# How long a client waits for a response to a request before giving up. Only
+# ever applied around the request/response read -- a subscriber's event
+# stream is otherwise unbounded, since an idle stream is not a stuck one.
+_REQUEST_TIMEOUT_SECONDS = 5.0
 
 
 def _event_line(event: Event) -> bytes:
@@ -88,6 +92,12 @@ class SocketServer:
         with self._lock:
             connections = list(self._connections)
             threads = list(self._conn_threads)
+        # Three separate passes: shutdown every connection, THEN wait for
+        # every connection thread to actually notice and exit, and only THEN
+        # close the sockets. Interleaving close() into the same pass as
+        # shutdown() risks a thread still in-flight inside a blocked read on
+        # a file descriptor number the process has, by then, already reused
+        # for something unrelated.
         for connection in connections:
             # A bare close() from this (the stopping) thread is not
             # guaranteed to wake a connection thread blocked in a read on the
@@ -97,12 +107,13 @@ class SocketServer:
                 connection.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+        for thread in threads:
+            thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
+        for connection in connections:
             try:
                 connection.close()
             except OSError:
                 pass
-        for thread in threads:
-            thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
         with self._lock:
             self._connections.clear()
             self._conn_threads.clear()
@@ -124,10 +135,41 @@ class SocketServer:
             with self._lock:
                 self._connections.append(connection)
                 self._conn_threads.append(thread)
-            thread.start()
+                # Started while still holding the lock: a concurrent stop()
+                # can only ever observe this thread in _conn_threads once it
+                # has actually been started, so its later thread.join() can
+                # never race an unstarted Thread (which raises RuntimeError
+                # and would abort stop() before the socket file is unlinked).
+                thread.start()
 
     def _serve(self, connection: socket.socket) -> None:
         subscription: Subscription | None = None
+        # Serializes every write to this connection: the subscribe ack, any
+        # error/handler response, and every event the bus pushes. Without it,
+        # two threads (this one, and whichever thread calls bus.publish())
+        # can both be mid-sendall on the same socket, corrupting the framing.
+        write_lock = threading.Lock()
+        acked = False
+        pending: list[bytes] = []
+
+        def write_locked(payload: bytes) -> None:
+            with write_lock:
+                connection.sendall(payload)
+
+        def emit_event(event: Event) -> None:
+            line = _event_line(event)
+            with write_lock:
+                if acked:
+                    connection.sendall(line)
+                else:
+                    # A publish can land between registering with the bus and
+                    # sending the ack (even, in the extreme case, from the
+                    # very same thread if something publishes synchronously
+                    # from inside bus.subscribe()). Queue it rather than
+                    # write it: the ack must always be the first thing this
+                    # client sees after asking to subscribe.
+                    pending.append(line)
+
         try:
             with connection.makefile("rb") as reader:
                 for line in reader:
@@ -135,8 +177,13 @@ class SocketServer:
                         continue
                     try:
                         request = decode_request(line)
-                    except ProtocolError as exc:
-                        connection.sendall(encode(Response(ok=False, error=str(exc))))
+                    except Exception as exc:
+                        # Not just ProtocolError: a client can send something
+                        # that blows up json.loads in a way that is not a
+                        # ProtocolError (e.g. RecursionError on deeply nested
+                        # JSON). Reported to the caller either way, never a
+                        # traceback and never a closed connection.
+                        write_locked(encode(Response(ok=False, error=str(exc))))
                         continue
                     if request.verb is Verb.SUBSCRIBE:
                         raw_kinds = request.payload.get("kinds")
@@ -145,11 +192,17 @@ class SocketServer:
                             if isinstance(raw_kinds, list)
                             else None
                         )
-                        subscription = self._bus.subscribe(
-                            lambda event: connection.sendall(_event_line(event)),
-                            kinds=kinds,
-                        )
-                        connection.sendall(encode(Response(ok=True)))
+                        if subscription is not None:
+                            # A second subscribe on one connection must not
+                            # leak the first: otherwise events arrive twice.
+                            subscription.dispose()
+                        subscription = self._bus.subscribe(emit_event, kinds=kinds)
+                        with write_lock:
+                            connection.sendall(encode(Response(ok=True)))
+                            acked = True
+                            for buffered in pending:
+                                connection.sendall(buffered)
+                            pending.clear()
                         continue
                     try:
                         response = self._handler(request)
@@ -157,7 +210,7 @@ class SocketServer:
                         # Reported to the caller, never swallowed and never
                         # left to surface as an unrelated traceback.
                         response = Response(ok=False, error=str(exc))
-                    connection.sendall(encode(response))
+                    write_locked(encode(response))
         except OSError:
             # The peer vanished (write/read on a closed or reset socket).
             # Nothing else needs to know; the finally block below cleans up.
@@ -189,7 +242,17 @@ class SocketClient:
 
     def send_raw(self, line: bytes) -> Response:
         self._socket.sendall(line)
-        reply = self._reader.readline()
+        # Bounded only around this one read. A regression that drops a
+        # response (e.g. losing the sendall in an error branch) must turn
+        # into a bounded test failure, not a hung suite. A subscriber's
+        # event stream must stay untimed, so the timeout is restored
+        # immediately after this call either way.
+        previous_timeout = self._socket.gettimeout()
+        self._socket.settimeout(_REQUEST_TIMEOUT_SECONDS)
+        try:
+            reply = self._reader.readline()
+        finally:
+            self._socket.settimeout(previous_timeout)
         if not reply:
             raise ConnectionError("daemon closed the connection")
         return decode_response(reply)
@@ -201,17 +264,27 @@ class SocketClient:
         # Sent and acknowledged eagerly: by the time this call returns, the
         # subscription is already registered on the bus. Only the pulling of
         # event lines off the wire is deferred to the returned iterator.
-        self.send(Request(verb=Verb.SUBSCRIBE, source_id="subscriber", payload=payload))
+        response = self.send(Request(verb=Verb.SUBSCRIBE, source_id="subscriber", payload=payload))
+        if not response.ok:
+            raise ConnectionError(f"subscribe was refused: {response.error}")
         return self._iter_events()
 
     def _iter_events(self) -> Iterator[Event]:
         for line in self._reader:
-            body = json.loads(line.decode("utf-8"))
-            yield Event(
-                kind=str(body["event"]),
-                source_id=str(body["source_id"]),
-                data=dict(body.get("data", {})),
-            )
+            try:
+                parsed = json.loads(line.decode("utf-8"))
+                if not isinstance(parsed, dict):
+                    raise ProtocolError("event line must be a JSON object")
+                event = Event(
+                    kind=str(parsed["event"]),
+                    source_id=str(parsed["source_id"]),
+                    data=dict(parsed.get("data", {})),
+                )
+            except ProtocolError:
+                raise
+            except (UnicodeDecodeError, json.JSONDecodeError, KeyError) as exc:
+                raise ProtocolError(f"malformed event line: {exc}") from exc
+            yield event
 
     def close(self) -> None:
         try:
