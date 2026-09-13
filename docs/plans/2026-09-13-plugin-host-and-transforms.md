@@ -430,7 +430,9 @@ def test_require_hands_the_service_to_the_plugin() -> None:
     registry = ServiceRegistry()
     host = PluginHost(registry)
     seen: list[object] = []
-    host.register("p", lambda ctx: seen.append(ctx.require("bibliography")), requires=["bibliography"])
+    host.register(
+        "p", lambda ctx: seen.append(ctx.require("bibliography")), requires=["bibliography"]
+    )
     registry.provide("bibliography", "the-bib")
     assert seen == ["the-bib"]
 
@@ -1223,7 +1225,7 @@ def test_load_profiles_on_a_missing_file_yields_only_the_default(tmp_path: Path)
 
 def test_load_profiles_rejects_a_non_positive_speed(tmp_path: Path) -> None:
     path = tmp_path / "profiles.toml"
-    path.write_text('[profile.bad]\ntransforms = []\nspeed = 0\n')
+    path.write_text("[profile.bad]\ntransforms = []\nspeed = 0\n")
     with pytest.raises(ValueError, match="speed"):
         load_profiles(path)
 
