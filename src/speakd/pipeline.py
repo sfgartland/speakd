@@ -41,15 +41,24 @@ def speak(
     cancel: threading.Event | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> SpeechResult:
-    """Speak `pieces`, returning the timeline of what was actually played."""
+    """Speak `pieces`, returning the timeline of what was actually played.
+
+    `cancel` is read, never written. A caller's Event is theirs: mutating it
+    would make a torn-down utterance look cancelled to whoever owns it, and
+    the next `speak()` reusing that Event would play nothing at all.
+    Internal teardown goes through `stop` instead.
+    """
     cancel = cancel or threading.Event()
+    # Internal teardown flag. Distinct from `cancel` so the caller's Event
+    # stays untouched and `speak()` is a pure function of its arguments.
+    stop = threading.Event()
     units = segment(pieces, max_chars)
     work: queue.Queue[_Item] = queue.Queue(maxsize=1)
 
     def produce() -> None:
         try:
             for unit in units:
-                if cancel.is_set():
+                if cancel.is_set() or stop.is_set():
                     break
                 try:
                     audio = engine.synthesize(unit.spoken, voice, speed)
@@ -100,7 +109,7 @@ def speak(
             # simply mid-synthesis, unaware anything has gone wrong — and
             # about to put once more. With a depth-one queue and no reader
             # left, that put (including its unconditional final put(None))
-            # would block forever, leaking the thread. Setting cancel makes
+            # would block forever, leaking the thread. Setting `stop` makes
             # the producer stop at its next check; draining to the sentinel
             # guarantees it always has a reader until it actually exits.
             #
@@ -111,9 +120,14 @@ def speak(
             # reaching SpeechResult.errors — the one place a synthesis
             # failure is allowed to go unreported, because the utterance is
             # already being torn down.
-            cancel.set()
+            stop.set()
             while work.get() is not None:
                 pass
 
     worker.join(timeout=1.0)
+    if worker.is_alive():
+        # The drain above should make this unreachable. Report it rather than
+        # returning quietly: in a long-lived daemon a regression here
+        # accumulates stuck threads, one per utterance, with nothing to see.
+        errors.append("synthesis thread did not exit within 1.0s")
     return SpeechResult(timeline=timeline, cancelled=cancel.is_set(), errors=errors)

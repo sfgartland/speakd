@@ -124,7 +124,11 @@ def test_synthesis_overlaps_playback() -> None:
     assert elapsed < 0.35, f"no overlap: {elapsed:.2f}s"
 
 
-def test_cancel_stops_early_and_stops_the_player() -> None:
+def test_cancel_before_start_plays_nothing() -> None:
+    # Cancel is already set when speak() is called, so the producer breaks on
+    # its first check and the consumer takes the sentinel branch: player.stop()
+    # is never reached. Mid-stream cancellation, which does reach it, is
+    # covered by test_cancellation_mid_stream_does_not_leak_the_producer_thread.
     cancel = threading.Event()
     cancel.set()
     player = RecordingPlayer()
@@ -199,3 +203,35 @@ def test_a_raising_player_does_not_leak_the_producer_thread() -> None:
     for new_thread in new_threads:
         new_thread.join(timeout=2.0)
     assert not any(new_thread.is_alive() for new_thread in new_threads)
+
+
+def test_a_raising_player_does_not_set_a_caller_supplied_cancel_event() -> None:
+    # Teardown after an exception used to run through the caller's own Event.
+    # The caller then saw cancelled=True for an utterance nobody cancelled,
+    # and the next speak() reusing that Event played nothing, reported no
+    # error and returned an empty timeline — a silent failure.
+    cancel = threading.Event()
+    player = RaisingPlayer(bad_index=0)
+
+    with pytest.raises(RuntimeError, match="device disappeared"):
+        speak([piece("One. Two.")], FakeEngine(), player, cancel=cancel)
+
+    assert not cancel.is_set(), "speak() mutated the caller's Event"
+
+    reused = RecordingPlayer()
+    result = speak([piece("One. Two.")], FakeEngine(), reused, cancel=cancel)
+    assert len(reused.played) == 2
+    assert len(result.timeline) == 2
+    assert result.cancelled is False
+    assert result.errors == []
+
+
+def test_a_cancelled_utterance_leaves_the_caller_event_as_the_caller_set_it() -> None:
+    # The other half of the same property: speak() reports cancellation, it
+    # does not author it. An Event the caller never set stays unset.
+    cancel = threading.Event()
+    player = RecordingPlayer()
+    result = speak([piece("One. Two. Three.")], FakeEngine(), player, cancel=cancel)
+    assert not cancel.is_set()
+    assert result.cancelled is False
+    assert len(player.played) == 3
