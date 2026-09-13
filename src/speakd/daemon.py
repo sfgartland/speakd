@@ -107,17 +107,23 @@ class Daemon:
             # Published before the thread runs, so `_retire`'s identity check
             # can never fail to recognise the worker it belongs to.
             self._worker = worker
-        try:
-            worker.start()
-        except BaseException:  # noqa: B036 - rolled back, then re-raised
-            # "can't start new thread" would otherwise leave a daemon that
-            # accepts speech with nothing to consume it and no way back: with
-            # `_worker` set, every later start() quietly no-ops.
-            with self._idle:
+            try:
+                # Started under the same lock that published it, so no other
+                # thread can see `_worker` before the thread is running. A
+                # stop() landing here waits for start() to finish instead of
+                # joining a thread that was never started -- a RuntimeError
+                # out of stop(), and out of serve() as a traceback.
+                # `Thread.start()` blocks only on its own `_started` event and
+                # never re-enters the daemon, so holding the lock is safe.
+                worker.start()
+            except BaseException:  # noqa: B036 - rolled back, then re-raised
+                # "can't start new thread" would otherwise leave a daemon that
+                # accepts speech with nothing to consume it and no way back:
+                # with `_worker` set, every later start() quietly no-ops.
                 if self._worker is worker:
                     self._worker = None
                     self._running = False
-            raise
+                raise
         return Response(ok=True, data={"started": True})
 
     def stop(self) -> None:

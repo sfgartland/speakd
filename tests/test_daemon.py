@@ -1048,3 +1048,47 @@ def test_a_worker_that_is_no_longer_the_daemons_still_reports_its_death() -> Non
     finally:
         d.stop()
     assert len(player.played) == 1
+
+
+# --- Whole-branch review: the races per-task review could not see ---
+
+
+def test_stop_cannot_join_a_worker_that_start_has_not_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_worker` must not be visible to stop() before the thread is running.
+
+    start() published `_worker` and released the lock, then started the
+    thread. A stop() landing in between saw a worker, deposited its sentinel
+    and called join() on a thread that had never been started, which is a
+    RuntimeError out of stop() -- and out of serve(), as a traceback.
+    """
+    real_start = threading.Thread.start
+    reached = threading.Event()
+    proceed = threading.Event()
+
+    def slow_start(self: threading.Thread) -> None:
+        # Only the speech worker: the test's own threads must still start.
+        if self.name == "speakd-speech":
+            reached.set()
+            assert proceed.wait(timeout=5.0), "the test never released the worker's start()"
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", slow_start)
+    d = Daemon(
+        FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
+    )
+    starter = threading.Thread(target=d.start, name="test-starter")
+    starter.start()
+    assert reached.wait(timeout=5.0), "start() never reached the worker's start()"
+    # Released a moment from now: with the fix, stop() waits out the rest of
+    # start() on the lock; without it, stop() runs straight through and joins
+    # a thread that has not been started.
+    threading.Timer(0.5, proceed.set).start()
+    try:
+        d.stop()
+    finally:
+        proceed.set()
+        starter.join(timeout=5.0)
+        d.stop()
+    assert d._worker is None, "stop() left a worker behind"
