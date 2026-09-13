@@ -62,3 +62,52 @@ def test_spans_survive_the_chain() -> None:
     result = apply_chain(one("hello"), [registered("u", upper)])
     assert result.pieces[0].span == Span(0, 5)
     assert result.pieces[0].exact is False
+
+
+def test_mutation_then_exception_does_not_corrupt_pieces() -> None:
+    def mutate_then_boom(pieces: Sequence[Piece]) -> Sequence[Piece]:
+        pieces.clear()  # type: ignore[attr-defined]
+        raise RuntimeError("boom")
+
+    original_pieces = one("hi")
+    result = apply_chain(original_pieces, [registered("m", mutate_then_boom)])
+    assert [p.spoken for p in result.pieces] == ["hi"]
+    assert len(result.errors) == 1
+    assert "m" in result.errors[0] and "boom" in result.errors[0]
+
+
+def test_mutation_then_wrong_type_does_not_corrupt_pieces() -> None:
+    def mutate_then_bad(pieces: Sequence[Piece]) -> Sequence[Piece]:
+        pieces.clear()  # type: ignore[attr-defined]
+        return "not pieces"  # type: ignore[return-value]
+
+    original_pieces = one("hi")
+    result = apply_chain(original_pieces, [registered("m2", mutate_then_bad)])
+    assert [p.spoken for p in result.pieces] == ["hi"]
+    assert len(result.errors) == 1
+    assert "m2" in result.errors[0]
+
+
+def test_transform_returning_none_is_skipped() -> None:
+    result = apply_chain(one("hi"), [registered("none", lambda pieces: None)])
+    assert [p.spoken for p in result.pieces] == ["hi"]
+    assert len(result.errors) == 1
+    assert "none" in result.errors[0]
+
+
+def test_transform_returning_int_is_skipped() -> None:
+    result = apply_chain(one("hi"), [registered("int", lambda pieces: 42)])
+    assert [p.spoken for p in result.pieces] == ["hi"]
+    assert len(result.errors) == 1
+    assert "int" in result.errors[0]
+
+
+def test_transform_returning_generator_raising_mid_iteration_is_skipped() -> None:
+    def bad_generator(pieces: Sequence[Piece]):  # type: ignore[no-untyped-def]
+        yield pieces[0]
+        raise RuntimeError("generator failed")
+
+    result = apply_chain(one("hi"), [registered("gen", bad_generator)])
+    assert [p.spoken for p in result.pieces] == ["hi"]
+    assert len(result.errors) == 1
+    assert "gen" in result.errors[0] and "generator failed" in result.errors[0]

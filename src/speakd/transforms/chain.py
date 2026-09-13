@@ -30,7 +30,7 @@ def apply_chain(
     errors: list[str] = []
     for transform in transforms:
         try:
-            produced = transform.fn(current)
+            produced = transform.fn(list(current))
             candidate = list(produced)
         except Exception as exc:
             errors.append(f"{transform.name}: {exc}")
