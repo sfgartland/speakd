@@ -1201,3 +1201,57 @@ def test_a_player_that_cannot_be_silenced_still_lets_the_worker_leave() -> None:
         assert d.wait_idle(timeout=5.0)
     finally:
         d.stop()
+
+
+def test_a_hushed_utterance_is_not_reported_as_a_stopped_daemon() -> None:
+    """One message for two causes sends a reader hunting a stop that never was.
+
+    `_drain_queued` is the hush path; `_retire` and `_speak`'s recheck are the
+    stop path. A user who hushes and reads "the daemon stopped before this
+    reached the engine" is being told something false about a daemon that is
+    still running and about to speak again.
+    """
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["error"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("s", "One. Two. Three."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(enqueue("s", "Queued one.")).ok is True
+        assert d.handle(Request(verb=Verb.HUSH, source_id="s", payload={})).data["discarded"] == 1
+        release.set()
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        release.set()
+        d.stop()
+    messages = [str(e.data.get("message", "")) for e in seen]
+    discarded = [m for m in messages if "discarded" in m]
+    assert len(discarded) == 1
+    assert "hush" in discarded[0]
+    assert "stopped" not in discarded[0], f"a hush reported as a stop: {discarded[0]!r}"
+
+
+def test_work_the_daemon_stopped_on_still_says_so() -> None:
+    """The stop path keeps its own message: the two causes stay distinguishable."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["error"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    d.handle(enqueue("s", "One. Two. Three."))
+    assert reached.wait(timeout=5.0), "the worker never started playing"
+    assert d.handle(enqueue("s", "Queued one.")).ok is True
+    release.set()
+    d.stop()
+    discarded = [str(e.data.get("message", "")) for e in seen if "discarded" in str(e.data)]
+    assert discarded, "the queued utterance vanished without a word"
+    assert all("stopped" in message for message in discarded)
+    assert all("hush" not in message for message in discarded)

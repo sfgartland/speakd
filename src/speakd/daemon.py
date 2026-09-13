@@ -40,7 +40,12 @@ _STILL_FINISHING = (
     "and a second worker on the same queue would play over the first"
 )
 
-_DISCARDED = "discarded unspoken: the daemon stopped before this reached the engine"
+# Two causes, two messages. One text for both told a user who hushed that the
+# daemon had stopped — false about a daemon still running, and exactly what
+# sends a fresh reader hunting a shutdown that never happened.
+_DISCARDED_STOPPED = "discarded unspoken: the daemon stopped before this reached the engine"
+
+_DISCARDED_HUSHED = "discarded unspoken: a hush cleared the queue before this was spoken"
 
 
 @dataclass(frozen=True)
@@ -343,7 +348,7 @@ class Daemon:
         if ours:
             try:
                 for job in jobs:
-                    self._publish("error", job.source_id, {"message": _DISCARDED})
+                    self._publish("error", job.source_id, {"message": _DISCARDED_STOPPED})
             finally:
                 with self._idle:
                     # Whatever the bookkeeping did on the way down, nothing is
@@ -405,7 +410,7 @@ class Daemon:
                 self._jobs.put(None)
         try:
             for job in jobs:
-                self._publish("error", job.source_id, {"message": _DISCARDED})
+                self._publish("error", job.source_id, {"message": _DISCARDED_HUSHED})
         finally:
             self._release(len(jobs))
         return len(jobs)
@@ -436,7 +441,7 @@ class Daemon:
         if not self._running:
             # stop() can still land between this job leaving the queue and
             # the check above, so the Event alone cannot stop it.
-            self._publish("error", job.source_id, {"message": _DISCARDED})
+            self._publish("error", job.source_id, {"message": _DISCARDED_STOPPED})
             return
         text = f"{job.prefix} {job.text}".strip() if job.prefix else job.text
         pieces, errors = job.profile.prepare([Piece(span=Span(0, len(text)), spoken=text)])
