@@ -7,9 +7,12 @@ use playback as its clock while a producer thread runs ahead.
 from __future__ import annotations
 
 import time
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import sounddevice as sd
 
 
 class Player(Protocol):
@@ -77,7 +80,11 @@ class FakeSink:
         self.started = True
 
     def write(self, frames: np.ndarray) -> None:
-        self.blocks.append(frames)
+        # Mirrors SoundDeviceSink: a write always finds (or lazily re-enters)
+        # a running state, even right after stop() — stop() leaves the sink
+        # reusable rather than ending its life.
+        self.started = True
+        self.blocks.append(frames.copy())
         self.frames_written += len(frames)
 
     def stop(self) -> None:
@@ -98,9 +105,15 @@ class SoundDeviceSink:
         self.sample_rate = sample_rate
         self.blocksize = blocksize
         self.frames_written = 0
-        self._stream: object | None = None
+        self._stream: sd.OutputStream | None = None
 
     def start(self) -> None:
+        if self._stream is not None:
+            # Already running: a second start() must not orphan the first
+            # stream. Owning exactly one stream per sink is the reason this
+            # class exists.
+            return
+
         import sounddevice as sd
 
         stream = sd.OutputStream(
@@ -116,14 +129,19 @@ class SoundDeviceSink:
         if self._stream is None:
             self.start()
         assert self._stream is not None
-        self._stream.write(frames)  # type: ignore[attr-defined]
+        self._stream.write(frames)
         self.frames_written += len(frames)
 
     def stop(self) -> None:
+        """End the current playback but leave the sink reusable: the next
+        write() starts a fresh stream through the same lazy path start()
+        already provides."""
         if self._stream is not None:
-            self._stream.abort()  # type: ignore[attr-defined]
+            self._stream.abort()
+            self._stream.close()
+            self._stream = None
 
     def close(self) -> None:
         if self._stream is not None:
-            self._stream.close()  # type: ignore[attr-defined]
+            self._stream.close()
             self._stream = None
