@@ -7,12 +7,15 @@ client goes away.
 A malformed line is answered with an error response rather than a dropped
 connection: a client that sent nonsense deserves to be told what was wrong. A
 client that vanishes is dropped from the bus without disturbing anything else,
-because a GUI closing its window must never silence speech.
+because a GUI closing its window must never silence speech. Neither must a GUI
+that stops reading: events go out on a per-subscriber writer thread through a
+bounded queue, so no publish ever waits on a socket.
 """
 
 from __future__ import annotations
 
 import json
+import queue
 import select
 import socket
 import threading
@@ -40,6 +43,21 @@ _JOIN_TIMEOUT_SECONDS = 2.0
 # ever applied around the request/response read -- a subscriber's event
 # stream is otherwise unbounded, since an idle stream is not a stuck one.
 _REQUEST_TIMEOUT_SECONDS = 5.0
+# How many events may be waiting to go out to one subscriber before it is
+# dropped. A subscriber that stops reading fills the socket's own buffer first
+# (about 46 KB, some 280 position events, measured on Linux); this bounds what
+# the daemon is willing to hold on top of that before giving up on it. Large
+# enough that an ordinary GUI stall rides through, small enough that a wedged
+# one is noticed while the memory it costs is still trivial.
+_SUBSCRIBER_BACKLOG = 256
+
+
+class _SubscriberUnreachable(Exception):
+    """Raised out of a bus callback so the bus drops that subscriber.
+
+    `EventBus` drops a subscriber that raises; it has no answer for one that
+    blocks. This turns the second into the first.
+    """
 
 
 def _event_line(event: Event) -> bytes:
@@ -49,6 +67,22 @@ def _event_line(event: Event) -> bytes:
         "data": event.data,
     }
     return (json.dumps(body) + "\n").encode("utf-8")
+
+
+def _halt(outbox: queue.Queue[bytes | None]) -> None:
+    """Leave a writer thread its sentinel, making room for it if need be."""
+    while True:
+        try:
+            outbox.get_nowait()
+        except queue.Empty:
+            break
+    try:
+        outbox.put_nowait(None)
+    except queue.Full:  # pragma: no cover - nothing publishes here any more
+        # The subscription is disposed before this runs, so only an event
+        # already in flight could refill the queue. The writer still leaves:
+        # the shutdown() above it breaks any send it is sitting in.
+        pass
 
 
 class SocketServer:
@@ -145,31 +179,107 @@ class SocketServer:
 
     def _serve(self, connection: socket.socket) -> None:
         subscription: Subscription | None = None
+        subscriber_id = ""
         # Serializes every write to this connection: the subscribe ack, any
         # error/handler response, and every event the bus pushes. Without it,
-        # two threads (this one, and whichever thread calls bus.publish())
-        # can both be mid-sendall on the same socket, corrupting the framing.
-        write_lock = threading.Lock()
-        acked = False
-        pending: list[bytes] = []
+        # two threads (this one, and this connection's writer) can both be
+        # mid-sendall on the same socket, corrupting the framing. A Condition
+        # rather than a plain Lock because the writer must also be held off
+        # while an ack is owed -- see `ack_owed`.
+        write = threading.Condition()
+        # True between registering a subscription and that subscription's ack
+        # actually going out. A publish can land in between (even, in the
+        # extreme case, synchronously on this very thread from inside
+        # bus.subscribe()), and the ack must always be the first thing a
+        # client sees after asking to subscribe. A re-subscribe on the same
+        # connection reopens exactly the same window, which is why this is
+        # raised again each time rather than only once.
+        ack_owed = False
+        # Events are never written on the publishing thread -- that is the
+        # speech worker's own thread, and an accepted socket has no send
+        # timeout, so a subscriber that stopped reading would wedge it inside
+        # sendall forever: no further speech, wait_idle never returning, and
+        # a daemon that can never be started again. They go into this bounded
+        # queue instead, and out through `writer`; past the bound the
+        # subscriber is dropped rather than waited for.
+        outbox: queue.Queue[bytes | None] = queue.Queue(maxsize=_SUBSCRIBER_BACKLOG)
+        writer: threading.Thread | None = None
+        # Set once the peer has proved unreachable, so the next publish drops
+        # the subscription instead of filling the queue for nobody.
+        gone = threading.Event()
+        drop_lock = threading.Lock()
+        dropped = False
 
         def write_locked(payload: bytes) -> None:
-            with write_lock:
+            with write:
                 connection.sendall(payload)
 
+        def claim_drop() -> bool:
+            """Take responsibility for announcing this drop, exactly once."""
+            nonlocal dropped
+            with drop_lock:
+                if dropped:
+                    return False
+                dropped = True
+                return True
+
         def emit_event(event: Event) -> None:
-            line = _event_line(event)
-            with write_lock:
-                if acked:
-                    connection.sendall(line)
-                else:
-                    # A publish can land between registering with the bus and
-                    # sending the ack (even, in the extreme case, from the
-                    # very same thread if something publishes synchronously
-                    # from inside bus.subscribe()). Queue it rather than
-                    # write it: the ack must always be the first thing this
-                    # client sees after asking to subscribe.
-                    pending.append(line)
+            # Runs on the publishing thread, which is the speech worker's.
+            # Nothing here may block, so the line is only ever offered to the
+            # queue: a subscriber that cannot keep up is dropped, never
+            # waited for.
+            if gone.is_set() or dropped:
+                raise _SubscriberUnreachable(subscriber_id)
+            try:
+                outbox.put_nowait(_event_line(event))
+            except queue.Full:
+                if claim_drop():
+                    # Announced, because a GUI that silently stopped
+                    # receiving is indistinguishable, to whoever is watching
+                    # it, from a daemon with nothing to say. Published before
+                    # the raise: this callback is already marked dropped, so
+                    # the nested publish skips it and cannot recurse.
+                    self._bus.publish(
+                        Event(
+                            kind="error",
+                            source_id=subscriber_id,
+                            data={
+                                "message": (
+                                    f"dropped subscriber {subscriber_id!r}: it stopped "
+                                    f"reading and {_SUBSCRIBER_BACKLOG} events backed up"
+                                ),
+                                "subscriber": subscriber_id,
+                            },
+                        )
+                    )
+                    # Wakes this connection's own threads: the reader, so the
+                    # connection is cleaned up rather than left behind, and
+                    # the writer, wedged in a send to a peer that stopped
+                    # reading. shutdown() does not block.
+                    try:
+                        connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                raise _SubscriberUnreachable(subscriber_id) from None
+
+        def writer_loop() -> None:
+            """Drain the outbox onto the socket. The only thread that may block."""
+            try:
+                while True:
+                    line = outbox.get()
+                    if line is None:
+                        return
+                    try:
+                        with write:
+                            write.wait_for(lambda: not ack_owed)
+                            connection.sendall(line)
+                    except OSError:
+                        # The peer vanished, or this connection was shut
+                        # down. Left to the next publish to drop from the
+                        # bus, and to the finally below to clean up.
+                        return
+            finally:
+                gone.set()
 
         try:
             with connection.makefile("rb") as reader:
@@ -197,32 +307,25 @@ class SocketServer:
                             # A second subscribe on one connection must not
                             # leak the first: otherwise events arrive twice.
                             subscription.dispose()
-                        # acked must be reset here: a re-subscribe reopens the
-                        # same ack-then-flush window as the first one. Left at
-                        # True (its value from the first subscribe's ack), an
-                        # event published between this registration and the
-                        # second ack below would take the "already acked"
-                        # branch in emit_event and be written ahead of the
-                        # second ack -- the same desync the pending-buffer
-                        # exists to prevent, just reopened by reuse.
-                        with write_lock:
-                            acked = False
-                        # self._bus.subscribe() (like subscription.dispose()
-                        # above) must stay OUTSIDE `with write_lock`: the bus
-                        # can invoke emit_event synchronously, on this same
-                        # thread, from inside subscribe() -- that is exactly
-                        # how the regression tests force this race. Were this
-                        # call inside the lock, that nested same-thread
-                        # callback would deadlock re-acquiring a lock this
-                        # thread already holds. Do not "tidy" this into one
-                        # critical section.
+                        subscriber_id = request.source_id
+                        # Raised before registering, so that whatever the bus
+                        # pushes from here on waits in the outbox until the
+                        # ack below has actually gone out.
+                        with write:
+                            ack_owed = True
                         subscription = self._bus.subscribe(emit_event, kinds=kinds)
-                        with write_lock:
+                        with write:
                             connection.sendall(encode(Response(ok=True)))
-                            acked = True
-                            for buffered in pending:
-                                connection.sendall(buffered)
-                            pending.clear()
+                            ack_owed = False
+                            write.notify_all()
+                        if writer is None:
+                            # One writer per connection, started on its first
+                            # subscribe: a connection that only ever sends
+                            # requests never pays for a thread.
+                            writer = threading.Thread(
+                                target=writer_loop, name="speakd-writer", daemon=True
+                            )
+                            writer.start()
                         continue
                     try:
                         response = self._handler(request)
@@ -238,6 +341,21 @@ class SocketServer:
         finally:
             if subscription is not None:
                 subscription.dispose()
+            if writer is not None:
+                # shutdown() first: a writer wedged in a send to a peer that
+                # stopped reading is only freed by it, and joining before
+                # that would burn the timeout for nothing.
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                with write:
+                    # An ack whose send raised would otherwise leave the
+                    # writer waiting on `ack_owed` for one that never comes.
+                    ack_owed = False
+                    write.notify_all()
+                _halt(outbox)
+                writer.join(timeout=_JOIN_TIMEOUT_SECONDS)
             with self._lock:
                 if connection in self._connections:
                     self._connections.remove(connection)
