@@ -190,3 +190,32 @@ def test_the_host_reports_a_registry_watcher_failure() -> None:
     assert any("bibliography watcher failed" in e for e in host.errors())
     # Drained, not duplicated on a second read.
     assert sum("bibliography watcher failed" in e for e in host.errors()) == 1
+
+
+def test_a_failing_setup_is_attempted_once_however_many_services_it_requires() -> None:
+    """Each watch fires on registration; only the last may evaluate the plugin."""
+    registry = ServiceRegistry()
+    registry.provide("A", "a")
+    registry.provide("B", "b")
+    host = PluginHost(registry)
+    attempts: list[str] = []
+
+    def boom(ctx: PluginContext) -> None:
+        attempts.append("tried")
+        raise RuntimeError("setup failed")
+
+    host.register("multi", boom, requires=["A", "B"])
+    assert attempts == ["tried"]
+    assert [e for e in host.errors() if "setup failed" in e] == ["multi: setup failed"]
+
+
+def test_a_plugin_with_two_requirements_waits_for_both() -> None:
+    registry = ServiceRegistry()
+    host = PluginHost(registry)
+    host.register("multi", lambda ctx: ctx.transform("m", upper), requires=["A", "B"])
+    assert host.active() == set()
+    registry.provide("A", "a")
+    assert host.active() == set()
+    registry.provide("B", "b")
+    assert host.active() == {"multi"}
+    assert [t.name for t in host.transforms()] == ["m"]

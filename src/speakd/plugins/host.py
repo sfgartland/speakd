@@ -86,6 +86,8 @@ class PluginHost:
         self._plugins: dict[str, _Plugin] = {}
         self._transforms: list[RegisteredTransform] = []
         self._errors: list[str] = []
+        # Names whose watches are still being installed; see register().
+        self._installing: set[str] = set()
 
     def transforms(self) -> list[RegisteredTransform]:
         return list(self._transforms)
@@ -114,13 +116,22 @@ class PluginHost:
         plugin = _Plugin(name=name, setup=setup, requires=tuple(requires))
         self._plugins[name] = plugin
         # Watching before the first evaluation means a provider appearing later
-        # activates the plugin without anyone re-running registration.
-        plugin.watches = tuple(
-            self.registry.watch(service, partial(self._on_service_change, name))
-            for service in plugin.requires
-        )
-        if not plugin.requires:
-            self._activate(plugin)
+        # activates the plugin without anyone re-running registration. But
+        # registry.watch() fires synchronously, so installing N watches asks for
+        # N evaluations: on success the first sets plugin.group and the rest are
+        # no-ops, while a setup that raises leaves group None and is retried once
+        # per requirement -- repeating whatever it did before the raise, outside
+        # the group that would have undone it. Install the watches deaf, then
+        # evaluate exactly once.
+        self._installing.add(name)
+        try:
+            plugin.watches = tuple(
+                self.registry.watch(service, partial(self._on_service_change, name))
+                for service in plugin.requires
+            )
+        finally:
+            self._installing.discard(name)
+        self._reevaluate(name)
 
     def unregister(self, name: str) -> None:
         plugin = self._plugins.pop(name, None)
@@ -134,6 +145,8 @@ class PluginHost:
         self._reevaluate(name)
 
     def _reevaluate(self, name: str) -> None:
+        if name in self._installing:
+            return
         plugin = self._plugins.get(name)
         if plugin is None:
             return
