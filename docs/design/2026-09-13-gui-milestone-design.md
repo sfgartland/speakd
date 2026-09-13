@@ -105,18 +105,17 @@ Electron's one bundled Chromium. For a page that renders text, highlights a rang
 and draws four buttons, that risk is small. The gain is a 3–10 MB bundle against
 Electron's 120–200 MB.
 
-## Open decision
+## Settled: now-playing only
 
-**Does the GUI also open documents?** Two readings, and they differ in size:
+The window shows the text currently being spoken and nothing else. It does not open
+documents.
 
-- **Now-playing only.** The window shows whatever the daemon is currently speaking,
-  whichever channel it came from. Smaller, and complete on its own.
-- **Also a reader.** You open a vault note or PDF in it, press play, and watch it
-  follow along. This pulls document loading, position persistence and
-  chapter/paragraph navigation forward from the document-reader milestone.
-
-The second is more useful and roughly doubles the frontend. It also makes the
-`audiobook-viewer` Expo project redundant, which may be an argument for it.
+That was put to the owner and confirmed: "the ui should only show the actual
+speaking text." It keeps this milestone complete on its own and roughly halves the
+frontend. Reading a vault note or a PDF by ear — with position persistence, chapter
+navigation and the corpus features that go with them — gets its own milestone rather
+than riding along inside this one, where it would double the scope of the part that
+is already gated behind a rewrite.
 
 ## Explicitly not in this milestone
 
