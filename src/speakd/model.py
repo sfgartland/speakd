@@ -33,10 +33,20 @@ class Piece:
     Transforms map pieces to pieces. Rewriting changes `spoken` and keeps
     `span`, so provenance survives arbitrary rewriting and follow-along
     display keeps working under a profile that rewrites heavily.
+
+    `exact` says whether `spoken` is still the verbatim source text at
+    `span`. Only then can a consumer index into `span` by offset — the
+    segmenter does exactly that to give each sub-unit its own span. A
+    transform that rewrites must clear it. It cannot be inferred from
+    lengths: `café` to `cafe`, an em-dash swap, and much of milestone 3's
+    pronunciation table all preserve length while destroying the
+    correspondence, and the resulting sub-spans point at text that no
+    longer matches — silently, and wrongly highlighted.
     """
 
     span: Span
     spoken: str
+    exact: bool = True
 
 
 @dataclass(frozen=True)

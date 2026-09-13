@@ -76,7 +76,11 @@ def segment(pieces: Sequence[Piece], max_chars: int = DEFAULT_MAX_CHARS) -> list
         raise ValueError(f"max_chars must be at least 1, got {max_chars}")
     result: list[Piece] = []
     for piece in pieces:
-        exact = len(piece.spoken) == piece.span.end - piece.span.start
+        # The flag is the claim; the length check is a secondary guard that
+        # can only downgrade it. A piece asserting `exact` whose spoken text
+        # no longer spans its source range is wrong either way, so offsets
+        # into it are not trusted.
+        exact = piece.exact and len(piece.spoken) == piece.span.end - piece.span.start
         for offset, chunk in _units(piece.spoken, max_chars):
             spoken = chunk.strip()
             if not spoken:
@@ -84,6 +88,8 @@ def segment(pieces: Sequence[Piece], max_chars: int = DEFAULT_MAX_CHARS) -> list
             if exact:
                 span = Span(piece.span.start + offset, piece.span.start + offset + len(chunk))
             else:
+                # Nothing better is available: the whole parent span is the
+                # tightest honest provenance for any part of a rewrite.
                 span = piece.span
-            result.append(Piece(span=span, spoken=spoken))
+            result.append(Piece(span=span, spoken=spoken, exact=exact))
     return result
