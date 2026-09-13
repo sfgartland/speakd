@@ -117,6 +117,44 @@ navigation and the corpus features that go with them — gets its own milestone 
 than riding along inside this one, where it would double the scope of the part that
 is already gated behind a rewrite.
 
+## Settled: the window is pinned, small, and shows four numbers
+
+The primary form is a **384px always-on-top monitor** meant to sit beside an editor,
+not a reading view. That width is the constraint everything else answers to: the
+passage does not fit, so the text area shows three lines — previous, current, next —
+with the spoken one lit and centred. You keep your place without scrolling, and it
+is still only the text being spoken.
+
+Four metrics earn a place, chosen because each predicts or explains a failure this
+project actually has, rather than because they are the numbers dashboards usually
+show:
+
+- **rtf** — synthesis speed against realtime, the *leading* indicator. Kokoro runs
+  at 0.75x on the reference machine: only 33% faster than realtime, so anything else
+  loading the CPU makes synthesis fall behind playback and audio stutter. Colour-coded,
+  with the spare headroom stated rather than left to be computed.
+- **drift** — the gap between the nominal audio clock and wall time, the *lagging*
+  indicator of the same thing. Both are shown because one predicts and one confirms.
+- **mem** — resident memory against total, with a proportion bar. Argued against
+  initially on the grounds that it barely moves; conceded, because on a machine that
+  sits near its limit "is this the thing eating it" is a real question a constant
+  number still answers.
+- **queue depth** — how many utterances are behind this one, which is what tells you
+  whether a hush silences one thing or five.
+
+Deliberately **not** shown: GPU, which would read 0% forever since the reference
+machine's card is below the compute capability modern cuDNN supports and the project
+runs CPU-only by design; and raw CPU percentage, whose meaningful form here is rtf.
+
+Also in the window: the **other channels** as pills with their roles, because a
+monitor showing one channel on a machine running three lies by omission; and an
+**error line that appears only when there is one**, since transform failures and
+missing transforms currently reach stderr where a GUI user never sees them.
+
+Mockups: `clients/gui/pinned.html` (the primary form) and `clients/gui/prototype.html`
+(the wider reading view). Both run against a simulated event stream and are approved
+as the reference for the real frontend.
+
 ## Explicitly not in this milestone
 
 Multi-machine or remote access; authentication; theming or a design system beyond

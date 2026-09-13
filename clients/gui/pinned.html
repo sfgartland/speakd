@@ -1,0 +1,440 @@
+<title>speakd Pinned Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,300;6..72,400&display=swap">
+
+<style>
+  :root {
+    --ground: #f6f7f9;
+    --surface: #ffffff;
+    --ink: #15181d;
+    --ink-soft: #3d434e;
+    --muted: #646d7c;
+    --faint: #99a1ae;
+    --rule: #dfe3e9;
+    --rule-strong: #c6ccd6;
+    --lit: #b0700f;
+    --lit-mark: #fbeacd;
+    --lit-edge: #e2a94a;
+    --spent: #aeb5c0;
+    --good: #2f7d5d;
+    --warn: #b0700f;
+    --bad: #a3402f;
+  }
+
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --ground: #101319;
+      --surface: #171b22;
+      --ink: #e7eaef;
+      --ink-soft: #bdc4cf;
+      --muted: #8c95a3;
+      --faint: #5d6676;
+      --rule: #262c36;
+      --rule-strong: #38404d;
+      --lit: #f0b054;
+      --lit-mark: #3a2f18;
+      --lit-edge: #8a6520;
+      --spent: #4e5766;
+      --good: #5cb98c;
+      --warn: #f0b054;
+      --bad: #e08370;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #101319;
+    --surface: #171b22;
+    --ink: #e7eaef;
+    --ink-soft: #bdc4cf;
+    --muted: #8c95a3;
+    --faint: #5d6676;
+    --rule: #262c36;
+    --rule-strong: #38404d;
+    --lit: #f0b054;
+    --lit-mark: #3a2f18;
+    --lit-edge: #8a6520;
+    --spent: #4e5766;
+    --good: #5cb98c;
+    --warn: #f0b054;
+    --bad: #e08370;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    margin: 0;
+    padding: 26px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    min-height: 100vh;
+  }
+
+  .caption {
+    font-size: 12px;
+    color: var(--faint);
+    max-width: 44ch;
+    text-align: center;
+    line-height: 1.55;
+    margin: 0;
+  }
+
+  .caption b { color: var(--muted); font-weight: 500; }
+
+  /* ── the pinned window itself ── */
+
+  .win {
+    width: 384px;
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 10px 28px rgba(21, 24, 29, .14), 0 2px 5px rgba(21, 24, 29, .08);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* title bar */
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--ground);
+  }
+
+  .pip {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--spent); flex: none;
+  }
+  .pip.live { background: var(--lit); }
+  .pip.held { background: none; box-shadow: inset 0 0 0 1.5px var(--lit-edge); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .pip.live { animation: breathe 1.9s ease-in-out infinite; }
+  }
+  @keyframes breathe { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+
+  .chan {
+    font-size: 12px; font-weight: 600; letter-spacing: -.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .role {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 9px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+    border-radius: 2px; padding: 1px 4px; flex: none;
+  }
+
+  .bar-spacer { flex: 1 1 auto; }
+
+  .pin {
+    border: 0; background: none; padding: 2px; cursor: pointer;
+    color: var(--lit); display: flex; line-height: 0; border-radius: 3px;
+  }
+  .pin[aria-pressed="false"] { color: var(--faint); }
+  .pin:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+
+  /* the speaking text — three lines of context, current one lit */
+  .text {
+    padding: 14px 14px 12px;
+    font-family: Newsreader, Georgia, serif;
+    font-weight: 300;
+    display: flex; flex-direction: column; gap: 6px;
+    min-height: 132px;
+    justify-content: center;
+  }
+
+  .line {
+    font-size: 13px; line-height: 1.45; color: var(--spent);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .line.now {
+    font-size: 16px; line-height: 1.42; color: var(--ink);
+    background: var(--lit-mark); box-shadow: 0 0 0 3px var(--lit-mark);
+    border-radius: 2px; -webkit-line-clamp: 3;
+  }
+
+  .win[data-transport="paused"] .line.now {
+    background: none; box-shadow: none;
+    text-decoration: underline dashed var(--lit-edge);
+    text-decoration-thickness: 2px; text-underline-offset: 4px;
+  }
+
+  .win[data-transport="hushed"] .line { opacity: .45; }
+  .win[data-transport="hushed"] .line.now {
+    background: none; box-shadow: none; color: var(--spent);
+  }
+
+  /* scrubber */
+  .scrub { display: flex; gap: 2px; height: 5px; padding: 0 12px 10px; }
+  .tick { border: 0; padding: 0; background: var(--rule); border-radius: 1px;
+          position: relative; overflow: hidden; cursor: pointer; }
+  .tick[data-state="spent"] { background: var(--rule-strong); }
+  .tick[data-state="lit"] { background: var(--lit-edge); }
+  .tick .fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--lit); }
+  .tick:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+  .win[data-transport="paused"] .tick[data-state="lit"] {
+    background: var(--rule); box-shadow: inset 0 0 0 1.5px var(--lit-edge);
+  }
+
+  /* controls */
+  .ctls { display: flex; gap: 6px; padding: 0 12px 11px; }
+  .ctls button {
+    font: inherit; font-size: 11.5px; font-weight: 500;
+    color: var(--ink); background: var(--surface);
+    border: 1px solid var(--rule-strong); border-radius: 3px;
+    padding: 5px 0; cursor: pointer; flex: 1 1 0;
+  }
+  .ctls button.primary { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+  .ctls button.danger { color: var(--lit); border-color: var(--lit-edge); }
+  .ctls button:disabled { opacity: .35; cursor: default; }
+  .ctls button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+
+  /* metrics — the glance row */
+  .metrics {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--rule);
+    font-family: "IBM Plex Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .metric {
+    padding: 7px 8px 8px;
+    display: flex; flex-direction: column; gap: 2px;
+    border-right: 1px solid var(--rule);
+  }
+  .metric:last-child { border-right: 0; }
+
+  .metric .k {
+    font-size: 8.5px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--faint);
+  }
+  .metric .v { font-size: 12.5px; font-weight: 500; color: var(--ink-soft); }
+  .metric .v[data-level="good"] { color: var(--good); }
+  .metric .v[data-level="warn"] { color: var(--warn); }
+  .metric .v[data-level="bad"] { color: var(--bad); }
+  .metric .sub { font-size: 8.5px; color: var(--faint); }
+
+  .meter { height: 2px; background: var(--rule); border-radius: 1px; overflow: hidden; margin-top: 1px; }
+  .meter span { display: block; height: 100%; background: var(--muted); }
+
+  /* other channels */
+  .chans {
+    border-top: 1px solid var(--rule);
+    padding: 7px 10px; display: flex; align-items: center; gap: 6px;
+    font-size: 10.5px; color: var(--muted); flex-wrap: wrap;
+  }
+  .chans .lbl {
+    font-family: "IBM Plex Mono", monospace; font-size: 8.5px;
+    text-transform: uppercase; letter-spacing: .1em; color: var(--faint);
+  }
+  .cpill {
+    border: 1px solid var(--rule-strong); border-radius: 9px;
+    padding: 1px 7px; display: inline-flex; align-items: center; gap: 4px;
+    white-space: nowrap;
+  }
+  .cdot { width: 4px; height: 4px; border-radius: 50%; background: var(--spent); }
+  .cpill[data-state="queued"] .cdot { background: var(--lit-edge); }
+
+  /* error line — present only when there is one */
+  .err {
+    border-top: 1px solid var(--rule);
+    padding: 7px 10px; font-size: 10.5px; color: var(--bad);
+    display: flex; gap: 6px; align-items: baseline;
+  }
+  .err code { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; color: var(--muted); }
+  .err[hidden] { display: none; }
+</style>
+
+<p class="caption">
+  Pinned monitor at its real size — <b>384&thinsp;px</b> wide, sized to sit always-on-top
+  beside an editor. Press play; the metrics move as speech does.
+</p>
+
+<div class="win" id="win" data-transport="paused">
+
+  <div class="bar">
+    <span class="pip" id="pip"></span>
+    <span class="chan">PhD articulation</span>
+    <span class="role">foreground</span>
+    <span class="bar-spacer"></span>
+    <button class="pin" id="pin" aria-pressed="true" title="Always on top">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M6 1.5h4l-.6 4.2 2.6 2.3v1.2H8.7V14L8 15.2 7.3 14V9.2H3v-1.2l2.6-2.3z"
+              fill="currentColor"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="text">
+    <div class="line" id="prev"></div>
+    <div class="line now" id="now"></div>
+    <div class="line" id="next"></div>
+  </div>
+
+  <div class="scrub" id="scrub"></div>
+
+  <div class="ctls">
+    <button class="primary" id="play">Play</button>
+    <button id="back">&larr;</button>
+    <button id="fwd">&rarr;</button>
+    <button class="danger" id="hush">Hush</button>
+  </div>
+
+  <div class="metrics">
+    <div class="metric">
+      <span class="k">rtf</span>
+      <span class="v" id="rtf" data-level="good">0.75&times;</span>
+      <span class="sub" id="rtf-sub">33% spare</span>
+    </div>
+    <div class="metric">
+      <span class="k">drift</span>
+      <span class="v" id="drift">0.00s</span>
+      <span class="sub">behind clock</span>
+    </div>
+    <div class="metric">
+      <span class="k">mem</span>
+      <span class="v" id="mem">1.52<span style="font-size:9px"> GB</span></span>
+      <div class="meter"><span id="mem-bar" style="width:10%"></span></div>
+    </div>
+    <div class="metric">
+      <span class="k">queue</span>
+      <span class="v" id="queue">2</span>
+      <span class="sub" id="queue-sub">waiting</span>
+    </div>
+  </div>
+
+  <div class="chans">
+    <span class="lbl">also</span>
+    <span class="cpill" data-state="idle"><span class="cdot"></span>ReSem&nbsp;paper</span>
+    <span class="cpill" data-state="queued"><span class="cdot"></span>Kronikk</span>
+    <span style="color:var(--faint)">both background</span>
+  </div>
+
+  <div class="err" id="err" hidden>
+    <span>&#9888;</span>
+    <span>Profile <code>philosophy</code> wants <code>citations</code> — no plugin provides it.</span>
+  </div>
+
+</div>
+
+<p class="caption">
+  <b>rtf</b> is the leading indicator: synthesis speed against realtime. Below 1&times; means
+  synthesis outruns playback. <b>drift</b> is the lagging one — it grows when a long
+  sentence follows a short one. Errors appear only when there are any.
+</p>
+
+<script>
+  const SEGMENTS = [
+    { text: "Kant gives the official definition at B25.", dur: 2.31, synth: 1.6 },
+    { text: "He calls transcendental all cognition occupied not so much with objects as with our mode of cognition of objects, insofar as this is to be possible a priori.", dur: 8.42, synth: 6.1 },
+    { text: "The crucial thing is that the term is reflexive, or second order.", dur: 3.55, synth: 2.4 },
+    { text: "It does not name a special class of objects lying beyond the ordinary ones.", dur: 4.48, synth: 5.9 },
+    { text: "It names an inquiry that turns back on cognition itself.", dur: 3.02, synth: 2.1 },
+  ];
+
+  const el = (id) => document.getElementById(id);
+  const win = el("win");
+
+  let index = 1, within = 2.4, playing = false, hushed = false;
+  let drift = 0.18, rtf = 0.75, queue = 2, raf = null, last = 0;
+
+  const ticks = SEGMENTS.map((seg, i) => {
+    const t = document.createElement("button");
+    t.className = "tick";
+    t.type = "button";
+    t.style.flex = seg.dur + " 1 0";
+    t.setAttribute("aria-label", "Seek: " + seg.text);
+    t.innerHTML = '<span class="fill"></span>';
+    t.addEventListener("click", () => seek(i));
+    el("scrub").appendChild(t);
+    return t;
+  });
+
+  function render() {
+    const seg = SEGMENTS[index];
+    win.dataset.transport = hushed ? "hushed" : playing ? "playing" : "paused";
+
+    el("prev").textContent = index > 0 ? SEGMENTS[index - 1].text : "";
+    el("now").textContent = seg.text;
+    el("next").textContent = index < SEGMENTS.length - 1 ? SEGMENTS[index + 1].text : "";
+
+    ticks.forEach((t, i) => {
+      t.dataset.state = hushed ? "ahead" : i < index ? "spent" : i === index ? "lit" : "ahead";
+      t.querySelector(".fill").style.width =
+        hushed ? "0" : i < index ? "100%" : i === index ? (within / seg.dur) * 100 + "%" : "0";
+    });
+
+    el("rtf").textContent = rtf.toFixed(2) + "×";
+    el("rtf").dataset.level = rtf < 0.85 ? "good" : rtf < 1 ? "warn" : "bad";
+    el("rtf-sub").textContent = rtf < 1
+      ? Math.round((1 - rtf) * 100) + "% spare"
+      : "falling behind";
+
+    el("drift").textContent = drift.toFixed(2) + "s";
+    el("drift").dataset.level = drift > 0.6 ? "warn" : "";
+
+    el("queue").textContent = String(queue);
+    el("queue-sub").textContent = queue === 0 ? "clear" : "waiting";
+
+    el("pip").className = "pip" + (playing ? " live" : hushed ? "" : " held");
+    el("play").textContent = playing ? "Pause" : hushed ? "Again" : "Play";
+    el("back").disabled = hushed;
+    el("fwd").disabled = hushed;
+    el("hush").disabled = hushed;
+    el("err").hidden = !hushed;
+  }
+
+  function tick(now) {
+    if (!playing) return;
+    const dt = Math.min((now - last) / 1000, 0.25);
+    last = now;
+    within += dt;
+
+    const next = SEGMENTS[index + 1];
+    if (next) {
+      const slack = SEGMENTS[index].dur - next.synth;
+      drift = Math.max(0, drift + (slack < 0 ? dt * 0.22 : -dt * 0.12));
+      rtf = Math.min(1.12, Math.max(0.6, next.synth / SEGMENTS[index].dur));
+    }
+
+    if (within >= SEGMENTS[index].dur) {
+      within = 0;
+      if (index < SEGMENTS.length - 1) { index++; }
+      else { playing = false; within = SEGMENTS[index].dur; queue = Math.max(0, queue - 1); }
+    }
+    render();
+    raf = requestAnimationFrame(tick);
+  }
+
+  function start() {
+    if (playing) return;
+    if (hushed) { hushed = false; index = 0; within = 0; drift = 0; queue = 2; }
+    playing = true; last = performance.now();
+    raf = requestAnimationFrame(tick); render();
+  }
+  function pause() { playing = false; if (raf) cancelAnimationFrame(raf); render(); }
+  function seek(i) { index = i; within = 0; hushed = false; render(); }
+
+  el("play").addEventListener("click", () => (playing ? pause() : start()));
+  el("back").addEventListener("click", () => seek(Math.max(0, index - 1)));
+  el("fwd").addEventListener("click", () => seek(Math.min(SEGMENTS.length - 1, index + 1)));
+  el("hush").addEventListener("click", () => { pause(); hushed = true; queue = 0; render(); });
+  el("pin").addEventListener("click", (e) => {
+    const b = e.currentTarget;
+    b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true");
+  });
+
+  render();
+</script>
