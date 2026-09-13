@@ -387,6 +387,24 @@ if mode == "refuse":
 
     daemon.start = refuse
 
+if mode == "order":
+    # Records the shutdown order Ctrl-C actually takes.
+    def note(step):
+        with marker.open("a") as handle:
+            print(step, file=handle)
+
+    class NotingPlayer(RecordingPlayer):
+        def stop(self):
+            note("silence")
+
+    class NotingServer(entry.SocketServer):
+        def stop(self):
+            note("server")
+            super().stop()
+
+    daemon.player = NotingPlayer()
+    entry.SocketServer = NotingServer
+
 if mode == "slow-server":
 
     class SlowServer(entry.SocketServer):
@@ -446,6 +464,29 @@ def test_a_second_signal_does_not_wait_for_the_first_stop(tmp_path: Path) -> Non
             process.kill()
         process.communicate()
     assert not socket_path.exists(), "the impatient exit left a stale socket behind"
+
+
+def test_ctrl_c_stops_the_audio_before_it_stops_the_server(tmp_path: Path) -> None:
+    """Ctrl-C must go quiet at once, without giving up the unwedging.
+
+    server.stop()'s shutdown() is precisely what frees a speech worker wedged
+    writing to a subscriber, so it has to keep coming before daemon.stop()'s
+    5s join. That leaves the audio sounding for the length of the server's
+    shutdown unless something silences the daemon first.
+    """
+    process, socket_path, marker = _spawn(tmp_path, "order")
+    try:
+        assert _until(socket_path.exists, timeout=20.0), "the daemon never listened"
+        process.send_signal(signal.SIGINT)
+        assert process.wait(timeout=20.0) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate()
+    steps = marker.read_text().split()
+    # Silence, then the server, then the daemon's own teardown (which
+    # silences again on its way down).
+    assert steps == ["silence", "server", "silence"], steps
 
 
 def test_a_refused_start_is_reported_and_never_listens(tmp_path: Path) -> None:

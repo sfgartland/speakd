@@ -131,6 +131,22 @@ class Daemon:
                 raise
         return Response(ok=True, data={"started": True})
 
+    def silence(self) -> None:
+        """Stop sounding now, and take no more speech. The teardown is `stop()`.
+
+        A shutdown wants the audio to end the moment it is asked for, but
+        `stop()` joins its worker for up to 5s and a server has to be closed
+        first: `SocketServer.stop()`'s shutdown() is what frees a worker
+        wedged writing to a subscriber, so it cannot be made to wait behind
+        that join. This is the part of `stop()` that is immediate.
+        `_running` goes with the cancel so that nothing queued behind the
+        cancelled utterance starts speaking in the meantime.
+        """
+        with self._idle:
+            self._running = False
+            self._cancel.set()
+        self._stop_player()
+
     def stop(self) -> None:
         # Under the lock, so an enqueue in flight on another thread either
         # lands before this (and is discarded with an error) or is refused.

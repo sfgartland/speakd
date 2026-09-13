@@ -74,6 +74,12 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
 
     server.start()
     stop.wait()
+    # Silenced first, so Ctrl-C goes quiet at once. The two calls below keep
+    # their order: server.stop()'s shutdown() is what frees a speech worker
+    # wedged writing to a subscriber that stopped reading, and putting
+    # daemon.stop() first would make every Ctrl-C wait out a 5s join before
+    # anything could unwedge it.
+    daemon.silence()
     server.stop()
     daemon.stop()
     return 0
