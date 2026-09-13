@@ -3095,6 +3095,11 @@ wheels = [
 name = "speakd"
 version = "0.0.1"
 source = { editable = "." }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
 
 [package.optional-dependencies]
 kokoro = [
@@ -3122,6 +3127,7 @@ dev = [
 requires-dist = [
     { name = "kokoro", marker = "extra == 'kokoro'" },
     { name = "litellm", marker = "extra == 'llm'" },
+    { name = "numpy", specifier = ">=1.24" },
     { name = "numpy", marker = "extra == 'kokoro'" },
     { name = "scipy", marker = "extra == 'kokoro'" },
     { name = "sounddevice", marker = "extra == 'kokoro'" },
