@@ -77,7 +77,12 @@ def _build_parser() -> argparse.ArgumentParser:
     role.add_argument("role", metavar="{foreground,background}", help="foreground or background")
 
     priority = sub.add_parser("priority", parents=[common], help="set a channel's priority")
-    priority.add_argument("priority", type=int, help="higher is heard first")
+    # Left untyped here and checked in `_priority`, for the same reason as
+    # the role above: argparse's `type=int` raises SystemExit, so two
+    # neighbouring subcommands failed in two different shapes -- the same
+    # exit code to a shell, a return value in one case and an exception in
+    # the other to anyone calling `main`.
+    priority.add_argument("priority", metavar="INTEGER", help="higher is heard first")
 
     sub.add_parser("subscribe", parents=[common], help="stream events as JSON lines")
     sub.add_parser("status", parents=[common], help="print the daemon's channels as JSON")
@@ -282,12 +287,20 @@ def _role(args: argparse.Namespace) -> int:
 
 
 def _priority(args: argparse.Namespace) -> int:
+    try:
+        priority = int(args.priority)
+    except ValueError:
+        print(
+            f"speakctl: priority must be an integer, got {args.priority!r}",
+            file=sys.stderr,
+        )
+        return _UNREACHABLE
     response = _call(
         args.socket,
         Request(
             verb=Verb.SET_PRIORITY,
             source_id=args.source,
-            payload={"priority": args.priority},
+            payload={"priority": priority},
         ),
     )
     if response is None:

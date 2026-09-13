@@ -515,3 +515,23 @@ def test_the_client_and_the_entry_point_import_without_kokoro() -> None:
         [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_a_bad_role_and_a_bad_priority_fail_the_same_way(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """One shape for both, or `main()`'s callers cannot handle either.
+
+    `role` returned 2 from its own check; `priority` let argparse's `type=int`
+    raise SystemExit. A shell sees 2 either way, but a caller of `main()` --
+    the tests here included -- sees a return value in one case and an
+    exception in the other, from two neighbouring subcommands.
+    """
+    missing = tmp_path / "absent.sock"
+    role_code = main(["role", "loud", "--source", "s", "--socket", str(missing)])
+    role_err = capsys.readouterr().err
+    priority_code = main(["priority", "loud", "--source", "s", "--socket", str(missing)])
+    priority_err = capsys.readouterr().err
+    assert role_code == priority_code == 2
+    assert "loud" in role_err
+    assert "loud" in priority_err
+    # Neither needs a daemon to name what was wrong with the argument.
+    assert "no daemon" not in priority_err
