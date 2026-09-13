@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -125,6 +126,67 @@ def test_a_dropped_subscriber_is_announced_on_the_bus(tmp_path: Path) -> None:
         message = str(seen[0].data.get("message", ""))
         assert "subscriber" in message
         assert "gui" in message or seen[0].source_id == "gui"
+    finally:
+        if deaf is not None:
+            deaf.close()
+        server.stop()
+
+
+def test_a_dropped_subscriber_is_disconnected_not_left_behind(tmp_path: Path) -> None:
+    """Dropping it from the bus is half the job; the connection goes too.
+
+    Its reader thread is blocked on a client that will never send again and
+    its writer is wedged in a send that will never complete, so without the
+    shutdown that wakes both, a dropped subscriber costs two threads, a
+    socket and two list entries for the life of the daemon.
+    """
+    bus = EventBus()
+    server = SocketServer(tmp_path / "speakd.sock", _no_op_handler, bus)
+    server.start()
+    deaf = None
+    try:
+        deaf = _subscribe_and_stop_reading(server.address, bus, "gui")
+        for n in range(4000):
+            bus.publish(Event(kind="position", source_id="s", data={"n": n}))
+            if bus.subscriber_count() == 0:
+                break
+        assert bus.subscriber_count() == 0, "the deaf subscriber was never dropped"
+        deadline = time.monotonic() + 5.0
+        while server._connections and time.monotonic() < deadline:
+            threading.Event().wait(0.01)
+        assert server._connections == [], "the dropped subscriber's connection was left behind"
+        assert server._conn_threads == [], "the dropped subscriber's thread was left behind"
+    finally:
+        if deaf is not None:
+            deaf.close()
+        server.stop()
+
+
+def test_a_peer_that_stops_receiving_is_dropped_on_the_next_publish(tmp_path: Path) -> None:
+    """A peer can stop receiving without going away.
+
+    shutdown(SHUT_RD) on a Unix socket breaks the daemon's sends while the
+    client's own requests still arrive, so the writer thread dies and the
+    connection thread stays blocked in its read. Without the `gone` check the
+    next publishes pile into the outbox for a writer that is not there -- 256
+    of them before the daemon notices, and then announced as a subscriber
+    that stopped reading, which is a different fault with a different cure.
+    """
+    bus = EventBus()
+    server = SocketServer(tmp_path / "speakd.sock", _no_op_handler, bus)
+    server.start()
+    deaf = None
+    try:
+        deaf = _subscribe_and_stop_reading(server.address, bus, "gui")
+        seen: list[Event] = []
+        bus.subscribe(seen.append, kinds=["error"])
+        deaf.shutdown(socket.SHUT_RD)
+        for _ in range(10):
+            bus.publish(Event(kind="position", source_id="s", data={}))
+            time.sleep(0.02)
+        # Only the in-process watcher above is left.
+        assert bus.subscriber_count() == 1, "a peer that stopped receiving was kept on the bus"
+        assert seen == [], "a vanished peer was announced as a subscriber that could not keep up"
     finally:
         if deaf is not None:
             deaf.close()
