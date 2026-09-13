@@ -124,11 +124,64 @@ def test_stop_while_paused_does_not_deadlock() -> None:
     assert done.wait(timeout=5.0), "stop must release a paused play()"
     thread.join(timeout=5.0)
     assert player.interrupted is True
+    assert player.paused is True, "stop() must not clear pause state"
+
+
+def test_pause_is_sticky_across_stop() -> None:
+    import threading
+    import time
+
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.pause()
+    done = threading.Event()
+
+    def run() -> None:
+        player.play(audio(10_000), 24000)
+        done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    player.stop()
+    assert done.wait(timeout=5.0), "stop must release a paused play()"
+    thread.join(timeout=5.0)
+    assert player.paused is True
+
+    # A fresh, unrelated play() must start paused too: pause outlives the stop.
+    frames_before = sink.frames_written
+    second_done = threading.Event()
+
+    def run_again() -> None:
+        player.play(audio(500), 24000)
+        second_done.set()
+
+    second_thread = threading.Thread(target=run_again, daemon=True)
+    second_thread.start()
+    time.sleep(0.05)
+    assert not second_done.is_set(), "next play() should start paused"
+    assert sink.frames_written == frames_before
+
+    player.resume()
+    assert second_done.wait(timeout=5.0), "resume should let the next play() finish"
+    second_thread.join(timeout=5.0)
+    assert sink.frames_written == frames_before + 500
 
 
 def test_resume_without_pause_is_harmless() -> None:
+    import threading
+
     sink = FakeSink()
     player = StreamingPlayer(sink, chunk_frames=100)
     player.resume()
-    player.play(audio(100), 24000)
+    done = threading.Event()
+
+    def run() -> None:
+        player.play(audio(100), 24000)
+        done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    assert done.wait(timeout=5.0), "resume() without a prior pause() should never hang play()"
+    thread.join(timeout=5.0)
     assert sink.frames_written == 100

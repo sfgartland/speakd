@@ -192,6 +192,18 @@ class StreamingPlayer:
         self._resume.set()
 
     def stop(self) -> None:
+        """End the current playback.
+
+        Pause state is sticky across this: stop() does not touch `_resume`.
+        The write loop's own poll (`while not self._resume.wait(timeout=0.05):
+        if self._interrupt.is_set(): break`) already bounds how long a paused
+        play() takes to notice the interrupt, so releasing the resume wait
+        here is not needed to avoid a deadlock — and doing it anyway lets a
+        pause() that lands between this line and the producer observing the
+        interrupt get silently cleared, leaving the *next*, unrelated play()
+        starting paused. A hush must leave the paused indicator lit exactly
+        as it found it: a user who paused, then hushed, then sees new text
+        arrive expects it to wait for them, not start talking on its own.
+        """
         self._interrupt.set()
-        self._resume.set()
         self._sink.stop()
