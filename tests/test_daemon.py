@@ -1123,8 +1123,10 @@ class LockWatchingEvent(threading.Event):
         super().__init__()
         self._condition = condition
         self.held_at_set: bool | None = None
+        self.sets = 0
 
     def set(self) -> None:
+        self.sets += 1
         self.held_at_set = _lock_is_held(self._condition)
         super().set()
 
@@ -1148,14 +1150,24 @@ def test_hush_sets_the_cancel_event_under_the_lock_that_guards_it() -> None:
         with d._idle:
             d._cancel = watcher
         assert d.handle(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+        # Read before the teardown can touch it. `_cancel` is still this
+        # Event -- nothing has been spoken, so `_speak` never replaced it --
+        # so the `d.stop()` below sets the very same object, under the lock,
+        # and would overwrite the one measurement this test exists to take.
+        held_at_set = watcher.held_at_set
+        was_set = watcher.is_set()
     finally:
         d.stop()
-    assert watcher.is_set()
-    assert watcher.held_at_set is True, "hush set the cancel Event with the lock released"
+    assert was_set
+    assert held_at_set is True, "hush set the cancel Event with the lock released"
 
 
 def test_stop_sets_the_cancel_event_under_the_lock_that_guards_it() -> None:
-    """The same window, and the same loss, on the way down."""
+    """The same window, and the same loss, on the way down.
+
+    One stop() and no teardown after it, deliberately: a second set() on the
+    same Event would overwrite the measurement.
+    """
     d = Daemon(
         FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
     )
@@ -1166,6 +1178,7 @@ def test_stop_sets_the_cancel_event_under_the_lock_that_guards_it() -> None:
     d.stop()
     assert watcher.is_set()
     assert watcher.held_at_set is True, "stop() set the cancel Event with the lock released"
+    assert watcher.sets == 1, "something set the Event again and overwrote the measurement"
 
 
 class UnstoppablePlayer(RecordingPlayer):
