@@ -132,20 +132,26 @@ class Daemon:
         with self._idle:
             self._running = False
             worker = self._worker
-            cancel = self._cancel
+            # Set under the lock that guards it, as in the HUSH/CANCEL path
+            # and for the same reason: released first, the worker could
+            # finish this utterance and install the next job's Event in
+            # between, leaving this set() on an Event nobody is watching
+            # while that next job speaks on. `Event.set()` never blocks, so
+            # holding the lock across it costs nothing.
+            self._cancel.set()
         if worker is None:
             return
-        cancel.set()
         # Symmetric with the HUSH/CANCEL path, and for the same reason: the
         # Event alone stops nothing that is already sounding. A worker cannot
         # leave mid-`play()`, and a real player's `play()` blocks for the
         # length of the segment, so without this the join below waits out the
         # sentence and then times out — leaving stop() to return while the
         # daemon is still audibly speaking, and a worker behind it that makes
-        # the next start() refuse. Outside the lock, as there: player.stop()
-        # can block on a real device. No further ordering is needed — a job
-        # that reaches `_speak` after this rechecks `_running` and is
-        # discarded before it ever reaches the player.
+        # the next start() refuse. Outside the lock, as there, because this
+        # is the one part that can block: player.stop() talks to a real
+        # device. No further ordering is needed — a job that reaches `_speak`
+        # after this rechecks `_running` and is discarded before it ever
+        # reaches the player.
         self.player.stop()
         with self._idle:
             # Under the lock, and only while this is still the worker being
@@ -192,12 +198,16 @@ class Daemon:
             # talking, so the queue goes with it. Each reports what it did, so
             # a client can tell them apart from the response alone.
             #
-            # The Event is read under the lock and set outside it:
-            # player.stop() can block on a real device, and holding the lock
-            # across it would stall enqueue.
+            # The Event is read AND set under the lock. Set outside it, the
+            # worker could finish this utterance, take the next job off the
+            # queue and install its fresh Event in between — leaving this
+            # set() on an Event nobody is watching, the drain below finding
+            # an already-empty queue, and that next job speaking on after
+            # hush answered `ok`. `Event.set()` never blocks. Only
+            # `player.stop()` does, on a real device, which is why that one
+            # stays outside: holding the lock across it would stall enqueue.
             with self._idle:
-                cancel = self._cancel
-            cancel.set()
+                self._cancel.set()
             self.player.stop()
             discarded = self._drain_queued() if request.verb is Verb.HUSH else 0
             return Response(ok=True, data={"discarded": discarded})

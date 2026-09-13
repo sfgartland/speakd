@@ -1092,3 +1092,77 @@ def test_stop_cannot_join_a_worker_that_start_has_not_started(
         starter.join(timeout=5.0)
         d.stop()
     assert d._worker is None, "stop() left a worker behind"
+
+
+def _lock_is_held(condition: threading.Condition) -> bool:
+    """Is `condition`'s lock held right now?
+
+    Probed from a thread that cannot own it: the lock is reentrant, so the
+    thread being asked about would acquire its own lock and learn nothing.
+    """
+    outcome: list[bool] = []
+
+    def probe() -> None:
+        if condition.acquire(timeout=0.25):
+            condition.release()
+            outcome.append(False)
+        else:
+            outcome.append(True)
+
+    prober = threading.Thread(target=probe, name="lock-probe")
+    prober.start()
+    prober.join(timeout=5.0)
+    assert outcome, "the lock probe never finished"
+    return outcome[0]
+
+
+class LockWatchingEvent(threading.Event):
+    """A cancel Event that records whether its setter held `_idle`."""
+
+    def __init__(self, condition: threading.Condition) -> None:
+        super().__init__()
+        self._condition = condition
+        self.held_at_set: bool | None = None
+
+    def set(self) -> None:
+        self.held_at_set = _lock_is_held(self._condition)
+        super().set()
+
+
+def test_hush_sets_the_cancel_event_under_the_lock_that_guards_it() -> None:
+    """Reading `_cancel` under the lock and setting it outside loses hushes.
+
+    In that window the worker can finish job N, take job N+1 off the queue and
+    install its fresh Event. Hush then sets an Event nobody is watching:
+    player.stop() cuts the current segment, hush answers `ok`, the drain finds
+    the queue already empty -- and job N+1 speaks on. The Event must be set
+    under the same lock it was read under, which `Event.set()` never blocks
+    for. Only `player.stop()` has to stay outside.
+    """
+    d = Daemon(
+        FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
+    )
+    d.start()
+    try:
+        watcher = LockWatchingEvent(d._idle)
+        with d._idle:
+            d._cancel = watcher
+        assert d.handle(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+    finally:
+        d.stop()
+    assert watcher.is_set()
+    assert watcher.held_at_set is True, "hush set the cancel Event with the lock released"
+
+
+def test_stop_sets_the_cancel_event_under_the_lock_that_guards_it() -> None:
+    """The same window, and the same loss, on the way down."""
+    d = Daemon(
+        FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
+    )
+    d.start()
+    watcher = LockWatchingEvent(d._idle)
+    with d._idle:
+        d._cancel = watcher
+    d.stop()
+    assert watcher.is_set()
+    assert watcher.held_at_set is True, "stop() set the cancel Event with the lock released"
