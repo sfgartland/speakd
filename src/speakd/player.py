@@ -176,7 +176,6 @@ class StreamingPlayer:
 
     def play(self, audio: np.ndarray, sample_rate: int) -> None:
         self.interrupted = False
-        self._sink.start()
         for start in range(0, len(audio), self._chunk):
             while not self._resume.wait(timeout=0.05):
                 if self._interrupt.is_set():
@@ -185,9 +184,23 @@ class StreamingPlayer:
                 self._interrupt.clear()
                 self.interrupted = True
                 return
+            # Started here, below the interrupt check, rather than before the
+            # loop: a segment that writes nothing — empty, or interrupted at
+            # the first chunk — must not open a device stream to write nothing
+            # into. start() is idempotent, so paying for it per chunk is a
+            # lock acquisition, not a device call.
+            self._sink.start()
             block = audio[start : start + self._chunk]
             self._sink.write(block)
             self.frames_played += len(block)
+        # Repeated, not hoisted: a zero-length segment never enters the loop,
+        # so without this an interrupt that landed on it stays set and kills
+        # the *next* play(). Clearing at entry instead would erase a stop()
+        # that arrived before play() was called, which is a real ordering in
+        # the daemon — the flag is cleared only where it is detected.
+        if self._interrupt.is_set():
+            self._interrupt.clear()
+            self.interrupted = True
 
     def pause(self) -> None:
         """Suspend playback between chunks; `play()` keeps blocking.

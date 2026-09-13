@@ -185,3 +185,42 @@ def test_resume_without_pause_is_harmless() -> None:
     assert done.wait(timeout=5.0), "resume() without a prior pause() should never hang play()"
     thread.join(timeout=5.0)
     assert sink.frames_written == 100
+
+
+def test_a_stop_landing_on_an_empty_segment_is_consumed() -> None:
+    """An interrupt must be consumed even when there is no chunk to check it in.
+
+    kokoro returns a zero-length array for blank text and for a segment it
+    yields no audio for, so this is a real segment shape, not a contrived one.
+    An interrupt left set by it silently kills the *next* utterance.
+    """
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.stop()
+    player.play(audio(0), 24000)
+    assert player.interrupted is True, "the stop must be reported on the segment it hit"
+
+    player.play(audio(100), 24000)
+    assert player.interrupted is False, "and must not survive into the next segment"
+    assert sink.frames_written == 100
+
+
+def test_an_interrupted_segment_opens_no_device() -> None:
+    """A play() that writes nothing must not have opened a stream to do it.
+
+    Both sinks open lazily on write(), so starting eagerly at the top of
+    play() only ever buys a device stream for an utterance that never speaks.
+    """
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.stop()
+    player.play(audio(1000), 24000)
+    assert player.interrupted is True
+    assert sink.started is False, "an interrupted segment must open no device"
+
+
+def test_an_empty_segment_opens_no_device() -> None:
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.play(audio(0), 24000)
+    assert sink.started is False, "an empty segment must open no device"
