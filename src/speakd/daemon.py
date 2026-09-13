@@ -35,6 +35,11 @@ _NOT_IMPLEMENTED = (
 
 _NOT_RUNNING = "the daemon is not running: start() it before enqueuing speech"
 
+_STILL_FINISHING = (
+    "a previous speech worker has not finished yet: stop() timed out waiting for it, "
+    "and a second worker on the same queue would play over the first"
+)
+
 _DISCARDED = "discarded unspoken: the daemon stopped before this reached the engine"
 
 
@@ -81,19 +86,39 @@ class Daemon:
         self._pending = 0
         self._cancel = threading.Event()
 
-    def start(self) -> None:
+    def start(self) -> Response:
+        """Bring the speech worker up, saying which of three things happened.
+
+        Supervision needs to tell "already running" from "refused, a previous
+        worker is still finishing": the first is nothing to do, the second is
+        worth retrying.
+        """
         with self._idle:
-            # Idempotent, and refused while a previous worker is still on its
-            # way out: a second consumer on the same queue would take
-            # alternate jobs and play them over the first worker's audio.
             if self._worker is not None:
-                return
+                if self._running:
+                    return Response(ok=True, data={"started": False, "reason": "already running"})
+                # A worker that outlived stop()'s join is still holding the
+                # queue. A second consumer would take alternate jobs and play
+                # them over the first worker's audio, so this is refused —
+                # and refused visibly, because retrying later is right.
+                return Response(ok=False, error=_STILL_FINISHING)
             self._running = True
             worker = threading.Thread(target=self._run, name="speakd-speech", daemon=True)
             # Published before the thread runs, so `_retire`'s identity check
             # can never fail to recognise the worker it belongs to.
             self._worker = worker
-        worker.start()
+        try:
+            worker.start()
+        except BaseException:  # noqa: B036 - rolled back, then re-raised
+            # "can't start new thread" would otherwise leave a daemon that
+            # accepts speech with nothing to consume it and no way back: with
+            # `_worker` set, every later start() quietly no-ops.
+            with self._idle:
+                if self._worker is worker:
+                    self._worker = None
+                    self._running = False
+            raise
+        return Response(ok=True, data={"started": True})
 
     def stop(self) -> None:
         # Under the lock, so an enqueue in flight on another thread either
@@ -105,7 +130,15 @@ class Daemon:
         if worker is None:
             return
         cancel.set()
-        self._jobs.put(None)
+        with self._idle:
+            # Under the lock, and only while this is still the worker being
+            # stopped. `_retire` clears `_worker` and empties the queue under
+            # the same lock, so the sentinel either lands in time to be taken
+            # with everything else or is never deposited. Outside the lock it
+            # could land just after a retiring worker drained — unowned, for
+            # the next worker to eat and close the daemon with.
+            if self._worker is worker:
+                self._jobs.put(None)
         worker.join(timeout=5.0)
         if worker.is_alive():
             # The join timed out. `_worker` deliberately keeps pointing at it:
@@ -135,17 +168,21 @@ class Daemon:
         if request.verb is Verb.ENQUEUE:
             return self._enqueue(request)
         if request.verb in (Verb.HUSH, Verb.CANCEL):
-            # Read under the lock, set outside it: player.stop() can block on
-            # a real device, and holding the lock there would stall enqueue.
+            # Both stop what is being said; they differ in what follows it.
+            # `cancel` skips this one utterance and lets the queue run on —
+            # an agent superseding its own announcement, which is the ordinary
+            # case for one that changes its mind mid-task. `hush` means stop
+            # talking, so the queue goes with it. Each reports what it did, so
+            # a client can tell them apart from the response alone.
+            #
+            # The Event is read under the lock and set outside it:
+            # player.stop() can block on a real device, and holding the lock
+            # across it would stall enqueue.
             with self._idle:
                 cancel = self._cancel
             cancel.set()
             self.player.stop()
-            # Silence now, not silence once the backlog has been read out:
-            # everything queued behind the cancelled utterance goes with it,
-            # reported rather than dropped. A later enqueue still speaks.
-            discarded = self._drain_queued(keep_stop_signal=True)
-            self._release(discarded)
+            discarded = self._drain_queued() if request.verb is Verb.HUSH else 0
             return Response(ok=True, data={"discarded": discarded})
         if request.verb in (Verb.PAUSE, Verb.RESUME, Verb.SEEK):
             return Response(ok=False, error=_NOT_IMPLEMENTED)
@@ -228,6 +265,7 @@ class Daemon:
 
     def _retire(self, obituary: str = "") -> None:
         """Shut the door: refuse new speech, report what was queued, wake waiters."""
+        jobs: list[_Job] = []
         with self._idle:
             # Only the worker the daemon currently owns may close it. One that
             # outlived a stop()'s join speaks for nobody, and retiring here
@@ -236,9 +274,15 @@ class Daemon:
             if ours:
                 self._running = False
                 self._worker = None
+                # Emptied under the lock that clears `_worker`, and reported
+                # once it is released: a concurrent stop() either gets its
+                # sentinel in before this and it is taken here, or finds the
+                # worker already gone and deposits none.
+                jobs, _signals = self._empty_queue()
         if ours:
             try:
-                self._drain_queued(keep_stop_signal=False)
+                for job in jobs:
+                    self._publish("error", job.source_id, {"message": _DISCARDED})
             finally:
                 with self._idle:
                     # Whatever the bookkeeping did on the way down, nothing is
@@ -270,32 +314,40 @@ class Daemon:
             finally:
                 self._finish_one()
 
-    def _drain_queued(self, *, keep_stop_signal: bool) -> int:
-        """Report and drop every queued job, returning how many there were.
-
-        A stop sentinel met on the way is put back when the caller is not the
-        one stopping: eating it would leave the worker blocked in `get()` and
-        `stop()` waiting out its join for nothing. Releasing the pending count
-        is left to the caller — a retiring worker zeroes it, a hush releases
-        exactly what it took — so that a bad release cannot end this loop
-        early and leave the rest of the queue unreported.
-        """
-        discarded = 0
+    def _empty_queue(self) -> tuple[list[_Job], int]:
+        """Take everything off the queue: the jobs, and how many stop signals."""
+        jobs: list[_Job] = []
         signals = 0
         while True:
             try:
-                job = self._jobs.get_nowait()
+                item = self._jobs.get_nowait()
             except queue.Empty:
-                break
-            if job is None:
+                return jobs, signals
+            if item is None:
                 signals += 1
-                continue
-            discarded += 1
-            self._publish("error", job.source_id, {"message": _DISCARDED})
-        if keep_stop_signal:
+            else:
+                jobs.append(item)
+
+    def _drain_queued(self) -> int:
+        """Drop everything queued and report it, returning how many there were.
+
+        Taken off the queue in one step under the lock, with any stop signal
+        put straight back, and only then reported. `EventBus.publish` swallows
+        a subscriber's `Exception` but not its `BaseException`, and one
+        escaping mid-loop must not leave jobs off the queue with their pending
+        count unreleased — `wait_idle` would block to its timeout — nor
+        swallow a sentinel `stop()` is waiting on.
+        """
+        with self._idle:
+            jobs, signals = self._empty_queue()
             for _ in range(signals):
                 self._jobs.put(None)
-        return discarded
+        try:
+            for job in jobs:
+                self._publish("error", job.source_id, {"message": _DISCARDED})
+        finally:
+            self._release(len(jobs))
+        return len(jobs)
 
     def _finish_one(self) -> None:
         self._release(1)
