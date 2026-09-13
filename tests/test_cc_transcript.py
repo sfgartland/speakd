@@ -139,6 +139,35 @@ def test_sidechain_records_are_marked() -> None:
     assert records[0].is_sidechain is True
 
 
+def test_a_record_with_no_isSidechain_key_is_treated_as_main_thread() -> None:
+    """Absence means False here, and False means spoken.
+
+    Every record Claude Code writes carries the flag, so this pins the
+    assumption rather than a behaviour: if the field is ever renamed or
+    dropped, the suite says so instead of the user hearing a subagent.
+    """
+    record = {
+        "type": "assistant",
+        "uuid": "a",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi."}]},
+    }
+    records, _ = parse((json.dumps(record) + "\n").encode("utf-8"))
+    assert [(r.uuid, r.is_sidechain) for r in records] == [("a", False)]
+    assert speakable(records) == "Hi."
+
+
+def test_a_record_with_no_type_is_skipped_but_consumed() -> None:
+    """The other half of the same assumption. A record with no `type` cannot
+    be classified, so it is dropped -- but the line it occupied is still
+    counted, or the offset would never move past it.
+    """
+    typeless = json.dumps({"uuid": "x", "isSidechain": False, "message": {}}) + "\n"
+    chunk = typeless.encode("utf-8") + line(uuid="b")
+    records, consumed = parse(chunk)
+    assert [r.uuid for r in records] == ["b"]
+    assert consumed == len(chunk)
+
+
 def test_thinking_and_tool_use_blocks_are_not_text() -> None:
     content = [
         {"type": "thinking", "thinking": "hmm"},
