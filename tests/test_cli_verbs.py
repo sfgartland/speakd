@@ -19,7 +19,7 @@ from speakd.cli import default_socket_path, main
 from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece
-from speakd.player import RecordingPlayer
+from speakd.player import FakeSink, RecordingPlayer, StreamingPlayer
 from speakd.synth.fake import FakeEngine
 from speakd.transport import SocketServer
 
@@ -63,6 +63,32 @@ class BlockingPlayer:
 
 @pytest.fixture
 def running(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """A served daemon on the player the shipping daemon actually runs.
+
+    `StreamingPlayer` rather than `RecordingPlayer` so these tests exercise
+    the transport verbs the daemon now answers; a fixture whose player cannot
+    pause could only ever prove that pause is refused.
+    """
+    player = StreamingPlayer(FakeSink())
+    daemon = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    daemon.start()
+    server = SocketServer(tmp_path / "speakd.sock", daemon.handle, daemon.bus)
+    server.start()
+    try:
+        yield server.address, daemon, player
+    finally:
+        server.stop()
+        daemon.stop()
+
+
+@pytest.fixture
+def running_recording(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """Like `running`, but counting segments rather than chunks.
+
+    `FakeSink.blocks` counts 2048-frame writes, so "two segments were played"
+    cannot be said against it without pinning the chunk size as well. Kept on
+    `RecordingPlayer` rather than weakened.
+    """
     player = RecordingPlayer()
     daemon = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
     daemon.start()
@@ -112,8 +138,8 @@ def blocking(tmp_path: Path):  # type: ignore[no-untyped-def]
 # ---------------------------------------------------------------------------
 
 
-def test_enqueue_speaks_through_the_daemon(running, capsys) -> None:  # type: ignore[no-untyped-def]
-    address, daemon, player = running
+def test_enqueue_speaks_through_the_daemon(running_recording, capsys) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, player = running_recording
     code = main(["enqueue", "One. Two.", "--source", "s", "--socket", str(address)])
     assert code == 0
     assert daemon.wait_idle(timeout=5.0)
@@ -128,6 +154,90 @@ def test_hush_is_accepted(running) -> None:  # type: ignore[no-untyped-def]
 def test_cancel_is_accepted(running) -> None:  # type: ignore[no-untyped-def]
     address, _daemon, _player = running
     assert main(["cancel", "--source", "s", "--socket", str(address)]) == 0
+
+
+def test_the_daemon_entry_point_builds_a_pausable_player() -> None:
+    """A daemon whose player cannot pause makes the GUI's controls dead."""
+    from speakd.__main__ import build_player
+    from speakd.player import Pausable
+
+    assert isinstance(build_player(sample_rate=24000, fake=True), Pausable)
+
+
+def test_pause_works_end_to_end_through_the_socket(running) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, _player = running
+    assert main(["pause", "--source", "s", "--socket", str(address)]) == 0
+    assert main(["resume", "--source", "s", "--socket", str(address)]) == 0
+
+
+def test_pause_on_a_daemon_that_cannot_pause_prints_why(running_recording, capsys) -> None:  # type: ignore[no-untyped-def]
+    """A dead pause button that reports nothing is what this path removes.
+
+    The daemon names the player it got, and the client has to carry that
+    through: `RecordingPlayer` says "swap the player", where a bare non-zero
+    exit says nothing at all.
+    """
+    address, _daemon, _player = running_recording
+    assert main(["pause", "--source", "s", "--socket", str(address)]) != 0
+    err = capsys.readouterr().err
+    assert "RecordingPlayer" in err
+    assert "pause" in err
+    assert "Traceback" not in err
+
+
+def test_pause_fails_the_same_way_as_hush_when_no_daemon_answers(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """A new verb that reports unreachability its own way is a new verb to learn."""
+    missing = tmp_path / "absent.sock"
+    hush_code = main(["hush", "--source", "s", "--socket", str(missing)])
+    hush_err = capsys.readouterr().err
+    for verb in ("pause", "resume"):
+        code = main([verb, "--source", "s", "--socket", str(missing)])
+        assert (code, capsys.readouterr().err) == (hush_code, hush_err)
+
+
+def test_the_entry_point_runs_the_daemon_on_that_player(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """`build_player` is only worth having if `main` is what calls it.
+
+    Nothing else pins the swap: a `build_player` no caller reaches would pass
+    every other test here while the shipping daemon went on running the
+    blocking player. The sink is built but never started, so no device opens.
+    """
+    import speakd.__main__ as entry
+    import speakd.player
+    from speakd.player import Pausable
+    from speakd.synth import kokoro_engine
+
+    class StubEngine:
+        name = "stub"
+        # Deliberately not 24000: a hardcoded rate would still sound right in
+        # a test that used Kokoro's own.
+        sample_rate = 12345
+
+        def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+            return np.zeros(0, dtype=np.float32)
+
+    rates: list[int] = []
+
+    class RecordingSink(FakeSink):
+        """A `SoundDeviceSink` that records its rate and opens nothing."""
+
+        def __init__(self, sample_rate: int, blocksize: int = 1024) -> None:
+            super().__init__()
+            rates.append(sample_rate)
+
+    monkeypatch.setattr(kokoro_engine, "KokoroEngine", StubEngine)
+    monkeypatch.setattr(speakd.player, "SoundDeviceSink", RecordingSink)
+    built: list[Daemon] = []
+
+    def capture(daemon: Daemon, socket_path: Path) -> int:
+        built.append(daemon)
+        return 0
+
+    monkeypatch.setattr(entry, "serve", capture)
+    assert entry.main(["--socket", str(tmp_path / "speakd.sock")]) == 0
+    assert built, "the entry point never built a daemon"
+    assert isinstance(built[0].player, Pausable), "the shipping daemon cannot pause"
+    assert rates == [12345], "the sink did not take the engine's rate"
 
 
 def test_role_sets_the_channel_role(running) -> None:  # type: ignore[no-untyped-def]

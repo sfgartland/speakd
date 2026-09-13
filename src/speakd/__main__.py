@@ -16,6 +16,7 @@ from speakd.cli import default_socket_path
 from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece
+from speakd.player import Player
 from speakd.transport import SocketServer
 
 
@@ -25,6 +26,26 @@ def _profile_for(name: str) -> ProfileView:
         return list(pieces), []
 
     return ProfileView(voice="af_heart", speed=1.1, interrupt_on=("error",), prepare=prepare)
+
+
+def build_player(*, sample_rate: int, fake: bool = False) -> Player:
+    """The player the daemon runs with.
+
+    `StreamingPlayer` rather than `SoundDevicePlayer` because a hush that
+    waits for the current sentence to end is not a hush. `fake=True` is for
+    tests, which must never open an audio device.
+
+    Imported inside the function, like every other optional-dependency use
+    here: `SoundDeviceSink` opens no device until `start()`, but the module
+    it needs is only present with the kokoro extra.
+    """
+    if fake:
+        from speakd.player import FakeSink, StreamingPlayer
+
+        return StreamingPlayer(FakeSink())
+    from speakd.player import SoundDeviceSink, StreamingPlayer
+
+    return StreamingPlayer(SoundDeviceSink(sample_rate))
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -95,7 +116,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    from speakd.player import SoundDevicePlayer
     from speakd.synth.kokoro_engine import KokoroEngine
 
     try:
@@ -107,7 +127,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     daemon = Daemon(
-        engine, SoundDevicePlayer(), _profile_for, bus=EventBus(), channels=ChannelTable()
+        engine,
+        # The engine's own rate, not a literal: a sink opened at the wrong
+        # rate plays the right samples at the wrong speed, which sounds like
+        # a broken voice rather than like a misconfiguration.
+        build_player(sample_rate=engine.sample_rate),
+        _profile_for,
+        bus=EventBus(),
+        channels=ChannelTable(),
     )
     return serve(daemon, args.socket)
 
