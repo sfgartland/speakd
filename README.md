@@ -96,11 +96,20 @@ The event stream is the same one the GUI reads:
 {"event": "position", "source_id": "mine", "data": {"text": "One.", "span_start": 0,
                                                     "audio_offset": 0.0, "played_at": 89731.96}}
 {"event": "finished", "source_id": "mine", "data": {"cancelled": false, "aborted": false}}
+{"event": "metrics",  "source_id": "",     "data": {"rtf": 0.75, "drift": 0.18,
+                                                    "mem_bytes": 1632087232, "queue": 2}}
 ```
 
 Two clocks, deliberately: `audio_offset` is nominal position in the synthesised
 audio, `played_at` is `time.monotonic()` when it actually reached the device.
 The gap between them is the drift a monitor should show.
+
+`metrics` carries that gap already worked out, with the real-time factor over
+the last few segments, the daemon's resident set and its pending count. Once a
+second while anything is speaking, and once more as it goes idle so a display
+settles rather than freezing on the last busy value — and nothing in between,
+because a monitor that has heard nothing since `finished` knows its numbers are
+stale in the only way that matters.
 
 ## Measured
 
