@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>speakd Pinned Monitor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -257,10 +258,22 @@
   .err[hidden] { display: none; }
 </style>
 
-<p class="caption">
+<p class="caption" id="caption">
   Pinned monitor at its real size — <b>384&thinsp;px</b> wide, sized to sit always-on-top
   beside an editor. Press play; the metrics move as speech does.
 </p>
+
+<script>
+  // Running inside the desktop shell? Then the caption is explaining the page
+  // to someone who is looking at the thing itself. Drop it and give the three
+  // lines back to the text.
+  if (typeof window !== "undefined" && window.__TAURI__) {
+    document.addEventListener("DOMContentLoaded", () => {
+      const caption = document.getElementById("caption");
+      if (caption) caption.hidden = true;
+    });
+  }
+</script>
 
 <div class="win" id="win" data-transport="paused">
 
