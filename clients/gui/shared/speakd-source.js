@@ -1,66 +1,91 @@
 /**
  * speakd-source.js — the event-source abstraction.
  *
- * The frontend must not know whether its events come from a daemon or a
- * simulation. Both `SimulatedSource` and `DaemonSource` below implement the
+ * The frontend must not know whether its events come from the daemon or a
+ * simulation. Both `SimulatedSource` and `ShellSource` below implement the
  * same small interface:
  *
  *   subscribe(handler) -> unsubscribe()
- *     `handler` is called with `{ kind, data }` events. `kind` is one of the
- *     five the daemon already emits (see docs/design/2026-09-13-speakd-design.md
- *     and docs/plans/2026-09-13-daemon.md):
+ *     `handler` is called with `{ kind, data, source_id? }` events. `kind`
+ *     names one of the event kinds `speakd.daemon.Daemon._publish` emits:
  *
- *       "started"   data: { source_id, segments? }
- *                   `segments`, when present, is the FULL pre-known list of
- *                   { index, text, span_start, span_end, audio_offset, duration }.
- *                   This is a SimulatedSource-only convenience: the real
+ *       "started"   data: { text }
+ *                   One utterance is about to be spoken, and `text` is the
+ *                   whole of it. There is NO `segments` list here: the
  *                   daemon segments one unit ahead of playback
  *                   (src/speakd/pipeline.py's depth-one queue), so it cannot
- *                   know segment 4's duration while segment 1 is still
- *                   playing. A real `started` will not carry `segments`; the
- *                   UI discovers them one at a time from `position` instead.
+ *                   know segment four's text while segment one is playing.
+ *                   The UI discovers segments one at a time from `position`.
+ *                   `SimulatedSource` alone adds a `segments` array, as a
+ *                   convenience it can afford because it owns its fixture.
  *
- *       "position"  data: { index, text, span_start, span_end, audio_offset,
- *                            played_at, duration?, elapsed? }
- *                   The first five fields plus `played_at` are exactly what
- *                   the daemon design commits to. `index` is a convenience
- *                   both sources add so the controller never has to infer
+ *       "position"  data: { text, span_start, span_end, audio_offset,
+ *                            played_at, index, duration?, elapsed? }
+ *                   One segment has *started*. The first five fields are
+ *                   the daemon's, verbatim. `index` is added by whichever
+ *                   source produced the event — the wire has no segment
+ *                   number, so `ShellSource` counts positions since the last
+ *                   `started` — so that the controller never has to infer
  *                   segment identity from spans. `duration` and `elapsed`
- *                   are SimulatedSource-only (see above) — a real `position`
- *                   announces that a segment has *started*, not how long it
- *                   will run or how far into it playback already is.
+ *                   are `SimulatedSource`-only: a real `position` says that
+ *                   a segment began, not how long it runs or how far in
+ *                   playback already is.
  *
- *       "metrics"   data: { rtf?, drift?, queue? }
- *                   NOT part of the daemon's given event vocabulary — there
- *                   is no defined channel yet for synthesis speed, clock
- *                   drift or queue depth (see the "Settled: the window is
- *                   pinned..." section of the milestone design). Only
- *                   SimulatedSource emits it, purely to reproduce the
- *                   mockup's live-updating metrics row. The controller
- *                   treats every field as optional and shows a dash for
- *                   whatever it never receives.
+ *       "metrics"   data: { rtf?, drift?, mem_bytes?, queue? }
+ *                   The four numbers in the glance row, contracted in
+ *                   docs/design/2026-09-14-metrics-event.md: synthesis speed
+ *                   against realtime, how far the measured clock has fallen
+ *                   behind the nominal one, the daemon's resident set, and
+ *                   utterances accepted but not yet finished. Fires once a
+ *                   second while speaking and once more on going idle.
+ *                   The daemon does not emit it yet. Every field is optional
+ *                   and the controller shows a dash for whatever it has
+ *                   never received — a monitor that invents a plausible
+ *                   number is worse than one that admits it does not know.
  *
+ *       "transport" data: { paused }
+ *                   Playback was suspended or taken up again. On the bus so
+ *                   that a GUI can *read* the paused state rather than infer
+ *                   it from an absence of `position` events, which is also
+ *                   what a finished utterance sounds like.
+ *
+ *       "discarded" data: { count, reason, sources }
+ *                   A hush cleared the queue. One event for the whole drain,
+ *                   carrying how many utterances went and whose they were.
+ *
+ *       "declined"  data: { text, kind, reason }
  *       "error"     data: { message }
  *       "finished"  data: { cancelled, aborted }
- *       "declined"  data: { reason }
+ *
+ *       "link"      data: { connected, detail }
+ *                   Not a daemon event: `ShellSource` alone emits it, for
+ *                   whether the shell currently holds a subscription at all.
+ *                   A monitor whose daemon is not running has to be able to
+ *                   say so, since "nothing is speaking" and "nothing is
+ *                   listening" look identical from inside the window.
  *
  *   send(verb, payload = {}) -> Promise<{ ok: true, data } | { ok: false, error }>
- *     `verb` is one of the control verbs in src/speakd/protocol.py: enqueue,
- *     cancel, hush, pause, resume, seek, set_role, set_priority, subscribe,
- *     status. `pause`, `resume` and `seek` are not implemented in the daemon
- *     yet (a streaming player is a prerequisite — see
- *     docs/plans/2026-09-13-streaming-player.md) and DaemonSource expects
- *     them to fail; SimulatedSource honours them locally since it owns no
- *     real audio device to be blocked on.
+ *     `verb` is one of the control verbs in src/speakd/protocol.py. The
+ *     shell forwards only the five this window's buttons need — pause,
+ *     resume, hush, cancel, seek — and refuses the rest, `enqueue` above
+ *     all: this window monitors speech and never originates it. `seek` is
+ *     forwarded but the daemon answers it with "not implemented" until a
+ *     seekable player lands (docs/plans/2026-09-13-streaming-player.md);
+ *     `SimulatedSource` honours it locally, owning no real audio device to
+ *     be blocked on.
  *
  *   capabilities: { replay: boolean }
  *     Can this source restart speech on its own after a hush, with no other
- *     client re-enqueuing? Only true for SimulatedSource, which owns its own
- *     fixture text. A real daemon connection has nothing to replay — this
- *     window only ever *monitors* speech, it never originates it (see
- *     "Settled: now-playing only" in the milestone design) — so after a hush
- *     the real Play control has nothing to do until some other source speaks
- *     again.
+ *     client re-enqueuing? Only true for `SimulatedSource`, which owns its
+ *     own fixture text. A real daemon connection has nothing to replay —
+ *     this window only ever *monitors* speech (see "Settled: now-playing
+ *     only" in the milestone design) — so after a hush the Play control has
+ *     nothing to do until some other source speaks again.
+ *
+ * The two shapes differ in one more place, at the outermost layer: the wire
+ * calls the field `event` where everything above calls it `kind`, and the
+ * wire carries `source_id` beside it rather than inside `data`. Renaming is
+ * `ShellSource`'s job and happens in exactly one place, `_normalise()`.
  *
  * Swapping which source drives the UI is the one-line choice at the bottom
  * of this file: `resolveSource()`.
@@ -294,91 +319,145 @@ export class SimulatedSource {
 }
 
 // ---------------------------------------------------------------------------
-// DaemonSource
+// ShellSource
 // ---------------------------------------------------------------------------
 
 /**
- * NOT YET FUNCTIONAL. There is no HTTP/SSE transport in the daemon yet
- * (that is Part 3 of docs/design/2026-09-13-gui-milestone-design.md, still
- * unbuilt) — this is a stub shaped the way it will eventually work, so
- * wiring it up later is a swap of `resolveSource()`'s choice, not a rewrite.
+ * Reads real speech, through the desktop shell.
  *
- * Endpoint shape is provisional and deliberately unremarkable: an SSE
- * stream at `GET {baseUrl}/events` with one named event per `kind`, and one
- * `POST {baseUrl}/{verb}` route per control verb — the natural HTTP analogue
- * of `speakd.protocol.Request`, and compatible with "any TTS server with a
- * simple REST API" per the design doc's `opencode-voice-plugin` note. When
- * the real transport lands, only the URLs in this file need to change.
+ * A webview cannot open a Unix socket, and the socket is the only thing the
+ * daemon speaks (see the "Revision, 2026-09-13: the shell reads the socket,
+ * not HTTP" section of docs/design/2026-09-13-gui-milestone-design.md). So
+ * the Rust side opens it — clients/gui/app/src-tauri/src/bridge.rs — and
+ * relays every line it reads as a `speakd://event` Tauri event, plus a
+ * `speakd://link` whenever the subscription comes or goes.
+ *
+ * This class is what turns that back into the interface above: it renames
+ * `event` to `kind`, numbers the segments the wire does not number, and
+ * sends control verbs back through one Tauri command. It knows the wire
+ * format and nothing else knows it — not the Rust relay, which forwards
+ * lines without reading them, and not the window, which only ever sees
+ * `{ kind, data }`.
  */
-export class DaemonSource {
-  constructor(baseUrl) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.capabilities = { replay: false }; // this window only monitors; it cannot re-originate speech
+export class ShellSource {
+  constructor(tauri) {
+    this._tauri = tauri;
+    this.capabilities = { replay: false }; // this window monitors; it cannot re-originate speech
     this._listeners = new Set();
-    this._es = null;
+    // Resolved unlisten functions from `tauri.event.listen`, collected so a
+    // source that loses its last subscriber stops listening rather than
+    // leaving two live handlers behind for the next one to double up on.
+    this._unlisten = [];
+    // The wire has no segment number. Positions are counted from the last
+    // `started`, which is the only thing that can reset the count: the
+    // daemon speaks one utterance at a time, so every position between two
+    // `started` events belongs to the same utterance, in order.
+    this._index = 0;
+    this._sourceId = null;
   }
 
   subscribe(handler) {
     this._listeners.add(handler);
-    if (!this._es) this._connect();
+    if (this._listeners.size === 1) this._attach();
     return () => {
       this._listeners.delete(handler);
-      if (this._listeners.size === 0) this._disconnect();
+      if (this._listeners.size === 0) this._detach();
     };
   }
 
-  _connect() {
-    let es;
+  async _attach() {
+    const events = [];
     try {
-      es = new EventSource(`${this.baseUrl}/events`);
+      events.push(
+        await this._tauri.event.listen("speakd://event", (evt) => this._onWire(evt.payload)),
+        await this._tauri.event.listen("speakd://link", (evt) => this._onLink(evt.payload)),
+      );
     } catch (err) {
-      this._emit({ kind: "error", data: { message: `could not open event stream: ${err}` } });
+      this._emit({ kind: "error", data: { message: `could not listen to the shell: ${err}` } });
       return;
     }
-    this._es = es;
-    for (const kind of ["started", "position", "error", "finished", "declined"]) {
-      es.addEventListener(kind, (evt) => {
-        let data = {};
-        try {
-          data = JSON.parse(evt.data);
-        } catch {
-          /* malformed payload — drop it rather than crash the window */
-        }
-        this._emit({ kind, data });
-      });
+    // A late unsubscribe, between the await above and here, would otherwise
+    // leave these registered for the lifetime of the window.
+    if (this._listeners.size === 0) {
+      for (const stop of events) stop();
+      return;
     }
-    es.onerror = () => {
-      this._emit({ kind: "error", data: { message: "lost connection to speakd" } });
-    };
+    this._unlisten = events;
+    // Asked for rather than waited for: the relay connects within
+    // milliseconds of the process starting, and a Tauri event emitted before
+    // this page registered its listener is simply lost. Ordered after the
+    // listeners so the answer can only ever be stale in the safe direction —
+    // a change arriving in between is heard as well as reported.
+    try {
+      this._onLink(await this._tauri.core.invoke("speakd_link"));
+    } catch (err) {
+      this._emit({ kind: "link", data: { connected: false, detail: `shell bridge unavailable: ${err}` } });
+    }
   }
 
-  _disconnect() {
-    if (this._es) this._es.close();
-    this._es = null;
+  _detach() {
+    for (const stop of this._unlisten) {
+      try {
+        stop();
+      } catch {
+        /* the window is going away; there is nothing left to tell */
+      }
+    }
+    this._unlisten = [];
   }
 
   _emit(event) {
     for (const handler of this._listeners) handler(event);
   }
 
-  async send(verb, payload = {}) {
-    try {
-      const res = await fetch(`${this.baseUrl}/${verb}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => res.statusText);
-        return { ok: false, error: text || `HTTP ${res.status}` };
-      }
-      const data = await res.json().catch(() => ({}));
-      return { ok: true, data };
-    } catch (err) {
-      // No daemon has ever answered here yet — this is the expected result
-      // today, for every verb, not a bug in this file.
-      return { ok: false, error: `could not reach speakd: ${err.message || err}` };
+  _onLink(payload) {
+    if (!payload) return;
+    this._emit({ kind: "link", data: { connected: !!payload.connected, detail: payload.detail || "" } });
+  }
+
+  _onWire(wire) {
+    if (!wire || typeof wire !== "object") return;
+    const event = this._normalise(wire);
+    if (event) this._emit(event);
+  }
+
+  /** The whole of the wire-to-interface translation, in one place. */
+  _normalise(wire) {
+    const kind = wire.event;
+    if (typeof kind !== "string") return null;
+    const source_id = typeof wire.source_id === "string" ? wire.source_id : "";
+    const data = wire.data && typeof wire.data === "object" ? wire.data : {};
+
+    if (kind === "started") {
+      this._sourceId = source_id;
+      this._index = 0;
+      return { kind, source_id, data };
     }
+    if (kind === "position") {
+      // A position for a channel this source has seen no `started` for: the
+      // window was opened mid-utterance, or the daemon restarted under it.
+      // Numbering from zero is the only honest guess available, and saying
+      // so is better than dropping the event.
+      if (source_id !== this._sourceId) {
+        this._sourceId = source_id;
+        this._index = 0;
+      }
+      return { kind, source_id, data: { ...data, index: this._index++ } };
+    }
+    return { kind, source_id, data };
+  }
+
+  async send(verb, payload = {}) {
+    let response;
+    try {
+      response = await this._tauri.core.invoke("speakd_send", { verb, payload });
+    } catch (err) {
+      // The shell could not reach the daemon at all, or refused to forward
+      // the verb. A refusal *by* the daemon comes back below instead.
+      return { ok: false, error: String(err && err.message ? err.message : err) };
+    }
+    if (response && response.ok) return { ok: true, data: response.data || {} };
+    return { ok: false, error: (response && response.error) || `speakd refused ${verb}` };
   }
 }
 
@@ -386,28 +465,14 @@ export class DaemonSource {
 // Choosing a source
 // ---------------------------------------------------------------------------
 
-/** Provisional — no port has been settled for the HTTP transport upstream. */
-const DEFAULT_DAEMON_URL = "http://127.0.0.1:7481";
-
-async function daemonReachable(baseUrl, timeoutMs = 800) {
-  try {
-    const res = await fetch(`${baseUrl}/status`, { signal: AbortSignal.timeout(timeoutMs) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * The one-line choice the interface exists for: use the daemon if it is
- * reachable, otherwise fall back to the simulation. `window.SPEAKD_DAEMON_URL`
- * (set by the Tauri shell, or a `?daemon=` query param for the browser-tab
- * case) overrides the provisional default.
+ * The one-line choice the interface exists for: the shell's socket bridge
+ * when this page is running inside the desktop app, the simulation when it
+ * is a plain browser tab. There is no third option — the daemon has no
+ * transport a browser can reach — so a tab always gets the fixture, which is
+ * exactly how this window is developed with no daemon and no Rust.
  */
 export async function resolveSource() {
-  const baseUrl =
-    (typeof window !== "undefined" && window.SPEAKD_DAEMON_URL) ||
-    new URLSearchParams(typeof location !== "undefined" ? location.search : "").get("daemon") ||
-    DEFAULT_DAEMON_URL;
-  return (await daemonReachable(baseUrl)) ? new DaemonSource(baseUrl) : new SimulatedSource();
+  const tauri = typeof window !== "undefined" ? window.__TAURI__ : undefined;
+  return tauri ? new ShellSource(tauri) : new SimulatedSource();
 }

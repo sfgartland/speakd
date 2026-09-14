@@ -2,7 +2,10 @@
 // no effect on Linux, where this shell is currently developed and built.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bridge;
 mod hotkeys;
+
+use std::sync::Arc;
 
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemKind},
@@ -74,15 +77,40 @@ fn toggle_main_window(app: &AppHandle) {
 
 fn main() {
     tauri::Builder::default()
-        // Remembers window position (and size) between launches. Width
-        // still comes out pinned at 384 regardless, via minWidth == maxWidth
-        // in tauri.conf.json — this plugin cannot override that constraint,
-        // it can only restore a value that already satisfies it.
+        // Remembers window position and size between launches, within the
+        // range tauri.conf.json allows: 320-800 wide, 300-2000 tall. The
+        // 384 x 560 default is the size the design was drawn at, not a
+        // constraint — this window is dragged to fit whatever it is pinned
+        // beside, and only the speech text takes the slack.
+        //
+        // `maxHeight` in that config is load-bearing and looks arbitrary,
+        // so: tao leaves an unset maximum as `i32::MAX` in the X11 size
+        // hint it sends, and this window manager answers a hint that large
+        // by sizing the window to its *minimum* instead. Measured, with
+        // nothing else changed: no `maxHeight` and `minHeight` 340 opened a
+        // 340-tall window, `minHeight` 300 opened a 300-tall one, and
+        // dropping `minHeight` too opened one a single pixel tall — the
+        // configured height never applied at all, and the metrics row and
+        // channel pills sat below the window's own edge with the page
+        // scrolling inside it to reach them. A finite maximum fixes it.
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(hotkeys::plugin())
-        .invoke_handler(tauri::generate_handler![set_always_on_top, report_state])
+        .invoke_handler(tauri::generate_handler![
+            set_always_on_top,
+            report_state,
+            bridge::speakd_link,
+            bridge::speakd_send
+        ])
         .setup(|app| {
             hotkeys::register(app.handle())?;
+
+            // Started before the tray and the window handlers below, so
+            // that a window which loads fast still finds a link state to
+            // ask for (see `speakd_link`). Nothing here blocks: the relay
+            // connects on its own thread and reports what it found.
+            let link = Arc::new(bridge::LinkState::new());
+            app.manage(Arc::clone(&link));
+            bridge::spawn_relay(app.handle().clone(), link);
 
             let menu = MenuBuilder::new(app)
                 .text(STATE_ITEM_ID, "State: Paused")

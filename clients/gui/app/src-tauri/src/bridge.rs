@@ -1,0 +1,310 @@
+//! bridge.rs — the daemon's Unix socket, relayed into the window.
+//!
+//! The daemon speaks line-delimited JSON on a Unix socket and nothing else:
+//! there is no HTTP server and none is planned for this milestone (see the
+//! "Revision, 2026-09-13: the shell reads the socket, not HTTP" section of
+//! docs/design/2026-09-13-gui-milestone-design.md). A webview cannot open a
+//! Unix socket. This shell is a native process, so it opens one on the
+//! webview's behalf and relays what comes back.
+//!
+//! Two directions, deliberately on separate connections:
+//!
+//!   * **Events.** One long-lived connection that sends `subscribe` once and
+//!     then does nothing but read. Every line is re-emitted to the window as
+//!     a `speakd://event`, verbatim. This file does not interpret the
+//!     daemon's vocabulary — every place that knows what a `position` means
+//!     is one more place to change when the daemon grows an event kind.
+//!     Renaming `event` to `kind` and numbering segments happens once, in
+//!     `ShellSource` (clients/gui/shared/speakd-source.js).
+//!
+//!   * **Control.** One connection per request, opened and closed around it.
+//!     `speakd.transport.SocketServer` turns a connection that subscribes
+//!     into an event stream, and drops that whole connection — pending
+//!     requests and all — when a subscriber stops draining it. Sharing one
+//!     connection would mean a window that fell behind losing its ability to
+//!     say `hush`, which is the one thing it must never lose. `speakctl
+//!     subscribe` opens two connections for the same reason.
+//!
+//! Nothing here runs on the UI thread. The reader is its own std thread, and
+//! the control commands are `async` so Tauri runs them off the main thread —
+//! a plain `#[tauri::command] fn` runs *on* it — with the blocking socket
+//! work inside `spawn_blocking`. A window that freezes because speech
+//! stopped is worse than one showing stale numbers.
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Runtime};
+
+/// Carries one daemon event line to the window, unchanged.
+const EVENT_CHANNEL: &str = "speakd://event";
+/// Carries whether the relay currently holds a subscription, and why not.
+/// The window has to be able to *say* the daemon is not running rather than
+/// sit there showing nothing, which is what a stopped daemon and a quiet one
+/// otherwise look like to it.
+const LINK_CHANNEL: &str = "speakd://link";
+
+/// Exactly the line `speakctl subscribe` sends. An empty `source_id` is
+/// right here: `SUBSCRIBE` is answered inside the transport and never
+/// reaches `Daemon.handle`, so it opens no channel — the id is only ever
+/// read back in the daemon's "dropped subscriber" diagnostic.
+const SUBSCRIBE_LINE: &[u8] = b"{\"verb\":\"subscribe\",\"source_id\":\"\",\"payload\":{}}\n";
+
+/// Named on control requests. The daemon ignores `source_id` for every verb
+/// below — pause, resume, hush and cancel are global, exactly as they are
+/// from `speakctl` — so this is a label in a log, not a routing decision.
+const CONTROL_SOURCE_ID: &str = "gui";
+
+/// The verbs the shell will forward. Not an arbitrary passthrough: this
+/// window monitors speech, it never originates it (see "Settled: now-playing
+/// only" in the milestone design), so `enqueue` is deliberately absent and a
+/// bug in the frontend cannot make the monitor start talking.
+///
+/// `seek` rides along with the four the buttons need even though the daemon
+/// answers it with "not implemented" today: the window already has the two
+/// arrow buttons, and the daemon's own refusal is a better thing to show in
+/// the error line than a refusal this file invented.
+const FORWARDED: &[&str] = &["pause", "resume", "hush", "cancel", "seek"];
+
+/// Matches `speakd.transport._REQUEST_TIMEOUT_SECONDS`. Applied only around
+/// a request's reply and around the subscribe ack — never to the event
+/// stream, where an idle stream is not a stuck one.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Reconnect backoff. Starts short so restarting the daemon under a running
+/// window is not a visible wait, and caps low enough that a window left open
+/// overnight beside a stopped daemon is not polling a socket path in a tight
+/// loop.
+const RECONNECT_MIN: Duration = Duration::from_millis(500);
+const RECONNECT_MAX: Duration = Duration::from_secs(5);
+
+/// What the relay last managed, so a window that finishes loading *after*
+/// the relay has already connected can ask rather than wait for the next
+/// change. Tauri events emitted before the frontend registers its listener
+/// are simply lost, and the first of these is emitted within milliseconds of
+/// startup.
+pub struct LinkState {
+    connected: AtomicBool,
+    detail: Mutex<String>,
+}
+
+impl LinkState {
+    pub fn new() -> Self {
+        Self {
+            connected: AtomicBool::new(false),
+            detail: Mutex::new(String::from("connecting to speakd")),
+        }
+    }
+
+    fn detail(&self) -> String {
+        // A poisoned lock is not worth failing a status read over: the only
+        // thing under it is a message string.
+        match self.detail.lock() {
+            Ok(held) => held.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
+/// Where the daemon listens. Mirrors `speakd.cli.default_socket_path`,
+/// including its treatment of an empty `XDG_RUNTIME_DIR` as unset — Python's
+/// `if runtime` is falsey for `""`, and a shell that resolved that to
+/// `/speakd/speakd.sock` would look for the daemon somewhere it has never
+/// been.
+pub fn socket_path() -> PathBuf {
+    let base = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("TMPDIR").ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| String::from("/tmp"));
+    PathBuf::from(base).join("speakd").join("speakd.sock")
+}
+
+/// Start the event relay. Returns immediately; everything it does happens on
+/// the thread it spawns.
+pub fn spawn_relay<R: Runtime>(app: AppHandle<R>, state: Arc<LinkState>) {
+    let spawned = std::thread::Builder::new()
+        .name(String::from("speakd-relay"))
+        .spawn(move || relay_loop(app, state));
+    if let Err(err) = spawned {
+        // Not fatal, and deliberately not a panic: a window with no daemon
+        // link is still a window, and killing the process here would take
+        // the tray and the hotkeys with it.
+        eprintln!("speakd-shell: could not start the daemon relay: {err}");
+    }
+}
+
+fn relay_loop<R: Runtime>(app: AppHandle<R>, state: Arc<LinkState>) {
+    let path = socket_path();
+    let mut backoff = RECONNECT_MIN;
+    loop {
+        match subscribe_and_read(&app, &state, &path) {
+            // A clean end of stream: the daemon stopped, or dropped this
+            // subscriber for falling behind. Either way it is worth trying
+            // again promptly — a `systemctl --user restart speakd` should
+            // not cost the window five seconds of silence.
+            Ok(()) => {
+                set_link(&app, &state, false, "speakd closed the event stream");
+                backoff = RECONNECT_MIN;
+            }
+            Err(err) => {
+                set_link(&app, &state, false, &err);
+                backoff = (backoff * 2).min(RECONNECT_MAX);
+            }
+        }
+        std::thread::sleep(backoff);
+    }
+}
+
+/// Hold one subscription for as long as it lasts. `Ok(())` means the stream
+/// ended cleanly; `Err` carries something the window can show a person.
+fn subscribe_and_read<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &LinkState,
+    path: &Path,
+) -> Result<(), String> {
+    let stream = UnixStream::connect(path)
+        .map_err(|err| format!("speakd is not listening on {}: {err}", path.display()))?;
+    // Bounds the ack only. Cleared below, before the event loop: a socket
+    // option is shared by every descriptor for the socket, so leaving it on
+    // would turn five quiet seconds of no speech into a reconnect.
+    stream
+        .set_read_timeout(Some(REQUEST_TIMEOUT))
+        .map_err(|err| format!("could not bound the subscribe ack: {err}"))?;
+
+    let mut writing = stream
+        .try_clone()
+        .map_err(|err| format!("could not split the speakd connection: {err}"))?;
+    writing
+        .write_all(SUBSCRIBE_LINE)
+        .map_err(|err| format!("could not subscribe to speakd: {err}"))?;
+
+    let mut reader = BufReader::new(stream.try_clone().map_err(|err| {
+        format!("could not split the speakd connection: {err}")
+    })?);
+    let mut ack = String::new();
+    match reader.read_line(&mut ack) {
+        Ok(0) => return Err(String::from("speakd closed the connection without an ack")),
+        Ok(_) => {}
+        Err(err) => return Err(format!("no answer to subscribe: {err}")),
+    }
+    let ack: Value = serde_json::from_str(ack.trim())
+        .map_err(|err| format!("speakd answered subscribe with something unreadable: {err}"))?;
+    if ack.get("ok") != Some(&Value::Bool(true)) {
+        let reason = ack.get("error").and_then(Value::as_str).unwrap_or("no reason given");
+        return Err(format!("speakd refused the subscription: {reason}"));
+    }
+
+    stream
+        .set_read_timeout(None)
+        .map_err(|err| format!("could not unbound the event stream: {err}"))?;
+    set_link(app, state, true, "");
+
+    for line in reader.lines() {
+        let line = line.map_err(|err| format!("lost the speakd event stream: {err}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(&line) {
+            // Relayed whole, keys and all. The window wants `source_id`
+            // alongside `event` and `data` — it is what names the channel in
+            // the title bar — so nothing is unpacked here.
+            Ok(event) if event.is_object() => {
+                let _ = app.emit(EVENT_CHANNEL, event);
+            }
+            // A line the daemon has never sent and has no way to send.
+            // Dropped rather than treated as a lost connection, the same
+            // tolerance `speakd.transport` shows a malformed request.
+            Ok(_) => eprintln!("speakd-shell: ignoring a non-object event line: {line}"),
+            Err(err) => eprintln!("speakd-shell: ignoring an unparseable event line ({err}): {line}"),
+        }
+    }
+    Ok(())
+}
+
+/// Record and announce the link state, but only when it has actually
+/// changed: a window left open beside a stopped daemon would otherwise get
+/// a "still not running" event every five seconds forever.
+fn set_link<R: Runtime>(app: &AppHandle<R>, state: &LinkState, connected: bool, detail: &str) {
+    let was = state.connected.swap(connected, Ordering::Relaxed);
+    let detail_changed = match state.detail.lock() {
+        Ok(mut held) => {
+            let changed = *held != detail;
+            if changed {
+                *held = String::from(detail);
+            }
+            changed
+        }
+        Err(_) => true,
+    };
+    if was == connected && !detail_changed {
+        return;
+    }
+    let _ = app.emit(LINK_CHANNEL, json!({ "connected": connected, "detail": detail }));
+}
+
+/// What the relay has managed so far. Called once by the window on startup,
+/// to close the gap between the relay connecting and the frontend having a
+/// listener registered. Reads two small locals, so it is safe as a plain
+/// synchronous command (which Tauri runs on the main thread).
+#[tauri::command]
+pub fn speakd_link(state: tauri::State<'_, Arc<LinkState>>) -> Value {
+    json!({
+        "connected": state.connected.load(Ordering::Relaxed),
+        "detail": state.detail(),
+    })
+}
+
+/// Send one control verb and hand back the daemon's own `Response` object
+/// (`{ok, data, error}`) for the frontend to read. `Err` is reserved for not
+/// reaching the daemon at all — a refusal *by* the daemon is an `Ok` whose
+/// `ok` is false, and the difference is exactly what the window's error line
+/// should be able to show.
+#[tauri::command]
+pub async fn speakd_send(verb: String, payload: Option<Value>) -> Result<Value, String> {
+    if !FORWARDED.contains(&verb.as_str()) {
+        return Err(format!("the shell does not forward {verb:?} to speakd"));
+    }
+    let payload = payload.unwrap_or_else(|| json!({}));
+    // `async` alone would only move this off the main thread and onto the
+    // async runtime, where a blocking socket read would hold a worker; this
+    // puts it somewhere blocking is allowed.
+    tauri::async_runtime::spawn_blocking(move || request(&verb, payload))
+        .await
+        .map_err(|err| format!("the speakd request thread died: {err}"))?
+}
+
+fn request(verb: &str, payload: Value) -> Result<Value, String> {
+    let path = socket_path();
+    let stream = UnixStream::connect(&path)
+        .map_err(|err| format!("speakd is not listening on {}: {err}", path.display()))?;
+    stream
+        .set_read_timeout(Some(REQUEST_TIMEOUT))
+        .map_err(|err| format!("could not bound the {verb} reply: {err}"))?;
+
+    let mut line = serde_json::to_vec(&json!({
+        "verb": verb,
+        "source_id": CONTROL_SOURCE_ID,
+        "payload": payload,
+    }))
+    .map_err(|err| format!("could not encode {verb}: {err}"))?;
+    line.push(b'\n');
+    (&stream)
+        .write_all(&line)
+        .map_err(|err| format!("could not send {verb} to speakd: {err}"))?;
+
+    let mut reply = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut reply)
+        .map_err(|err| format!("no answer to {verb}: {err}"))?;
+    if reply.trim().is_empty() {
+        return Err(format!("speakd closed the connection without answering {verb}"));
+    }
+    serde_json::from_str(reply.trim())
+        .map_err(|err| format!("speakd answered {verb} with something unreadable: {err}"))
+}
