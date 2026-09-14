@@ -514,3 +514,70 @@ def test_a_prompt_against_an_unreachable_daemon_stays_inside_its_budget(tmp_path
     assert elapsed < PROMPT_BUDGET, (
         f"took {elapsed:.2f}s against the manifest's {PROMPT_BUDGET}s for UserPromptSubmit"
     )
+
+
+def _run_failing(  # type: ignore[no-untyped-def]
+    monkeypatch,
+    stdin: str,
+    sent: list[tuple[str, str]],
+    reason: str = "no daemon at /run/user/1000/speakd/speakd.sock",
+) -> int:
+    """Like `run`, but the daemon refuses everything, as a stopped one does."""
+
+    def failing_enqueue(source: str, text: str, **kw: object) -> str | None:
+        sent.append((source, text))
+        return reason
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
+    monkeypatch.setattr(hook, "enqueue", failing_enqueue)
+    return hook.main([])
+
+
+def test_a_failed_enqueue_is_logged_and_still_advances_the_watermark(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The daemon-not-running case, which is the ordinary one.
+
+    Two properties, both argued for in prose and neither previously pinned:
+
+    The reason is logged. It is the only diagnostic a user gets, and the
+    README sends them to this file; dropping it turns "speakd is not running"
+    into silence with no explanation.
+
+    The watermark advances anyway. Holding it back until an enqueue succeeds
+    sounds safer and is not: the backlog accumulates for as long as the
+    daemon is down, and the moment it starts, the whole session plays at
+    once. Losing speech nobody could have heard is the right trade, and the
+    reason is in the log.
+    """
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "t.jsonl"
+    path.write_text("", encoding="utf-8")
+    sent: list[tuple[str, str]] = []
+
+    append(path, record("u0", "user"), record("a0", "assistant", "Into the void."))
+    assert _run_failing(monkeypatch, payload(transcript_path=str(path)), sent) == 0
+    assert sent == [("claude-code:s1", "Into the void.")]
+
+    written = (state_dir() / "hook.log").read_text(encoding="utf-8")
+    assert "no daemon" in written, "a failed enqueue left no diagnostic at all"
+
+    mark = load("s1")
+    assert mark is not None, "a failed enqueue left the watermark parked"
+    assert mark.offset == path.stat().st_size
+
+    # And now the point of it: three more turns pass while the daemon is
+    # still down, and when it comes back only what is new is spoken -- not
+    # four turns of backlog at once.
+    for turn in range(3):
+        append(
+            path, record(f"u{turn + 1}", "user"), record(f"a{turn + 1}", "assistant", f"T{turn}.")
+        )
+        assert _run_failing(monkeypatch, payload(transcript_path=str(path)), sent) == 0
+    assert [text for _, text in sent] == ["Into the void.", "T0.", "T1.", "T2."]
+
+    recovered: list[tuple[str, str]] = []
+    append(path, record("u9", "user"), record("a9", "assistant", "The daemon is back."))
+    assert run(monkeypatch, payload(transcript_path=str(path)), recovered) == 0
+    assert recovered == [("claude-code:s1", "The daemon is back.")]
