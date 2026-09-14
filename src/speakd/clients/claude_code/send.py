@@ -8,6 +8,7 @@ user may simply not want speech today.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from speakd.cli import default_socket_path
@@ -20,8 +21,15 @@ TIMEOUT = 2.0
 
 
 def send(request: Request, *, socket: Path | None = None, timeout: float = TIMEOUT) -> str | None:
-    """Send one request. Return `None` on success, or a one-line reason."""
+    """Send one request. Return `None` on success, or a one-line reason.
+
+    `timeout` is the budget for the whole call, not for each half of it.
+    Connecting and waiting for the reply share one deadline: given one each,
+    a call costs up to twice what it was handed, and UserPromptSubmit sends
+    two of these inside a three-second window.
+    """
     address = socket if socket is not None else default_socket_path()
+    deadline = time.monotonic() + timeout
     try:
         from speakd.transport import connect
 
@@ -37,7 +45,10 @@ def send(request: Request, *, socket: Path | None = None, timeout: float = TIMEO
         return f"could not reach {address}: {exc}"
 
     try:
-        response = client.send(request, timeout=timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"the {timeout}s budget went on connecting")
+        response = client.send(request, timeout=remaining)
     except Exception as exc:
         return f"{request.verb.value} failed: {exc}"
     finally:

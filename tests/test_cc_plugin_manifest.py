@@ -319,7 +319,11 @@ def test_the_prompt_hushes_fit_inside_the_manifests_budget() -> None:
     budget = min(
         entry["timeout"] for matcher in hooks["UserPromptSubmit"] for entry in matcher["hooks"]
     )
-    # Measured at ~0.22s on the development machine; doubled for headroom.
+    # Two hushes, one budget each -- which is only true because `send` shares
+    # one deadline between connecting and waiting for the reply. Without that
+    # the real ceiling is 4 * HUSH_TIMEOUT and this arithmetic models half of
+    # it; test_connecting_and_replying_share_one_budget is what holds it.
+    # Start-up measured at ~0.22s on the development machine, doubled here.
     startup_allowance = 0.5
     worst_case = 2 * HUSH_TIMEOUT + startup_allowance
     assert worst_case <= budget, (

@@ -238,3 +238,90 @@ def test_a_socket_that_never_accepts_cannot_wedge_the_hook(deaf: Path) -> None:
     )
     assert all(reason is not None for reason in results)
     assert all("\n" not in str(reason) for reason in results)
+
+
+def test_connecting_and_replying_share_one_budget(  # type: ignore[no-untyped-def]
+    running,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`timeout` is the cost of the call, not the cost of each half of it.
+
+    Spent once on the connect and again on the reply, a hush costs up to
+    2x what it was given, and UserPromptSubmit sends two of them inside a
+    3s window. What the reply gets has to be what is left.
+    """
+    socket, _daemon, _player = running
+    real_connect = transport.connect
+    handed: list[float | None] = []
+    spent_connecting = 0.25
+
+    def slow_connect(path: Path, *, timeout: float | None = None) -> object:
+        time.sleep(spent_connecting)
+        client = real_connect(path, timeout=timeout)
+        original = client.send
+
+        def recording(request: Request, *, timeout: float | None = None) -> object:
+            handed.append(timeout)
+            return original(request, timeout=timeout)
+
+        monkeypatch.setattr(client, "send", recording)
+        return client
+
+    monkeypatch.setattr(transport, "connect", slow_connect)
+    budget = 0.6
+    started = time.monotonic()
+    assert send(Request(verb=Verb.HUSH, source_id="cc:s1"), socket=socket, timeout=budget) is None
+    elapsed = time.monotonic() - started
+
+    assert handed and handed[0] is not None
+    assert handed[0] <= budget - spent_connecting + 0.05, (
+        f"the reply was handed {handed[0]}s of a {budget}s budget after "
+        f"{spent_connecting}s had already gone on connecting"
+    )
+    assert elapsed < budget + 0.2, f"the whole call took {elapsed:.2f}s of a {budget}s budget"
+
+
+def test_a_call_never_costs_more_than_its_timeout(deaf: Path) -> None:
+    """Measured end to end, against the socket that makes both halves wait."""
+    budget = 0.3
+    worst = 0.0
+    results: list[str | None] = []
+    done = threading.Event()
+
+    def probe() -> None:
+        nonlocal worst
+        for _ in range(8):
+            started = time.monotonic()
+            results.append(hush("cc:s1", socket=deaf, timeout=budget))
+            worst = max(worst, time.monotonic() - started)
+        done.set()
+
+    threading.Thread(target=probe, daemon=True).start()
+    assert done.wait(15.0), "a call never came back at all"
+    assert all(reason is not None for reason in results)
+    # Generous on absolute overhead, strict on the multiple: the failure this
+    # guards is a second full budget, not a slow machine.
+    assert worst < budget * 1.6, f"worst call took {worst:.2f}s of a {budget}s budget"
+
+
+def test_a_connect_that_eats_the_whole_budget_gives_up_cleanly(  # type: ignore[no-untyped-def]
+    running,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing left for the reply is a reason, not a negative timeout."""
+    socket, _daemon, _player = running
+    real_connect = transport.connect
+
+    def crawling_connect(path: Path, *, timeout: float | None = None) -> object:
+        time.sleep(0.3)
+        return real_connect(path, timeout=timeout)
+
+    monkeypatch.setattr(transport, "connect", crawling_connect)
+    started = time.monotonic()
+    reason = send(Request(verb=Verb.HUSH, source_id="cc:s1"), socket=socket, timeout=0.1)
+    elapsed = time.monotonic() - started
+    assert reason is not None
+    assert "\n" not in reason
+    assert "went on connecting" in reason, reason
+    # Still bounded by what the connect cost, not by a second budget on top.
+    assert elapsed < 1.0, f"took {elapsed:.2f}s"
