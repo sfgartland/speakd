@@ -28,6 +28,15 @@ from speakd.clients.claude_code.watermark import load, locked, save, state_dir
 HUSH_TIMEOUT = 1.0
 
 
+# Past this, the log is emptied and started again. With the daemon off every
+# PostToolUse writes a line, so an unbounded file grows for as long as someone
+# forgets to start speakd -- 1.8 MB per twenty thousand hooks, measured. Not
+# rotation: one file, one cap, and the newest failures are the ones a person
+# tailing it needs. A quarter of a megabyte is some 2,500 lines, far more
+# history than any diagnosis of this uses.
+LOG_CAP_BYTES = 256 * 1024
+
+
 def _log(message: str) -> None:
     """Append one line to the hook log, or give up quietly.
 
@@ -39,7 +48,15 @@ def _log(message: str) -> None:
         directory = state_dir()
         directory.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-        with (directory / "hook.log").open("a", encoding="utf-8") as handle:
+        log = directory / "hook.log"
+        try:
+            overgrown = log.stat().st_size > LOG_CAP_BYTES
+        except OSError:
+            overgrown = False
+        mode = "w" if overgrown else "a"
+        with log.open(mode, encoding="utf-8") as handle:
+            if overgrown:
+                handle.write(f"{stamp} (earlier entries dropped: the log passed its size cap)\n")
             handle.write(f"{stamp} {message}\n")
     except Exception:
         pass

@@ -21,12 +21,29 @@ state_dir() {
   fi
 }
 
+# Matches hook.LOG_CAP_BYTES. Both halves write to one file, so both have to
+# bound it, or the half that does not is the one that fills the disk.
+LOG_CAP_BYTES=262144
+
 log() {
   directory="$(state_dir)"
   mkdir -p "$directory" 2>/dev/null || return 0
+  file="$directory/hook.log"
+  # `wc -c` rather than stat(1): stat's flags differ between GNU and BSD, and
+  # this runs on whatever the user has. The redirect is inside a group whose
+  # stderr is discarded -- a bare `<"$file" 2>/dev/null` still reports a
+  # missing file, because the shell opens the input before the command's own
+  # redirect applies, and that lands on Claude Code's transcript.
+  size=0
+  if [ -f "$file" ]; then
+    size=$( { wc -c <"$file"; } 2>/dev/null ) || size=0
+  fi
+  if [ "${size:-0}" -gt "$LOG_CAP_BYTES" ] 2>/dev/null; then
+    : >"$file" 2>/dev/null || true
+  fi
   # printf's %(...)T rather than date(1): with PATH unset there may be no
   # date to call, and a diagnostic that needs its own diagnostic is no use.
-  printf '%(%Y-%m-%dT%H:%M:%S)T %s\n' -1 "$1" >>"$directory/hook.log" 2>/dev/null || true
+  printf '%(%Y-%m-%dT%H:%M:%S)T %s\n' -1 "$1" >>"$file" 2>/dev/null || true
 }
 
 if command -v speakd-claude-hook >/dev/null 2>&1; then

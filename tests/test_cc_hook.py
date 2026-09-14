@@ -581,3 +581,38 @@ def test_a_failed_enqueue_is_logged_and_still_advances_the_watermark(  # type: i
     append(path, record("u9", "user"), record("a9", "assistant", "The daemon is back."))
     assert run(monkeypatch, payload(transcript_path=str(path)), recovered) == 0
     assert recovered == [("claude-code:s1", "The daemon is back.")]
+
+
+def test_the_log_is_capped_rather_than_growing_without_end(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """With the daemon off, every PostToolUse writes a line, forever.
+
+    Measured at 1.8 MB per twenty thousand hooks and nothing ever trimmed it.
+    A cap, not rotation: one file, and the newest failures are the ones
+    someone tailing it actually needs.
+    """
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    log = state_dir() / "hook.log"
+    for index in range(4000):
+        hook._log(f"line {index} " + "x" * 120)
+    size = log.stat().st_size
+    assert size <= hook.LOG_CAP_BYTES * 2, f"the log reached {size} bytes"
+
+    written = log.read_text(encoding="utf-8")
+    assert "line 3999" in written, "the cap threw away the newest entry, not the oldest"
+    assert "earlier entries dropped" in written, "a truncated log must say it was truncated"
+
+
+def test_the_cap_leaves_a_short_log_alone(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The ordinary case is a handful of lines, and they must all survive."""
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    for index in range(20):
+        hook._log(f"entry {index}")
+    written = (state_dir() / "hook.log").read_text(encoding="utf-8")
+    assert all(f"entry {index}" in written for index in range(20))
+    assert "earlier entries dropped" not in written

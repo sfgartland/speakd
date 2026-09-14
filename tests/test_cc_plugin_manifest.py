@@ -370,3 +370,35 @@ def test_the_quoted_command_actually_runs_from_a_path_with_a_space(tmp_path: Pat
     assert done.returncode == 0, f"exit {done.returncode}: {done.stderr.strip()}"
     assert done.stdout == ""
     assert done.stderr == ""
+
+
+def test_the_wrapper_caps_the_log_at_the_same_size_the_entry_point_does() -> None:
+    """Two writers, one file. A cap only one of them honours is not a cap."""
+    from speakd.clients.claude_code.hook import LOG_CAP_BYTES
+
+    script = WRAPPER.read_text(encoding="utf-8")
+    assert f"LOG_CAP_BYTES={LOG_CAP_BYTES}" in script, (
+        f"the wrapper's cap has drifted from the entry point's {LOG_CAP_BYTES}"
+    )
+
+
+def test_the_wrapper_actually_truncates_an_oversized_log(tmp_path: Path) -> None:
+    """Asserted by running it, not by reading the constant back."""
+    from speakd.clients.claude_code.hook import LOG_CAP_BYTES
+
+    state = tmp_path / "state"
+    (state / "claude-code").mkdir(parents=True)
+    log = state / "claude-code" / "hook.log"
+    log.write_text("old noise\n" * (LOG_CAP_BYTES // 5), encoding="utf-8")
+    assert log.stat().st_size > LOG_CAP_BYTES
+
+    done = _invoke(
+        _installed_copy(tmp_path),
+        GARBAGE,
+        state=state,
+        path="/usr/bin:/bin",
+        home=tmp_path / "home",
+    )
+    assert done.returncode == 0
+    assert log.stat().st_size < LOG_CAP_BYTES, "the wrapper appended to an already oversized log"
+    assert "could not find speakd-claude-hook" in log.read_text(encoding="utf-8")
