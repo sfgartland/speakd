@@ -6,9 +6,10 @@ use playback as its clock while a producer thread runs ahead.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -149,6 +150,85 @@ class _ErrorLog(list[str]):
                 self[-1] = tally
 
 
+class AudioDeviceWedged(RuntimeError):
+    """A single write stayed inside the device far longer than its own audio.
+
+    Deliberately not the recorded drop a hush produces, and raised rather than
+    recorded for that reason. A hush is expected, and turning one into a
+    crashed utterance would be worse than the hush; a device that has stopped
+    taking audio is not expected, every remaining chunk of the utterance would
+    cost another full timeout against it, and a recorded drop reaches
+    `sink.errors` and stops there. Raising is what carries the failure up
+    through `speak()` to the event bus, which is where a user can see it.
+    """
+
+
+def _wedged(frames: int, seconds: float) -> str:
+    """The one wording for a bounded-out write, so the log and the raise agree."""
+    return (
+        f"audio device wedged: a {frames}-frame write did not return within "
+        f"{seconds:.1f}s; the stream was aborted to release the speech thread"
+    )
+
+
+def _to_journal(message: str) -> None:
+    """Say it where the operator of a systemd unit will find it.
+
+    Straight to stderr, like every other operator-facing line in this project:
+    journald captures a unit's stderr and the daemon configures no logging. A
+    device that wedges and then recovers in silence is barely better than one
+    that stays wedged, and the event bus alone is not enough — a daemon whose
+    speech worker is stuck may have no subscriber listening at all.
+
+    Guarded, because this runs on the watchdog thread: a stderr closed
+    underneath it, which is what the end of a test looks like, must not be the
+    thing that kills the watchdog.
+    """
+    try:
+        sys.stderr.write(f"speakd: {message}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+# How long one blocking write may stay inside the device before the watchdog
+# aborts the stream out from under it.
+#
+# A blocking `OutputStream.write()` comes back in about the time its own audio
+# takes to play: 2048 frames at 24 kHz is 85 ms. The floor is therefore some
+# fifty-nine chunks' worth, which nothing short of a fault reaches. It has to
+# clear, with room over: a machine loaded hard enough that the speech thread
+# waits whole scheduler quanta — this bug first showed on a laptop compiling
+# Rust at 97% CPU — a PipeWire sink resuming from suspend, which is order a
+# second, and an xrun the server recovers from. Five seconds is several times
+# the worst of those, and still short enough that a wedge costs one audible
+# gap instead of the tens of minutes the daemon actually spent stuck.
+#
+# The factor keeps the bound honest for a caller that writes more than a chunk
+# at a time: the bound is never below eight times the audio the write carries,
+# so a sink handed a ten-second block gets eighty seconds rather than five.
+# `StreamingPlayer` writes 2048 frames, for which the floor always wins.
+_MIN_WRITE_TIMEOUT = 5.0
+_WRITE_TIMEOUT_FACTOR = 8.0
+
+# One thread per sink, never one per write. Named, because this fix exists
+# because of what a `py-spy dump` showed, and the next dump should say which
+# thread this is.
+_WATCHDOG_THREAD_NAME = "speakd-write-watchdog"
+
+# Long enough for an abort() that is merely slow, short enough that a shutdown
+# is not held up by a device that has stopped answering altogether.
+_WATCHDOG_JOIN_TIMEOUT = 2.0
+
+
+class _InFlightWrite(NamedTuple):
+    """One write the watchdog is timing."""
+
+    deadline: float
+    stream: sd.OutputStream
+    frames: int
+
+
 class AudioSink(Protocol):
     """Where audio frames go. Injected so tests never open a device."""
 
@@ -237,6 +317,17 @@ class SoundDeviceSink:
     consequence of stopping, so it lands in `errors` rather than raising —
     raising would turn every hush into a crashed utterance. Any other failure
     still propagates.
+
+    The one call none of that covers is the blocking write itself. It takes no
+    timeout, and on real hardware it has been seen not to return at all: a
+    `py-spy dump` of a live daemon found the speech thread parked in
+    `_raw_write` for tens of minutes while the daemon went on accepting speech
+    it would never say, with nothing on the bus and nothing in the journal. So
+    every write is timed, by a watchdog thread this sink owns, and one that
+    stays inside the device past `_write_bound` has its stream aborted from
+    outside — the only thing that releases such a write — and then raises
+    `AudioDeviceWedged` on its way out. See that class for why this one
+    failure raises where a hush records.
     """
 
     def __init__(self, sample_rate: int, blocksize: int = 1024) -> None:
@@ -249,6 +340,16 @@ class SoundDeviceSink:
         self._aborted = False
         self._closed = False
         self._writers = 0
+        # The watchdog shares `_lock` rather than taking one of its own: it
+        # fires by aborting the stream, which is exactly what `stop()` does
+        # under that lock, and a second lock would be a second ordering to
+        # get wrong.
+        self._watch = threading.Condition(self._lock)
+        self._watchdog: threading.Thread | None = None
+        self._watch_exit = False
+        self._inflight: dict[int, _InFlightWrite] = {}
+        self._timed_out: set[int] = set()
+        self._next_write_id = 0
 
     def start(self) -> None:
         with self._lock:
@@ -273,6 +374,22 @@ class SoundDeviceSink:
                 self._stream = self._open()
             stream = self._stream
             self._writers += 1
+            write_id = self._next_write_id
+            self._next_write_id += 1
+            bound = self._write_bound(len(frames))
+            self._inflight[write_id] = _InFlightWrite(
+                deadline=time.monotonic() + bound,
+                stream=stream,
+                frames=len(frames),
+            )
+            announcement = self._ensure_watchdog_locked()
+            # Wakes a watchdog idling with nothing to time. Deadlines only
+            # move forward, so one already asleep on an earlier deadline needs
+            # no telling — but this costs a notify, not a thread, so it is not
+            # worth being clever about.
+            self._watch.notify_all()
+        if announcement:
+            _to_journal(announcement)
 
         failure: Exception | None = None
         ours = False
@@ -283,10 +400,25 @@ class SoundDeviceSink:
         finally:
             with self._lock:
                 self._writers -= 1
+                # Cleared under the same lock the watchdog fires under, so a
+                # write that came back on its own can never be blamed on a
+                # timeout, and one the watchdog did cut loose can never slip
+                # through as an ordinary success.
+                self._inflight.pop(write_id, None)
+                timed_out = write_id in self._timed_out
+                self._timed_out.discard(write_id)
                 # "Ours" as in: we are the reason this write failed, because
                 # we aborted the stream out from under it.
                 ours = self._aborted or self._stream is not stream
 
+        if timed_out:
+            # Ahead of the `failure is None` check on purpose: a stream that
+            # released its writer cleanly after the abort still spent longer
+            # than the bound inside the device, and the frames it carried are
+            # not the ones that were played.
+            message = _wedged(len(frames), bound)
+            self.errors.append(message)
+            raise AudioDeviceWedged(message) from failure
         if failure is None:
             with self._lock:
                 self.frames_written += len(frames)
@@ -316,26 +448,155 @@ class SoundDeviceSink:
 
     def close(self) -> None:
         """Release the device for good. Terminal: a later write() or start() raises."""
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            stream, self._stream = self._stream, None
-            if stream is None:
-                return
-            if not self._aborted:
+        try:
+            with self._lock:
+                # Set before the already-closed check, and the join runs from
+                # the `finally` regardless: every path out of close() has to
+                # take the watchdog with it, or a terminal sink leaves a
+                # thread behind holding a reference to the stream it aborts.
+                self._watch_exit = True
+                self._watch.notify_all()
+                if self._closed:
+                    return
+                self._closed = True
+                stream, self._stream = self._stream, None
+                if stream is None:
+                    return
+                if not self._aborted:
+                    try:
+                        stream.abort()
+                    except Exception as exc:
+                        self.errors.append(f"could not abort the stream on close: {exc}")
+                self._aborted = True
+                if self._writers:
+                    self.errors.append("closed with a write in flight: stream released unclosed")
+                    return
                 try:
-                    stream.abort()
+                    stream.close()
                 except Exception as exc:
-                    self.errors.append(f"could not abort the stream on close: {exc}")
+                    self.errors.append(f"could not close the stream: {exc}")
+        finally:
+            self._join_watchdog()
+
+    def _write_bound(self, frames: int) -> float:
+        """How long this particular write may take before the watchdog acts."""
+        return max(_MIN_WRITE_TIMEOUT, frames / self.sample_rate * _WRITE_TIMEOUT_FACTOR)
+
+    def _ensure_watchdog_locked(self) -> str | None:
+        """Start this sink's one watchdog thread. Caller holds `_lock`.
+
+        Started at the first write rather than at `start()`, so a sink that
+        never writes never spawns anything, and kept for the life of the sink
+        rather than per write: a thread per 85 ms chunk is twelve thread
+        creations a second for as long as the daemon speaks.
+
+        Returns a line for the journal when it could not start, for the caller
+        to emit once it has let go of the lock.
+        """
+        if self._watchdog is not None:
+            return None
+        self._watch_exit = False
+        watchdog = threading.Thread(
+            target=self._watch_writes, name=_WATCHDOG_THREAD_NAME, daemon=True
+        )
+        try:
+            watchdog.start()
+        except RuntimeError as exc:
+            # Out of threads. The write still goes ahead, because refusing to
+            # play is worse than playing unwatched — but unwatched is the
+            # state this class exists to stop happening quietly, so it is said
+            # in both places a wedge itself would be said.
+            self.errors.append(f"write watchdog could not start: {exc}")
+            return f"write watchdog could not start ({exc}): writes are unbounded"
+        self._watchdog = watchdog
+        return None
+
+    def _watch_writes(self) -> None:
+        """Run the watch, and stand down visibly if the watch itself breaks.
+
+        A watchdog that dies quietly leaves every later write unbounded for
+        the life of the process — which is the state this whole class exists
+        to end, restored without a word. So the post is vacated rather than
+        abandoned: it is recorded, it reaches the journal, and the next write
+        starts a fresh watchdog instead of going out unwatched.
+        """
+        try:
+            self._watch_loop()
+        except Exception as exc:
+            with self._lock:
+                if self._watchdog is threading.current_thread():
+                    self._watchdog = None
+                self.errors.append(f"write watchdog stopped: {exc!r}")
+            _to_journal(f"write watchdog stopped ({exc!r}): the next write will start another")
+
+    def _watch_loop(self) -> None:
+        """Cut loose any write that has been inside the device too long.
+
+        Asleep on `_watch` whenever nothing is in flight, so an ordinary write
+        costs a condition notify rather than a thread. The abort is the whole
+        point: it is the only thing that releases a `sounddevice` write which
+        has stopped returning, and it has to come from a thread that is not
+        the one stuck inside it.
+        """
+        while True:
+            with self._watch:
+                if self._watch_exit:
+                    return
+                if not self._inflight:
+                    self._watch.wait()
+                    continue
+                now = time.monotonic()
+                overdue = [(i, w) for i, w in self._inflight.items() if w.deadline <= now]
+                if not overdue:
+                    soonest = min(w.deadline for w in self._inflight.values())
+                    # Floored rather than allowed to be zero: a deadline that
+                    # has just passed costs one more trip round the loop, not
+                    # a spin.
+                    self._watch.wait(max(soonest - now, 0.001))
+                    continue
+                announcements = [self._cut_loose_locked(i, w) for i, w in overdue]
+            # Outside the lock deliberately. stderr is a pipe to journald, and
+            # a journal that has stopped reading must not become the next
+            # thing to block this sink's lock — which is the entire subject
+            # of this class.
+            for message in announcements:
+                _to_journal(message)
+
+    def _cut_loose_locked(self, write_id: int, write: _InFlightWrite) -> str:
+        """Abort the stream a write is stuck in. Caller holds `_lock`.
+
+        Marks the write so it raises rather than returning quietly: the
+        recorded-drop path belongs to a hush, which is expected, and this is
+        not.
+        """
+        self._timed_out.add(write_id)
+        # Struck off the register first, so a stream that does not release its
+        # writer even now is aborted once rather than once per pass.
+        self._inflight.pop(write_id, None)
+        if write.stream is self._stream:
+            # Only the stream this sink still owns. A write stuck in one that
+            # has since been replaced is already "ours" by identity, and
+            # flagging the abort here would silence the live stream instead.
             self._aborted = True
-            if self._writers:
-                self.errors.append("closed with a write in flight: stream released unclosed")
-                return
-            try:
-                stream.close()
-            except Exception as exc:
-                self.errors.append(f"could not close the stream: {exc}")
+        try:
+            write.stream.abort()
+        except Exception as exc:
+            # Nothing further can be done for the stuck writer; say so, and
+            # leave the stream for the next start() to reap.
+            self.errors.append(f"could not abort the wedged stream: {exc}")
+        return _wedged(write.frames, self._write_bound(write.frames))
+
+    def _join_watchdog(self) -> None:
+        """Wait for the watchdog to leave, so close() really is the end."""
+        with self._lock:
+            watchdog, self._watchdog = self._watchdog, None
+        if watchdog is None:
+            return
+        watchdog.join(timeout=_WATCHDOG_JOIN_TIMEOUT)
+        if watchdog.is_alive():
+            # It can only be inside an abort() that has not come back, which
+            # is the same device trouble it was started to survive.
+            self.errors.append("the write watchdog did not exit")
 
     def _open(self) -> sd.OutputStream:
         """Caller holds `_lock`."""
