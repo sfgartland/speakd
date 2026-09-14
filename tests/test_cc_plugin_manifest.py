@@ -451,3 +451,98 @@ def test_a_log_it_cannot_write_never_reaches_the_transcript(
     assert done.returncode == 0, f"{name}: exit {done.returncode}"
     assert done.stdout == "", f"{name}: stdout {done.stdout!r}"
     assert done.stderr == "", f"{name}: stderr {done.stderr!r}"
+
+
+def _broken_entry_point(directory: Path, body: str) -> Path:
+    """An executable that exists, passes `[ -x ]`, and cannot be run."""
+    bin_dir = directory / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    entry = bin_dir / "speakd-claude-hook"
+    entry.write_text(body, encoding="utf-8")
+    entry.chmod(0o755)
+    return entry
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    [
+        # A venv rebuilt on a Python that has since gone, or a checkout moved
+        # after `uv sync` wrote absolute shebangs into it. Exit 127.
+        ("a stale shebang", "#!/nonexistent/python3.11\nprint('never reached')\n"),
+        # Exit 126: the file is executable, the interpreter is not.
+        ("an unusable interpreter", "#!/etc/hostname\n"),
+    ],
+)
+def test_an_entry_point_that_cannot_run_says_so_in_the_log(
+    tmp_path: Path, name: str, body: str
+) -> None:
+    """`[ -x ]` is not the same question as "will this run".
+
+    A stale shebang exits 127 with "bad interpreter" on stderr, which lands
+    on Claude Code's transcript, while the log — the one place the README
+    sends a user to look — stays empty. That is the Critical from the last
+    round exactly, one layer in: the user has nothing to tail.
+    """
+    state = tmp_path / "state"
+    _broken_entry_point(tmp_path / "speakd", body)
+    done = _invoke(
+        _installed_copy(tmp_path),
+        GARBAGE,
+        state=state,
+        path="/usr/bin:/bin",
+        home=tmp_path / "home",
+        speakd_home=tmp_path / "speakd",
+    )
+    assert done.returncode == 0, f"{name}: exit {done.returncode}"
+    assert done.stdout == "", f"{name}: stdout {done.stdout!r}"
+    assert done.stderr == "", f"{name}: stderr leaked to the transcript: {done.stderr!r}"
+    log = state / "claude-code" / "hook.log"
+    assert log.is_file(), f"{name}: the wrapper failed and said nothing"
+    written = log.read_text(encoding="utf-8")
+    assert "speakd-claude-hook" in written, f"{name}: the log does not name what failed"
+    assert "uv sync" in written, f"{name}: the log does not say what to do about it"
+
+
+def test_an_entry_point_that_writes_to_stderr_is_logged_not_leaked(tmp_path: Path) -> None:
+    """Anything the entry point says on stderr belongs in the log.
+
+    It writes nothing there today. If it ever does — a warning from a
+    dependency, say — the transcript is the wrong place for it to appear.
+    """
+    state = tmp_path / "state"
+    _broken_entry_point(
+        tmp_path / "speakd",
+        "#!/usr/bin/env bash\ncat >/dev/null\necho 'a dependency grumbled' >&2\nexit 0\n",
+    )
+    done = _invoke(
+        _installed_copy(tmp_path),
+        GARBAGE,
+        state=state,
+        path="/usr/bin:/bin",
+        home=tmp_path / "home",
+        speakd_home=tmp_path / "speakd",
+    )
+    assert done.returncode == 0
+    assert done.stderr == "", f"stderr leaked: {done.stderr!r}"
+    assert "a dependency grumbled" in (state / "claude-code" / "hook.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_working_entry_point_logs_nothing_of_its_own(tmp_path: Path) -> None:
+    """The quiet path stays quiet: no status line for a clean exit."""
+    state = tmp_path / "state"
+    _broken_entry_point(tmp_path / "speakd", "#!/usr/bin/env bash\ncat >/dev/null\nexit 0\n")
+    done = _invoke(
+        _installed_copy(tmp_path),
+        VALID,
+        state=state,
+        path="/usr/bin:/bin",
+        home=tmp_path / "home",
+        speakd_home=tmp_path / "speakd",
+    )
+    assert done.returncode == 0
+    assert done.stdout == ""
+    assert done.stderr == ""
+    log = state / "claude-code" / "hook.log"
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""

@@ -49,9 +49,33 @@ log() {
   { printf '%(%Y-%m-%dT%H:%M:%S)T %s\n' -1 "$1" >>"$file"; } 2>/dev/null || true
 }
 
-if command -v speakd-claude-hook >/dev/null 2>&1; then
-  speakd-claude-hook || true
+# Run the entry point, then leave. Its stderr is captured rather than let
+# through: an executable that `[ -x ]` accepts can still fail to run -- a venv
+# rebuilt on a Python that has gone, or a checkout moved after `uv sync` wrote
+# absolute shebangs into it -- and bash reports "bad interpreter" on stderr,
+# which Claude Code shows in the transcript while the log the README sends the
+# user to stays empty. stdout is passed through untouched on fd 3; the entry
+# point is tested never to write there, and swallowing it here would hide it
+# if that ever changed.
+run_entry_point() {
+  complaint="$( { "$@" 2>&1 1>&3 3>&-; } 3>&1 )"
+  status=$?
+  complaint="${complaint//$'\n'/ }"
+  complaint="${complaint:0:400}"
+  if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then
+    log "could not run $1 (exit $status): ${complaint:-no message} -- the venv \
+may have been built against a Python that is no longer installed, or the \
+checkout has moved; recreate it with \`uv sync\` in your speakd checkout"
+  elif [ -n "$complaint" ]; then
+    log "$1 wrote to stderr: $complaint"
+  elif [ "$status" -ne 0 ]; then
+    log "$1 exited $status"
+  fi
   exit 0
+}
+
+if command -v speakd-claude-hook >/dev/null 2>&1; then
+  run_entry_point speakd-claude-hook
 fi
 
 # Claude Code COPIES an installed plugin into ~/.claude/plugins/cache/, so for
@@ -65,8 +89,7 @@ for candidate in \
   "$root/.venv/bin/speakd-claude-hook" \
   "${HOME:-}/.local/bin/speakd-claude-hook"; do
   if [ -x "$candidate" ]; then
-    "$candidate" || true
-    exit 0
+    run_entry_point "$candidate"
   fi
 done
 
