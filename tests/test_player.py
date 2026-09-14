@@ -4,11 +4,17 @@ import sys
 import threading
 import time
 import types
+from collections.abc import Sequence
 
 import numpy as np
 import pytest
 
+from speakd.model import Piece
 from speakd.player import _MAX_ERRORS, AudioSink, RecordingPlayer, _ErrorLog
+
+
+def _passthrough(pieces: Sequence[Piece]) -> tuple[list[Piece], list[str]]:
+    return list(pieces), []
 
 
 def test_recording_player_keeps_what_it_played() -> None:
@@ -559,6 +565,391 @@ def test_the_player_speaks_again_on_a_fresh_stream_after_a_hush(
     assert streams[0].close_calls == 1
     assert streams[1].state == "running"
     assert player.errors == []
+
+
+# --------------------------------------------------------------------------
+# The bounded write.
+#
+# `sounddevice`'s blocking write() takes no timeout. It normally returns in
+# about the time its own audio takes to play — 2048 frames at 24 kHz is
+# 85 ms — but it is not guaranteed to. A py-spy dump of a live daemon found
+# the speech thread parked in `_raw_write` for tens of minutes while the
+# daemon went on accepting speech nothing was left to consume.
+#
+# These tests drive that against a stream that blocks until it is released,
+# so the wedge is reproduced deterministically and no device is opened.
+# --------------------------------------------------------------------------
+
+
+def _bound_writes_at(monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
+    """Shrink the watchdog's floor so a test need not wait out the real bound.
+
+    Patched by name with `raising` left at its default: if the constant is
+    ever renamed, this fails loudly rather than quietly leaving every test
+    below to run against the five-second production bound, where they would
+    stop testing the watchdog and start testing pytest's patience.
+    """
+    import speakd.player
+
+    monkeypatch.setattr(speakd.player, "_MIN_WRITE_TIMEOUT", seconds)
+
+
+def test_a_write_that_never_returns_releases_the_writing_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bug, reproduced. Nobody hushes here and nothing fails: the device
+    simply never comes back from write(). Before the watchdog the writing
+    thread stayed inside it for good, which is what the daemon did on real
+    hardware — still answering `ok` to enqueue, with no consumer left."""
+    from speakd.player import SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.1)
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    stream = streams[0]
+    stream.block_writes()
+
+    writer = _Writer(sink, _frames(2048))
+    writer.start()
+    assert stream.entered_write.wait(timeout=2.0), "the writer never reached write()"
+
+    writer.join(timeout=2.0)
+    assert not writer.is_alive(), "the write never returned: the speech thread is wedged"
+    assert stream.abort_calls == 1, "only an abort from outside can release a stuck write()"
+
+
+class _Journal:
+    """Stands in for the process's stderr, which is what journald captures.
+
+    Records rather than prints, and announces the first line with an Event:
+    the watchdog writes from its own thread, so a test that merely looked
+    afterwards would be reading a race.
+    """
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+        self.wrote = threading.Event()
+
+    def write(self, text: str) -> int:
+        self.lines.append(text)
+        self.wrote.set()
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    @property
+    def text(self) -> str:
+        return "".join(self.lines)
+
+
+def _capture_journal(monkeypatch: pytest.MonkeyPatch) -> _Journal:
+    """Take over the real stderr, because that is the channel under test.
+
+    Not `capsys`: the assertion is specifically that the line goes to the
+    process's stderr, where a systemd unit's journal picks it up, and it has
+    to be waitable because it is written from the watchdog thread.
+    """
+    journal = _Journal()
+    monkeypatch.setattr(sys, "stderr", journal)
+    return journal
+
+
+def _watchdog_threads() -> list[threading.Thread]:
+    from speakd.player import _WATCHDOG_THREAD_NAME
+
+    return [t for t in threading.enumerate() if t.name == _WATCHDOG_THREAD_NAME]
+
+
+def test_a_wedged_write_raises_rather_than_recording_the_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hush is expected and must not crash the utterance, so its dropped
+    frames are recorded. A device that has stopped taking audio is neither:
+    every remaining chunk would cost another full bound against it, and a
+    recorded drop reaches `sink.errors` and goes no further. Raising is what
+    abandons the utterance and carries the failure up to the bus."""
+    from speakd.player import AudioDeviceWedged, SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.1)
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    streams[0].block_writes()
+
+    writer = _Writer(sink, _frames(64))
+    writer.start()
+    writer.join(timeout=2.0)
+
+    assert not writer.is_alive()
+    assert isinstance(writer.error, AudioDeviceWedged), f"raised {writer.error!r}"
+    assert sink.frames_written == 0, "frames the device never took must not be counted"
+    sink.close()
+
+
+def test_a_wedged_write_is_recorded_in_the_sinks_error_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The raise tells the caller; the log is what a later `speakctl status`
+    or a dump of the sink can still show."""
+    from speakd.player import SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.1)
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    streams[0].block_writes()
+
+    writer = _Writer(sink, _frames(64))
+    writer.start()
+    writer.join(timeout=2.0)
+
+    assert not writer.is_alive()
+    assert any("audio device wedged" in message for message in sink.errors), sink.errors
+    assert any("64-frame write" in message for message in sink.errors), sink.errors
+    sink.close()
+
+
+def test_a_wedged_write_reaches_the_journal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A device that wedges and then recovers in silence is barely better
+    than one that stays wedged. The bus needs a subscriber; stderr needs
+    nothing but the unit, so this is the line that is always there."""
+    from speakd.player import SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.1)
+    streams = _install_fake_sounddevice(monkeypatch)
+    journal = _capture_journal(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    streams[0].block_writes()
+
+    writer = _Writer(sink, _frames(64))
+    writer.start()
+
+    assert journal.wrote.wait(timeout=2.0), "nothing reached the journal"
+    assert "audio device wedged" in journal.text, journal.text
+    writer.join(timeout=2.0)
+    assert not writer.is_alive()
+    sink.close()
+
+
+def test_the_sink_is_reusable_after_a_watchdog_abort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The watchdog aborts through the same door `stop()` uses, so the
+    existing contract holds: start() reaps the aborted stream and opens a
+    fresh one, and the next utterance is audible."""
+    from speakd.player import AudioDeviceWedged, SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.1)
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    streams[0].block_writes()
+
+    writer = _Writer(sink, _frames(64))
+    writer.start()
+    writer.join(timeout=2.0)
+    assert isinstance(writer.error, AudioDeviceWedged)
+
+    sink.start()
+    sink.write(_frames(32))
+
+    assert len(streams) == 2, "start() must open a fresh stream after the abort"
+    assert streams[0].close_calls == 1, "the aborted stream must be reaped"
+    assert streams[0].violations == []
+    assert streams[1].state == "running"
+    assert sink.frames_written == 32
+    sink.close()
+
+
+def test_the_watchdog_does_not_fire_after_a_write_that_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound must be invisible in normal operation. A write that came
+    back leaves nothing for the watchdog to find, however long the sink then
+    sits idle."""
+    from speakd.player import SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.05)
+    streams = _install_fake_sounddevice(monkeypatch)
+    journal = _capture_journal(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+
+    sink.write(_frames(64))
+    time.sleep(0.4)  # eight times the bound, with the sink left idle
+
+    assert streams[0].abort_calls == 0, "a completed write must not be aborted afterwards"
+    assert streams[0].state == "running"
+    assert sink.errors == []
+    assert sink.frames_written == 64
+    assert journal.text == ""
+    sink.close()
+
+
+def test_the_bound_scales_with_the_audio_the_write_carries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The floor is sized for a 2048-frame chunk. A caller that writes ten
+    seconds of audio in one go must not be cut off after five: the bound is
+    never less than several times the audio in the write itself."""
+    from speakd.player import SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.05)
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    stream = streams[0]
+    stream.block_writes()
+
+    writer = _Writer(sink, _frames(24000 * 10))  # ten seconds of audio
+    writer.start()
+    assert stream.entered_write.wait(timeout=2.0)
+    time.sleep(0.4)
+
+    assert stream.abort_calls == 0, "a long write was cut off at the floor"
+    assert writer.is_alive()
+
+    sink.stop()  # release the writer so the test does not leak it
+    writer.join(timeout=2.0)
+    assert not writer.is_alive()
+    assert writer.error is None, f"a hush must not raise: {writer.error!r}"
+    sink.close()
+
+
+def test_the_watchdog_is_one_thread_per_sink_not_one_per_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chunk is 85 ms, so a thread per write is twelve thread creations a
+    second for as long as the daemon speaks."""
+    from speakd.player import SoundDeviceSink
+
+    _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    before = len(_watchdog_threads())
+
+    for _ in range(50):
+        sink.write(_frames(64))
+
+    assert len(_watchdog_threads()) == before + 1, "one watchdog, not one per write"
+    sink.close()
+
+
+def test_close_takes_the_watchdog_with_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """close() is terminal for the device, and has to be terminal for the
+    thread holding a reference to it too — otherwise a daemon that opens a
+    sink per session accumulates watchdogs for streams nobody owns."""
+    from speakd.player import SoundDeviceSink
+
+    _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    # A difference rather than a count: watchdogs share one thread name, so earlier tests
+    # in the same session may still have theirs parked, and this test is about
+    # the one thread this sink started.
+    before = set(_watchdog_threads())
+    sink.write(_frames(64))
+    mine = set(_watchdog_threads()) - before
+    assert len(mine) == 1, "this sink started no watchdog of its own"
+
+    sink.close()
+
+    assert all(not t.is_alive() for t in mine), "the watchdog outlived close()"
+    assert sink.errors == []
+
+
+def test_a_watchdog_that_falls_over_is_replaced_rather_than_quietly_missed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A watchdog that dies without a word restores exactly the state this
+    class exists to end: every later write unbounded, for the life of the
+    process, with nothing to see. So it vacates the post rather than
+    abandoning it, and the next write puts someone back on it."""
+    import speakd.player
+    from speakd.player import AudioDeviceWedged, SoundDeviceSink
+
+    _bound_writes_at(monkeypatch, 0.1)
+    streams = _install_fake_sounddevice(monkeypatch)
+    wording = speakd.player._wedged
+    calls = {"n": 0}
+
+    def flaky(frames: int, seconds: float) -> str:
+        """Breaks the watchdog on its first firing and works thereafter."""
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("a bug in the watchdog itself")
+        return wording(frames, seconds)
+
+    monkeypatch.setattr(speakd.player, "_wedged", flaky)
+
+    sink = SoundDeviceSink(sample_rate=24000)
+    sink.start()
+    streams[0].block_writes()
+    first = _Writer(sink, _frames(64))
+    first.start()
+    first.join(timeout=2.0)
+
+    assert not first.is_alive(), "the abort must land before the watchdog falls over"
+    assert isinstance(first.error, AudioDeviceWedged), f"raised {first.error!r}"
+    assert any("write watchdog stopped" in message for message in sink.errors), sink.errors
+
+    sink.start()
+    streams[1].block_writes()
+    second = _Writer(sink, _frames(64))
+    second.start()
+    second.join(timeout=2.0)
+
+    assert not second.is_alive(), "no watchdog took the vacant post: writes are unbounded again"
+    assert isinstance(second.error, AudioDeviceWedged), f"raised {second.error!r}"
+    sink.close()
+
+
+def test_a_wedged_device_reaches_the_event_bus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end, which is the point of the whole change: the daemon used to
+    go on answering `ok` to enqueue with its speech worker parked inside
+    write() and nothing on the bus to say so. One utterance is now lost
+    loudly instead of the daemon being lost quietly."""
+    from speakd.channels import ChannelTable
+    from speakd.daemon import Daemon, ProfileView
+    from speakd.events import Event, EventBus
+    from speakd.player import SoundDeviceSink, StreamingPlayer
+    from speakd.protocol import Request, Verb
+    from speakd.synth.fake import FakeEngine
+
+    _bound_writes_at(monkeypatch, 0.1)
+    streams = _install_fake_sounddevice(monkeypatch)
+    sink = SoundDeviceSink(sample_rate=24000)
+    # Opened before the daemon runs so the wedge can be armed on the stream
+    # the speech worker will actually use; play()'s own start() is idempotent.
+    sink.start()
+    streams[0].block_writes()
+
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append)
+    daemon = Daemon(
+        FakeEngine(),
+        StreamingPlayer(sink, chunk_frames=2048),
+        lambda name: ProfileView(
+            voice="af_heart", speed=1.1, interrupt_on=(), prepare=_passthrough
+        ),
+        bus=bus,
+        channels=ChannelTable(),
+    )
+    daemon.start()
+    try:
+        assert daemon.handle(
+            Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "the device is gone"})
+        ).ok
+        assert daemon.wait_idle(timeout=5.0)
+    finally:
+        daemon.stop()
+
+    errors = [e for e in seen if e.kind == "error"]
+    assert any("audio device wedged" in str(e.data.get("message")) for e in errors), seen
+    finished = [e for e in seen if e.kind == "finished"]
+    assert finished and finished[-1].data["aborted"] is True, seen
 
 
 # --------------------------------------------------------------------------
