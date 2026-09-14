@@ -550,3 +550,45 @@ def test_a_working_entry_point_logs_nothing_of_its_own(tmp_path: Path) -> None:
     assert done.stderr == ""
     log = state / "claude-code" / "hook.log"
     assert not log.exists() or log.read_text(encoding="utf-8") == ""
+
+
+def test_with_home_unset_both_halves_pick_the_same_log(tmp_path: Path) -> None:
+    """`${HOME:-/tmp}` and `Path.home()` are not the same fallback.
+
+    Python's `Path.home()` falls back to the passwd entry when HOME is
+    unset; the shell's `${HOME:-/tmp}` fell back to /tmp. With HOME unset and
+    no SPEAKD_STATE_DIR, the two halves of this client wrote their
+    diagnostics to two different files, and whichever one the user tailed
+    was missing half the story. Bash's own tilde expansion uses the passwd
+    entry too, which is what makes the two agree.
+    """
+    probe = tmp_path / "probe.sh"
+    # Source the wrapper's state_dir() without running the rest of it.
+    body = WRAPPER.read_text(encoding="utf-8")
+    body = body[: body.index("# Matches hook.LOG_CAP_BYTES")] + "state_dir\n"
+    probe.write_text(body, encoding="utf-8")
+    shell = sp.run(
+        ["bash", str(probe)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin"},  # no HOME, no XDG_STATE_HOME
+    )
+    assert shell.returncode == 0, shell.stderr
+    assert shell.stderr == ""
+
+    python = sp.run(
+        [
+            str(Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"),
+            "-c",
+            "from speakd.clients.claude_code.watermark import state_dir; print(state_dir())",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    assert python.returncode == 0, python.stderr
+    assert shell.stdout.strip() == python.stdout.strip(), (
+        f"shell says {shell.stdout.strip()!r}, python says {python.stdout.strip()!r}"
+    )

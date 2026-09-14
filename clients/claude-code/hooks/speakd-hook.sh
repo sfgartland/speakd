@@ -8,6 +8,12 @@ set -u
 # call does that on its own, so the guards look redundant -- they are the
 # thing that stays correct when the next person tightens the shell options.
 
+# Python's Path.home() is $HOME when set and the passwd entry when it is not.
+# Bash's own tilde expansion has exactly that rule, so this is the one
+# spelling that keeps the two halves agreeing; `${HOME:-/tmp}` did not, and
+# with HOME unset they logged to two different files.
+home_dir=~
+
 # Mirrors watermark.state_dir(). Two implementations of one path, in bash and
 # in Python, because a user tailing the file the README names has to see both
 # the wrapper's failures and the entry point's.
@@ -17,7 +23,7 @@ state_dir() {
   elif [ -n "${XDG_STATE_HOME:-}" ]; then
     printf '%s/speakd/claude-code\n' "$XDG_STATE_HOME"
   else
-    printf '%s/.local/state/speakd/claude-code\n' "${HOME:-/tmp}"
+    printf '%s/.local/state/speakd/claude-code\n' "$home_dir"
   fi
 }
 
@@ -87,7 +93,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 for candidate in \
   "${SPEAKD_HOME:-}/.venv/bin/speakd-claude-hook" \
   "$root/.venv/bin/speakd-claude-hook" \
-  "${HOME:-}/.local/bin/speakd-claude-hook"; do
+  "$home_dir/.local/bin/speakd-claude-hook"; do
   if [ -x "$candidate" ]; then
     run_entry_point "$candidate"
   fi
@@ -98,5 +104,5 @@ done
 # empty file would send them looking at the daemon instead of at this.
 log "could not find speakd-claude-hook: not on PATH, and no executable at \
 \${SPEAKD_HOME}/.venv/bin (SPEAKD_HOME=${SPEAKD_HOME:-unset}), $root/.venv/bin, \
-or \${HOME}/.local/bin -- set SPEAKD_HOME to your speakd checkout"
+or $home_dir/.local/bin -- set SPEAKD_HOME to your speakd checkout"
 exit 0
