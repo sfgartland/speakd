@@ -15,7 +15,12 @@ from typing import Any
 import numpy as np
 import pytest
 
-from speakd.synth.kokoro_engine import NO_SPLIT, KokoroEngine
+from speakd.synth.kokoro_engine import (
+    LEADING_SILENCE_SECONDS,
+    NO_SPLIT,
+    TRAILING_SILENCE_SECONDS,
+    KokoroEngine,
+)
 
 
 class StubPipeline:
@@ -110,6 +115,46 @@ def test_voice_and_speed_are_passed_through() -> None:
     assert kwargs["speed"] == 0.9
 
 
+def padded_chunk(lead: float, speech: int, trail: float) -> np.ndarray:
+    """A chunk shaped like Kokoro's: speech between two pads of dither."""
+    rate = KokoroEngine.sample_rate
+    audio = np.full(int(lead * rate) + speech + int(trail * rate), 1e-6, dtype=np.float32)
+    audio[int(lead * rate) : int(lead * rate) + speech] = 0.5
+    return audio
+
+
+def test_the_padding_is_trimmed_off_what_the_engine_returns() -> None:
+    kept_lead = round(LEADING_SILENCE_SECONDS * KokoroEngine.sample_rate)
+    kept_trail = round(TRAILING_SILENCE_SECONDS * KokoroEngine.sample_rate)
+    engine, _ = engine_with([padded_chunk(lead=0.28, speech=2400, trail=0.47)])
+    audio = engine.synthesize("Hello there.", voice="af_heart", speed=1.1)
+    assert len(audio) == kept_lead + 2400 + kept_trail
+    assert audio.dtype == np.float32
+
+
+def test_trimming_spans_the_join_between_chunks() -> None:
+    # The pad is on the outside of the whole utterance, so it has to be found
+    # after the chunks are concatenated -- not chunk by chunk, which would
+    # cut a hole at every seam.
+    kept_lead = round(LEADING_SILENCE_SECONDS * KokoroEngine.sample_rate)
+    kept_trail = round(TRAILING_SILENCE_SECONDS * KokoroEngine.sample_rate)
+    first = padded_chunk(lead=0.3, speech=1200, trail=0.0)
+    second = padded_chunk(lead=0.0, speech=1200, trail=0.4)
+    engine, _ = engine_with([first, second])
+    audio = engine.synthesize("Hello there.", voice="af_heart", speed=1.1)
+    assert len(audio) == kept_lead + 2400 + kept_trail
+    # Every sample between the residuals is speech: no hole at the seam.
+    assert float(audio[kept_lead:-kept_trail].min()) == 0.5
+
+
+def test_a_silent_result_keeps_its_length_rather_than_becoming_empty() -> None:
+    # Emptying it would collide with the contract's meaning for zero-length
+    # audio, which the pipeline and player both read as "nothing to say".
+    engine, _ = engine_with([np.full(4800, 1e-6, dtype=np.float32)])
+    audio = engine.synthesize("Hello there.", voice="af_heart", speed=1.1)
+    assert len(audio) == 4800
+
+
 @pytest.fixture(scope="module")
 def engine() -> KokoroEngine:
     """The real engine. Skips the tests below unless the extra is installed."""
@@ -131,3 +176,16 @@ def test_synthesizes_audible_audio(engine: KokoroEngine) -> None:
 
 def test_empty_text_yields_empty_audio(engine: KokoroEngine) -> None:
     assert len(engine.synthesize("", voice="af_heart", speed=1.1)) == 0
+
+
+def test_the_real_engine_returns_no_more_padding_than_the_residuals(
+    engine: KokoroEngine,
+) -> None:
+    from speakd.synth.kokoro_engine import SILENCE_THRESHOLD
+
+    audio = engine.synthesize("Yes.", voice="af_heart", speed=1.1)
+    loud = np.flatnonzero(np.abs(audio) > SILENCE_THRESHOLD)
+    lead = int(loud[0]) / engine.sample_rate
+    trail = (len(audio) - 1 - int(loud[-1])) / engine.sample_rate
+    assert lead == pytest.approx(LEADING_SILENCE_SECONDS, abs=1e-6)
+    assert trail == pytest.approx(TRAILING_SILENCE_SECONDS, abs=1e-6)
