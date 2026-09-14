@@ -2,6 +2,7 @@
 
 import io
 import json
+import socket as socketlib
 import subprocess as sp
 import threading
 import time
@@ -10,7 +11,18 @@ from pathlib import Path
 import pytest
 
 from speakd.clients.claude_code import hook
+from speakd.clients.claude_code import send as send_module
 from speakd.clients.claude_code.watermark import load, state_dir
+
+PLUGIN = Path(__file__).resolve().parent.parent / "clients" / "claude-code"
+# Read from the manifest rather than restated, so the two cannot drift.
+PROMPT_BUDGET = min(
+    entry["timeout"]
+    for matcher in json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))[
+        "hooks"
+    ]["UserPromptSubmit"]
+    for entry in matcher["hooks"]
+)
 
 
 def payload(**fields: object) -> str:
@@ -444,3 +456,61 @@ def test_a_base_exception_is_survived_but_an_interrupt_is_re_raised(  # type: ig
         monkeypatch.setattr(hook, "_read_and_dispatch", raise_interrupt)
         with pytest.raises(interrupt):
             hook.main([])
+
+
+def test_the_prompt_path_hushes_on_the_shorter_timeout(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Both hushes must carry the shorter budget, not just exist."""
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    seen: list[object] = []
+
+    def recording_hush(source: str, **kw: object) -> str | None:
+        seen.append(kw.get("timeout"))
+        return None
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload(hook_event_name="UserPromptSubmit")))
+    monkeypatch.setattr(hook, "hush", recording_hush)
+    assert hook.main([]) == 0
+    assert seen == [hook.HUSH_TIMEOUT, hook.HUSH_TIMEOUT]
+    assert hook.HUSH_TIMEOUT < send_module.TIMEOUT, "the prompt path must be the quicker one"
+
+
+def test_a_prompt_against_an_unreachable_daemon_stays_inside_its_budget(tmp_path: Path) -> None:
+    """The real measurement, in a real process, against a real dead socket.
+
+    A socket that listens and never accepts is the worst case: both hushes
+    pay their full timeout. Run through the console script so interpreter
+    start-up is counted, because Claude Code counts it.
+    """
+    runtime = tmp_path / "run" / "speakd"
+    runtime.mkdir(parents=True)
+    listener = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+    listener.bind(str(runtime / "speakd.sock"))
+    listener.listen(2)
+    entry = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "speakd-claude-hook"
+    body = payload(hook_event_name="UserPromptSubmit")
+    try:
+        started = time.monotonic()
+        done = sp.run(
+            [str(entry)],
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(tmp_path / "home"),
+                "SPEAKD_STATE_DIR": str(tmp_path / "state"),
+                "XDG_RUNTIME_DIR": str(tmp_path / "run"),
+            },
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        listener.close()
+    assert done.returncode == 0
+    assert done.stdout == ""
+    assert elapsed < PROMPT_BUDGET, (
+        f"took {elapsed:.2f}s against the manifest's {PROMPT_BUDGET}s for UserPromptSubmit"
+    )

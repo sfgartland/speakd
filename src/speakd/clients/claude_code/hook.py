@@ -20,6 +20,15 @@ from speakd.clients.claude_code.watermark import load, locked, save, state_dir
 
 NOTIFY_PRIORITY = 10
 
+# Two hushes go out on the UserPromptSubmit path, one per channel, and Claude
+# Code gives that event the shortest window of the four (3s in the manifest
+# this client ships). At `send.TIMEOUT` the pair costs 4s against it: measured
+# at 4.01s, the second hush never lands and the user's prompt stalls waiting
+# for a hook that has already lost. Halved so that both, plus interpreter
+# start-up, fit inside the budget -- which
+# test_the_prompt_hushes_fit_inside_the_manifests_budget holds us to.
+HUSH_TIMEOUT = 1.0
+
 
 def _log(message: str) -> None:
     """Append one line to the hook log, or give up quietly.
@@ -87,7 +96,7 @@ def _dispatch(body: dict[str, object]) -> None:
 
     if event == "UserPromptSubmit":
         for channel in (response, notify):
-            reason = hush(channel)
+            reason = hush(channel, timeout=HUSH_TIMEOUT)
             if reason is not None:
                 _log(reason)
         return

@@ -302,3 +302,24 @@ def test_the_marketplace_entry_points_at_the_plugin_we_ship() -> None:
     assert source == ROOT.resolve(), f"the marketplace points at {source}, not {ROOT}"
     manifest = json.loads((source / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert manifest["name"] == entries["speakd"]["name"]
+
+
+def test_the_prompt_hushes_fit_inside_the_manifests_budget() -> None:
+    """The arithmetic, checked against the manifest rather than remembered.
+
+    `UserPromptSubmit` sends two hushes in sequence and has the shortest
+    window of the four events. Either number can be changed by someone who
+    is not thinking about the other; this is what notices.
+    """
+    from speakd.clients.claude_code.hook import HUSH_TIMEOUT
+
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    budget = min(
+        entry["timeout"] for matcher in hooks["UserPromptSubmit"] for entry in matcher["hooks"]
+    )
+    # Measured at ~0.22s on the development machine; doubled for headroom.
+    startup_allowance = 0.5
+    worst_case = 2 * HUSH_TIMEOUT + startup_allowance
+    assert worst_case <= budget, (
+        f"two hushes at {HUSH_TIMEOUT}s plus start-up is {worst_case}s, against a {budget}s budget"
+    )
