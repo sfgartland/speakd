@@ -1,6 +1,7 @@
 """The plugin manifest has to stay loadable and in step with the hooks."""
 
 import json
+import os
 import subprocess as sp
 from pathlib import Path
 
@@ -56,23 +57,32 @@ def test_the_command_each_hook_names_actually_exists() -> None:
 
 
 def _invoke(
-    wrapper: Path, stdin: str, *, state: Path, path: str, home: Path
+    wrapper: Path,
+    stdin: str,
+    *,
+    state: Path,
+    path: str,
+    home: Path,
+    speakd_home: Path | None = None,
 ) -> "sp.CompletedProcess[str]":
     """Run the wrapper the way Claude Code does: bash, payload on stdin."""
+    env = {
+        "PATH": path,
+        "HOME": str(home),
+        "SPEAKD_STATE_DIR": str(state),
+        # No daemon is running in the test environment, so every enqueue
+        # fails; the point here is that it fails into the log, quietly.
+        "XDG_RUNTIME_DIR": str(state / "run"),
+    }
+    if speakd_home is not None:
+        env["SPEAKD_HOME"] = str(speakd_home)
     return sp.run(
         ["bash", str(wrapper)],
         input=stdin,
         capture_output=True,
         text=True,
         timeout=30,
-        env={
-            "PATH": path,
-            "HOME": str(home),
-            "SPEAKD_STATE_DIR": str(state),
-            # No daemon is running in the test environment, so every enqueue
-            # fails; the point here is that it fails into the log, quietly.
-            "XDG_RUNTIME_DIR": str(state / "run"),
-        },
+        env=env,
     )
 
 
@@ -151,6 +161,70 @@ def test_a_well_formed_payload_leaves_the_log_alone(tmp_path: Path) -> None:
     assert not log.exists() or log.read_text(encoding="utf-8") == ""
 
 
+def _installed_copy(tmp_path: Path) -> Path:
+    """The plugin where Claude Code actually puts it.
+
+    `/plugin install` copies the directory to
+    `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`, so
+    ${CLAUDE_PLUGIN_ROOT} is nowhere near the checkout and the wrapper's
+    `../../..` lands in the cache, where there is no venv.
+    """
+    cache = tmp_path / "claude" / "plugins" / "cache" / "speakd" / "speakd" / "0.0.1"
+    (cache / "hooks").mkdir(parents=True)
+    copy = cache / "hooks" / "speakd-hook.sh"
+    copy.write_text(WRAPPER.read_text(encoding="utf-8"), encoding="utf-8")
+    copy.chmod(0o755)
+    return copy
+
+
+def test_an_installed_copy_finds_the_interpreter_through_speakd_home(tmp_path: Path) -> None:
+    """The documented install copies the plugin out of the checkout.
+
+    Nothing in the copied tree can point back at the venv on its own, so
+    $SPEAKD_HOME is what carries the checkout's location across the copy.
+    Without it this whole path is a silent no-op.
+    """
+    state = tmp_path / "state"
+    done = _invoke(
+        _installed_copy(tmp_path),
+        GARBAGE,
+        state=state,
+        path="/usr/bin:/bin",
+        home=tmp_path / "home",
+        speakd_home=ROOT.parent.parent,
+    )
+    assert done.returncode == 0
+    assert done.stdout == ""
+    log = state / "claude-code" / "hook.log"
+    assert log.is_file(), "the installed copy never reached the entry point"
+    assert "not json at all" in log.read_text(encoding="utf-8")
+
+
+def test_an_installed_copy_that_finds_nothing_says_so_in_the_log(tmp_path: Path) -> None:
+    """Exiting 0 is right. Exiting 0 in silence is the bug.
+
+    A user who installs the plugin, starts the daemon and hears nothing is
+    told to `tail` the log. If the wrapper never found the entry point there
+    was no log at all, and the one diagnostic the README promises did not
+    exist.
+    """
+    state = tmp_path / "state"
+    done = _invoke(
+        _installed_copy(tmp_path),
+        GARBAGE,
+        state=state,
+        path="/usr/bin:/bin",
+        home=tmp_path / "home",
+    )
+    assert done.returncode == 0
+    assert done.stdout == ""
+    log = state / "claude-code" / "hook.log"
+    assert log.is_file(), "the wrapper found nothing and said nothing"
+    written = log.read_text(encoding="utf-8")
+    assert "speakd-claude-hook" in written
+    assert "SPEAKD_HOME" in written, "the log must name the way out"
+
+
 def test_the_wrapper_exits_zero_when_speakd_is_not_installed_at_all(tmp_path: Path) -> None:
     """Uninstalling speakd must not break every turn of every session."""
     stranded = tmp_path / "elsewhere" / "hooks"
@@ -166,7 +240,36 @@ def test_the_wrapper_exits_zero_when_speakd_is_not_installed_at_all(tmp_path: Pa
     )
     assert done.returncode == 0
     assert done.stdout == ""
-    assert not (tmp_path / "state").exists()
+    # It must still leave a trace. Silence here is indistinguishable, to the
+    # person tailing the log, from a hook that is working perfectly.
+    assert (tmp_path / "state" / "claude-code" / "hook.log").is_file()
+
+
+def test_the_wrapper_logs_where_the_entry_point_would_have(tmp_path: Path) -> None:
+    """The wrapper's idea of the state directory must match `watermark`'s.
+
+    Two implementations of one path, in bash and in Python. A user tailing
+    the file the README names has to see both.
+    """
+    from speakd.clients.claude_code.watermark import state_dir
+
+    state = tmp_path / "state"
+    _invoke(
+        _installed_copy(tmp_path),
+        GARBAGE,
+        state=state,
+        path="/usr/bin:/bin",
+        home=tmp_path / "home",
+    )
+    monkeyed = os.environ.get("SPEAKD_STATE_DIR")
+    os.environ["SPEAKD_STATE_DIR"] = str(state)
+    try:
+        assert (state_dir() / "hook.log").is_file()
+    finally:
+        if monkeyed is None:
+            del os.environ["SPEAKD_STATE_DIR"]
+        else:
+            os.environ["SPEAKD_STATE_DIR"] = monkeyed
 
 
 def test_the_wrapper_stays_silent_and_zero_however_often_it_is_run(tmp_path: Path) -> None:

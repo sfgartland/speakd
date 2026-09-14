@@ -36,9 +36,22 @@ wrapper directly. Every event runs the same command:
 }
 ```
 
-The wrapper looks for `speakd-claude-hook` on `PATH` first, then in the
-checkout's own `.venv/bin`, then in `~/.local/bin`. Installing speakd with
-`uv sync --extra kokoro` in the checkout is enough for the second to resolve.
+### Tell it where speakd lives
+
+`/plugin install` **copies** the plugin into `~/.claude/plugins/cache/`, so the
+installed copy has no way to find the checkout it came from. Point it back with
+`SPEAKD_HOME`, in whatever your shell reads at login, so Claude Code inherits it:
+
+```bash
+export SPEAKD_HOME=/path/to/speakd
+```
+
+The wrapper looks for `speakd-claude-hook` on `PATH` first, then at
+`$SPEAKD_HOME/.venv/bin`, then in its own `../../../.venv/bin` (which resolves
+only when the plugin is run from inside the checkout, as the `settings.json`
+install above does), then in `~/.local/bin`. Finding none of them, it writes one
+line to the log saying so and exits 0 — so the symptom of a missing `SPEAKD_HOME`
+is a line in the log, not silence.
 
 ## Start the daemon
 
@@ -57,7 +70,8 @@ tail -f ~/.local/state/speakd/claude-code/hook.log
 ```
 
 An empty or absent log is the healthy state: it is written to only when
-something went wrong. The watermark files beside it — one JSON file per session
+something went wrong — a daemon that is not listening, or a wrapper that could
+not find the entry point at all. The watermark files beside it — one JSON file per session
 — record how far into each transcript has been spoken.
 
 ## Known limitation
