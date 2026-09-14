@@ -57,22 +57,12 @@ def enqueue(
     *,
     socket: Path | None = None,
     timeout: float = TIMEOUT,
-    priority: int | None = None,
 ) -> str | None:
-    """Speak `text` on `source`. Blank text is a no-op, not a request.
-
-    `priority` rides along in the payload. Today's daemon reads priority only
-    from `set_priority` and ignores it here, so sending it changes nothing —
-    it is on the wire so that a daemon which grows per-utterance priority
-    finds this client already speaking its language.
-    """
+    """Speak `text` on `source`. Blank text is a no-op, not a request."""
     if not text.strip():
         return None
-    payload: dict[str, object] = {"text": text}
-    if priority is not None:
-        payload["priority"] = priority
     return send(
-        Request(verb=Verb.ENQUEUE, source_id=source, payload=payload),
+        Request(verb=Verb.ENQUEUE, source_id=source, payload={"text": text}),
         socket=socket,
         timeout=timeout,
     )

@@ -18,8 +18,6 @@ from speakd.clients.claude_code.reader import new_text
 from speakd.clients.claude_code.send import enqueue, hush
 from speakd.clients.claude_code.watermark import load, locked, save, state_dir
 
-NOTIFY_PRIORITY = 10
-
 # Two hushes go out on the UserPromptSubmit path, one per channel, and Claude
 # Code gives that event the shortest window of the four (3s in the manifest
 # this client ships). At `send.TIMEOUT` the pair costs 4s against it: measured
@@ -89,7 +87,7 @@ def _dispatch(body: dict[str, object]) -> None:
     if event == "Notification":
         message = body.get("message")
         if isinstance(message, str):
-            reason = enqueue(notify, message, priority=NOTIFY_PRIORITY)
+            reason = enqueue(notify, message)
             if reason is not None:
                 _log(reason)
         return
