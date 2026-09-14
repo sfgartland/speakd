@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from speakd.metrics import SynthesisWindow
 from speakd.model import Piece, Segment
 from speakd.player import Player
 from speakd.segmenter import DEFAULT_MAX_CHARS, segment
@@ -42,6 +43,8 @@ def speak(
     speed: float = 1.1,
     cancel: threading.Event | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
+    window: SynthesisWindow | None = None,
+    timeline: Timeline | None = None,
 ) -> SpeechResult:
     """Speak `pieces`, returning the timeline of what was actually played.
 
@@ -49,6 +52,15 @@ def speak(
     would make a torn-down utterance look cancelled to whoever owns it, and
     the next `speak()` reusing that Event would play nothing at all.
     Internal teardown goes through `stop` instead.
+
+    `window` and `timeline` are for a caller that has to watch this from
+    another thread. Timing belongs to the pipeline -- engines synthesise one
+    unit and nothing else -- so this is where a synthesize() call can be timed
+    against the audio it produced, and `timeline` is the same map that comes
+    back in the result, handed in so it can be read while it is still being
+    built rather than only once the utterance is over. A supplied timeline
+    should be empty: this starts its audio clock at zero. Neither argument is
+    required -- without them nothing is recorded and nobody is watching.
     """
     cancel = cancel or threading.Event()
     # Internal teardown flag. Distinct from `cancel` so the caller's Event
@@ -62,11 +74,22 @@ def speak(
             for unit in units:
                 if cancel.is_set() or stop.is_set():
                     break
+                started = time.monotonic()
                 try:
                     audio = engine.synthesize(unit.spoken, voice, speed)
                 except Exception as exc:  # speech must not vanish on one bad segment
                     work.put(f"{unit.spoken[:40]!r}: {exc}")
                     continue
+                if window is not None:
+                    # Recorded here rather than by the consumer below, so the
+                    # real-time factor moves as soon as synthesis is done --
+                    # it is the leading indicator, and waiting for playback to
+                    # reach the segment would delay it by a segment. A call
+                    # that raised is not recorded: it produced no audio, and
+                    # seconds per second of nothing is not a measurement. The
+                    # window's own lock is held for an append and no more, so
+                    # this cannot stall the producer.
+                    window.record(time.monotonic() - started, len(audio) / engine.sample_rate)
                 work.put((unit, audio))
         finally:
             work.put(None)
@@ -74,7 +97,7 @@ def speak(
     worker = threading.Thread(target=produce, daemon=True)
     worker.start()
 
-    timeline = Timeline()
+    timeline = timeline if timeline is not None else Timeline()
     errors: list[str] = []
     offset = 0.0
     exhausted = False
