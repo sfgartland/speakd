@@ -121,6 +121,14 @@ re-measuring on hardware. That rig reported a clean shutdown for code that
 segfaulted inside ALSA the first time it met a sound card, so its silences are
 not evidence.
 
+## Clients
+
+**Claude Code** — [`clients/claude-code/`](clients/claude-code/) is a loadable
+plugin that speaks a session's responses as they arrive. Four hooks, one entry
+point; it exits 0 on every path and writes nothing to stdout, so a daemon that
+is not running costs silence and nothing else. See its
+[README](clients/claude-code/README.md) for the install.
+
 ## Development
 
 ```bash

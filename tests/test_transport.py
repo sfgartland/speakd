@@ -3,6 +3,7 @@
 import select
 import threading
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -515,3 +516,61 @@ def test_stop_survives_a_socket_file_that_vanishes_under_it(
     monkeypatch.setattr(Path, "unlink", vanished)
     srv.stop()
     monkeypatch.undo()
+
+
+def test_a_connect_timeout_does_not_leave_the_event_stream_timed(server) -> None:  # type: ignore[no-untyped-def]
+    """A bounded connect must not bound everything read afterwards.
+
+    `settimeout` puts the socket in timeout mode for every later operation,
+    and `socket.SocketIO` latches `_timeout_occurred` the first time one
+    fires — after which every read on that file object raises forever, with
+    no way to reset it. An event stream is idle most of the time by nature,
+    so a socket left in timeout mode turns a quiet subscriber into a dead
+    one. `connect` clears the timeout before the reader is built over it;
+    this is what says so.
+    """
+    srv, bus = server
+    client = connect(srv.address, timeout=0.1)
+    received: list[Event] = []
+    ready = threading.Event()
+
+    def reader() -> None:
+        for event in client.subscribe():
+            received.append(event)
+            ready.set()
+            break
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if bus.subscriber_count() > 0:
+            break
+        threading.Event().wait(0.01)
+    # Idle for several multiples of the connect timeout before anything is
+    # published. This is the wait a real subscriber spends between events.
+    threading.Event().wait(0.5)
+    bus.publish(Event(kind="position", source_id="s", data={"offset": 7}))
+    assert ready.wait(timeout=5.0), "the idle stream timed out and never recovered"
+    thread.join(timeout=5.0)
+    client.close()
+    assert received[0].data == {"offset": 7}
+
+
+def test_a_connect_that_fails_closes_its_socket(tmp_path: Path) -> None:
+    """A caller retrying in a loop must not leave one socket per attempt.
+
+    Counting descriptors cannot show this: CPython's refcounting reclaims an
+    unreferenced socket as soon as `connect` returns, so the count stays flat
+    whether or not the close is there. What it does not do is stay quiet —
+    it closes the socket *for* us and says so — so the warning is the
+    observable, and the only thing that distinguishes a socket closed on
+    purpose from one collected after the fact.
+    """
+    absent = tmp_path / "nothing.sock"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(5):
+            with pytest.raises(OSError):
+                connect(absent)
+    unclosed = [w for w in caught if issubclass(w.category, ResourceWarning)]
+    assert unclosed == [], f"a failed connect left its socket open: {unclosed[0].message}"

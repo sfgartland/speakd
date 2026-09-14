@@ -1,0 +1,14 @@
+{
+  "name": "speakd",
+  "description": "Streaming speech synthesis for local AI agents",
+  "owner": {
+    "name": "Severin Gartland"
+  },
+  "plugins": [
+    {
+      "name": "speakd",
+      "source": "./clients/claude-code",
+      "description": "Speak Claude Code's responses through the speakd daemon"
+    }
+  ]
+}

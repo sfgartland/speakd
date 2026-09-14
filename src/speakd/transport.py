@@ -449,17 +449,23 @@ class SocketClient:
         self._socket = connection
         self._reader = connection.makefile("rb")
 
-    def send(self, request: Request) -> Response:
+    def send(self, request: Request, *, timeout: float | None = None) -> Response:
         """Send one request and read the next line back as its response.
 
         Strictly synchronous today: there is no correlation id on the wire, so
         the reply is whatever arrives next on this connection, and a second
         request must not be sent before the first has been answered. A
         pipelining client would need the protocol to grow correlation first.
-        """
-        return self.send_raw(encode(request))
 
-    def send_raw(self, line: bytes) -> Response:
+        `timeout` overrides how long this one call waits. The default suits a
+        human at a CLI; a caller running inside someone else's bounded window
+        — a Claude Code hook has seconds before the turn is failed for it —
+        needs a shorter one, and must not have to reach for a module global
+        that every other client on this process would see change with it.
+        """
+        return self.send_raw(encode(request), timeout=timeout)
+
+    def send_raw(self, line: bytes, *, timeout: float | None = None) -> Response:
         self._socket.sendall(line)
         # Bounded via select(), not socket.settimeout(). self._reader wraps a
         # socket.SocketIO whose readinto() latches _timeout_occurred the
@@ -471,9 +477,12 @@ class SocketClient:
         # socket's own timeout state, so a request that times out cannot
         # poison anything read afterward. A subscriber's event stream stays
         # untimed, as it always has, since this wait is local to this call.
-        readable, _, _ = select.select([self._socket], [], [], _REQUEST_TIMEOUT_SECONDS)
+        # Read from the module global at call time rather than bound as a
+        # default argument, so that monkeypatching the constant still works.
+        wait = _REQUEST_TIMEOUT_SECONDS if timeout is None else timeout
+        readable, _, _ = select.select([self._socket], [], [], wait)
         if not readable:
-            raise TimeoutError("timed out waiting for a response")
+            raise TimeoutError(f"timed out waiting for a response after {wait}s")
         reply = self._reader.readline()
         if not reply:
             raise ConnectionError("daemon closed the connection")
@@ -521,7 +530,31 @@ class SocketClient:
             self._socket.close()
 
 
-def connect(path: Path) -> SocketClient:
+def connect(path: Path, *, timeout: float | None = None) -> SocketClient:
+    """Open a connection, optionally bounding how long the connect may take.
+
+    A Unix connect usually returns at once, but a server whose accept loop
+    has died still has a listen backlog: the first connections queue and
+    succeed, and once it is full the connect blocks with nothing to time it
+    out. For a caller inside someone else's bounded window that is a hang,
+    not a slow call.
+
+    The timeout is cleared before the `SocketClient` wraps the socket in a
+    file object, deliberately: `socket.SocketIO` latches `_timeout_occurred`
+    the first time a socket-level timeout fires and then refuses every later
+    read on that file object forever, so a socket must not still be in
+    timeout mode when the reader is built over it.
+    """
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    connection.connect(str(path))
+    try:
+        if timeout is not None:
+            connection.settimeout(timeout)
+        connection.connect(str(path))
+        connection.settimeout(None)
+    except BaseException:  # noqa: B036 - closed, then re-raised
+        # A connect that failed must not leave the descriptor behind. Short
+        # of this it survives until the garbage collector notices, which for
+        # a caller retrying in a loop is a leak with a deadline on it.
+        connection.close()
+        raise
     return SocketClient(connection)
