@@ -21,16 +21,16 @@ wrapper directly. Every event runs the same command:
 {
   "hooks": {
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "bash /path/to/speakd/clients/claude-code/hooks/speakd-hook.sh", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 5 }] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "bash /path/to/speakd/clients/claude-code/hooks/speakd-hook.sh", "timeout": 5 }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 5 }] }
     ],
     "Notification": [
-      { "hooks": [{ "type": "command", "command": "bash /path/to/speakd/clients/claude-code/hooks/speakd-hook.sh", "timeout": 5 }] }
+      { "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 5 }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "bash /path/to/speakd/clients/claude-code/hooks/speakd-hook.sh", "timeout": 3 }] }
+      { "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 3 }] }
     ]
   }
 }

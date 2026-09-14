@@ -52,7 +52,7 @@ def test_the_command_each_hook_names_actually_exists() -> None:
     for matchers in hooks.values():
         for matcher in matchers:
             for entry in matcher["hooks"]:
-                relative = entry["command"].split("${CLAUDE_PLUGIN_ROOT}/", 1)[1]
+                relative = entry["command"].split("${CLAUDE_PLUGIN_ROOT}/", 1)[1].strip('"')
                 assert (ROOT / relative).is_file(), f"{relative} is not in the plugin"
 
 
@@ -323,3 +323,50 @@ def test_the_prompt_hushes_fit_inside_the_manifests_budget() -> None:
     assert worst_case <= budget, (
         f"two hushes at {HUSH_TIMEOUT}s plus start-up is {worst_case}s, against a {budget}s budget"
     )
+
+
+def test_a_checkout_path_with_a_space_does_not_break_every_hook() -> None:
+    """`${CLAUDE_PLUGIN_ROOT}` has to be quoted in the command.
+
+    Claude Code runs a hook command through a POSIX shell, which splits an
+    unquoted expansion on whitespace: `bash /home/a b/plugin/hooks/x.sh`
+    becomes `bash /home/a` and exits 127. Not a silent failure but the loud
+    kind — a hook failure on every single event, for anyone whose checkout
+    sits under a directory with a space in it.
+    """
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    commands = [
+        entry["command"]
+        for matchers in hooks.values()
+        for matcher in matchers
+        for entry in matcher["hooks"]
+    ]
+    for command in commands:
+        assert '"${CLAUDE_PLUGIN_ROOT}' in command, f"unquoted expansion in {command!r}"
+
+
+def test_the_quoted_command_actually_runs_from_a_path_with_a_space(tmp_path: Path) -> None:
+    """The manifest's own command string, run under a real shell."""
+    root = tmp_path / "a directory with spaces" / "plugin"
+    (root / "hooks").mkdir(parents=True)
+    target = root / "hooks" / "speakd-hook.sh"
+    target.write_text(WRAPPER.read_text(encoding="utf-8"), encoding="utf-8")
+    target.chmod(0o755)
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    command = hooks["Stop"][0]["hooks"][0]["command"]
+    done = sp.run(
+        ["bash", "-c", command],
+        input=GARBAGE,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_PLUGIN_ROOT": str(root),
+            "SPEAKD_STATE_DIR": str(tmp_path / "state"),
+        },
+    )
+    assert done.returncode == 0, f"exit {done.returncode}: {done.stderr.strip()}"
+    assert done.stdout == ""
+    assert done.stderr == ""
