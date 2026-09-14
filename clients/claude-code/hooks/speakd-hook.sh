@@ -39,11 +39,14 @@ log() {
     size=$( { wc -c <"$file"; } 2>/dev/null ) || size=0
   fi
   if [ "${size:-0}" -gt "$LOG_CAP_BYTES" ] 2>/dev/null; then
-    : >"$file" 2>/dev/null || true
+    { : >"$file"; } 2>/dev/null || true
   fi
   # printf's %(...)T rather than date(1): with PATH unset there may be no
   # date to call, and a diagnostic that needs its own diagnostic is no use.
-  printf '%(%Y-%m-%dT%H:%M:%S)T %s\n' -1 "$1" >>"$file" 2>/dev/null || true
+  # Grouped like the two above: a root-owned log left by one `sudo claude`,
+  # or a state directory on a mount that went read-only, otherwise reports
+  # "Permission denied" into the transcript on every hook from then on.
+  { printf '%(%Y-%m-%dT%H:%M:%S)T %s\n' -1 "$1" >>"$file"; } 2>/dev/null || true
 }
 
 if command -v speakd-claude-hook >/dev/null 2>&1; then

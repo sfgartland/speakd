@@ -5,6 +5,8 @@ import os
 import subprocess as sp
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent / "clients" / "claude-code"
 
 
@@ -402,3 +404,50 @@ def test_the_wrapper_actually_truncates_an_oversized_log(tmp_path: Path) -> None
     assert done.returncode == 0
     assert log.stat().st_size < LOG_CAP_BYTES, "the wrapper appended to an already oversized log"
     assert "could not find speakd-claude-hook" in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes through a chmod 000 file")
+@pytest.mark.parametrize(
+    ("name", "make_log"),
+    [
+        ("unwritable", "unwritable"),
+        ("a directory", "directory"),
+        ("unwritable and over the cap", "big-unwritable"),
+    ],
+)
+def test_a_log_it_cannot_write_never_reaches_the_transcript(
+    tmp_path: Path, name: str, make_log: str
+) -> None:
+    """The wrapper's own diagnostics must not become the user's problem.
+
+    One `sudo claude` leaving a root-owned log, or a state directory on a
+    mount that went read-only, and every redirect in `log` starts reporting
+    to stderr — which Claude Code shows in the transcript, on every single
+    hook. The shell opens a redirect before the command's own `2>/dev/null`
+    can apply, so each one has to sit inside a group whose stderr is
+    already discarded.
+    """
+    state = tmp_path / "state"
+    directory = state / "claude-code"
+    directory.mkdir(parents=True)
+    log = directory / "hook.log"
+    if make_log == "directory":
+        log.mkdir()
+    else:
+        payload = "x" * (300_000 if make_log == "big-unwritable" else 10)
+        log.write_text(payload, encoding="utf-8")
+        log.chmod(0o400)
+    try:
+        done = _invoke(
+            _installed_copy(tmp_path),
+            GARBAGE,
+            state=state,
+            path="/usr/bin:/bin",
+            home=tmp_path / "home",
+        )
+    finally:
+        if make_log != "directory":
+            log.chmod(0o600)
+    assert done.returncode == 0, f"{name}: exit {done.returncode}"
+    assert done.stdout == "", f"{name}: stdout {done.stdout!r}"
+    assert done.stderr == "", f"{name}: stderr {done.stderr!r}"
