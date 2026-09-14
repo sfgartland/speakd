@@ -511,6 +511,16 @@ if mode.startswith("close"):
             note("stop")
             super().stop()
 
+        def write(self, frames):
+            if mode == "close-wedged":
+                # A real device's write blocks for the whole chunk, and an
+                # abort that does not land leaves the worker in it. Nothing
+                # here ever releases it, which is what makes the join time out.
+                note("write")
+                time.sleep(60)
+                return
+            super().write(frames)
+
         def close(self):
             note("close")
             if mode == "close-raises":
@@ -660,6 +670,48 @@ def test_a_sink_that_will_not_close_does_not_break_the_shutdown(tmp_path: Path) 
     # Recorded, not swallowed: a device that will not release is exactly why
     # the next start finds it busy.
     assert "device busy" in err
+    assert "Traceback" not in err
+
+
+def test_a_worker_that_outlived_the_join_keeps_the_device_unclosed(tmp_path: Path) -> None:
+    """Closing under a live worker is a segfault, not an exception.
+
+    `Daemon.stop()` joins for 5s and returns either way -- `daemon.py` keeps
+    `_worker` pointing at a worker that outlived the join, deliberately. So
+    "the worker has left" cannot be assumed at the close; it has to be asked.
+    A worker still inside the sink's write meets `Pa_CloseStream` freeing the
+    ALSA handle underneath it, which is undefined behaviour no `except` can
+    catch and no fake can reproduce -- only the decision to skip the close is
+    testable, so that is what this pins.
+    """
+    process, socket_path, marker = _spawn(tmp_path, "close-wedged")
+    try:
+        assert _until(socket_path.exists, timeout=20.0), "the daemon never listened"
+        say = ["enqueue", "One two three.", "--source", "s", "--socket", str(socket_path)]
+        assert main(say) == 0
+
+        # The marker does not exist until the first note lands.
+        def reached_the_sink() -> bool:
+            return marker.exists() and "write" in marker.read_text()
+
+        assert _until(reached_the_sink, timeout=20.0), "the worker never reached the sink"
+        process.send_signal(signal.SIGINT)
+        # The join is 5s; the wedged writer outlives it by design.
+        code = process.wait(timeout=40.0)
+        _out, err = process.communicate(timeout=20.0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    assert code == 0, "a wedged worker must not take the shutdown down with it"
+    steps = marker.read_text().split()
+    assert "write" in steps
+    assert "close" not in steps, (
+        "the device was closed under a worker still inside it: that is the segfault"
+    )
+    # Never silently: the handle outliving the process by microseconds is
+    # fine, but it has to be said.
+    assert "device" in err
     assert "Traceback" not in err
 
 
