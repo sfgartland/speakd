@@ -25,7 +25,12 @@ def send(request: Request, *, socket: Path | None = None, timeout: float = TIMEO
     try:
         from speakd.transport import connect
 
-        client = connect(address)
+        client = connect(address, timeout=timeout)
+    except TimeoutError:
+        # A listening socket whose accept loop is gone: the backlog took the
+        # connection and nobody is coming for it. Distinct from "no daemon",
+        # because the fix is different -- that daemon needs restarting.
+        return f"timed out connecting to {address} after {timeout}s"
     except OSError as exc:
         return f"no daemon at {address} ({exc.strerror or exc})"
     except Exception as exc:  # pragma: no cover - defence, not a path

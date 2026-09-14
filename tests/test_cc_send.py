@@ -152,8 +152,8 @@ def test_the_connection_is_closed_even_when_the_request_fails(  # type: ignore[n
     closed: list[str] = []
     real_connect = transport.connect
 
-    def tracking(path: Path) -> object:
-        client = real_connect(path)
+    def tracking(path: Path, *, timeout: float | None = None) -> object:
+        client = real_connect(path, timeout=timeout)
 
         def explode(request: Request, *, timeout: float | None = None) -> None:
             raise ConnectionResetError("the daemon went away mid-request")
@@ -193,3 +193,48 @@ def test_repeated_failures_stay_bounded_and_never_raise(tmp_path: Path) -> None:
     assert all(reason is not None for reason in reasons)
     assert len(set(reasons)) == 1, f"the reason drifted between calls: {set(reasons)}"
     assert elapsed < 2.0, f"twenty failed sends took {elapsed:.2f}s"
+
+
+@pytest.fixture
+def deaf(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """A socket that listens and never accepts.
+
+    Different from `wedged`, which accepts and then ignores you: here the
+    connect itself is what eventually blocks, once the listen backlog fills.
+    A daemon whose accept loop has died looks exactly like this.
+    """
+    address = tmp_path / "deaf.sock"
+    listener = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+    listener.bind(str(address))
+    listener.listen(1)
+    try:
+        yield address
+    finally:
+        listener.close()
+
+
+def test_a_socket_that_never_accepts_cannot_wedge_the_hook(deaf: Path) -> None:
+    """`connect` has to be bounded too, not just the reply.
+
+    The first calls succeed into the backlog and come back on the read
+    timeout. Once the backlog is full the connect itself blocks, and with no
+    timeout on it the hook hangs until Claude Code kills it — which is a
+    failed turn, the one outcome this module exists to prevent.
+
+    Run on a daemon thread so that a regression fails this test in ten
+    seconds instead of hanging the suite forever.
+    """
+    results: list[str | None] = []
+    done = threading.Event()
+
+    def probe() -> None:
+        for _ in range(8):
+            results.append(hush("cc:s1", socket=deaf, timeout=0.1))
+        done.set()
+
+    threading.Thread(target=probe, daemon=True).start()
+    assert done.wait(10.0), (
+        f"blocked after {len(results)} of 8 calls: connect is not bounded by the timeout"
+    )
+    assert all(reason is not None for reason in results)
+    assert all("\n" not in str(reason) for reason in results)

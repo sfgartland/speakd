@@ -530,7 +530,31 @@ class SocketClient:
             self._socket.close()
 
 
-def connect(path: Path) -> SocketClient:
+def connect(path: Path, *, timeout: float | None = None) -> SocketClient:
+    """Open a connection, optionally bounding how long the connect may take.
+
+    A Unix connect usually returns at once, but a server whose accept loop
+    has died still has a listen backlog: the first connections queue and
+    succeed, and once it is full the connect blocks with nothing to time it
+    out. For a caller inside someone else's bounded window that is a hang,
+    not a slow call.
+
+    The timeout is cleared before the `SocketClient` wraps the socket in a
+    file object, deliberately: `socket.SocketIO` latches `_timeout_occurred`
+    the first time a socket-level timeout fires and then refuses every later
+    read on that file object forever, so a socket must not still be in
+    timeout mode when the reader is built over it.
+    """
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    connection.connect(str(path))
+    try:
+        if timeout is not None:
+            connection.settimeout(timeout)
+        connection.connect(str(path))
+        connection.settimeout(None)
+    except BaseException:  # noqa: B036 - closed, then re-raised
+        # A connect that failed must not leave the descriptor behind. Short
+        # of this it survives until the garbage collector notices, which for
+        # a caller retrying in a loop is a leak with a deadline on it.
+        connection.close()
+        raise
     return SocketClient(connection)
