@@ -152,7 +152,19 @@ class Daemon:
             self._cancel.set()
         self._stop_player()
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
+        """Take the worker down, saying whether it actually left.
+
+        The answer matters to whoever owns the audio device. The join below
+        times out rather than blocking forever, and this returns either way —
+        so "the worker has finished" is something a caller must ask, not
+        assume. A caller that frees a device under a worker still inside
+        `play()` gets undefined behaviour out of the sound library, not an
+        exception it can catch.
+
+        True when there was no worker or the join succeeded; False when the
+        worker outlived it and is still running.
+        """
         # Under the lock, so an enqueue in flight on another thread either
         # lands before this (and is discarded with an error) or is refused.
         with self._idle:
@@ -166,7 +178,7 @@ class Daemon:
             # holding the lock across it costs nothing.
             self._cancel.set()
         if worker is None:
-            return
+            return True
         # Symmetric with the HUSH/CANCEL path, and for the same reason: the
         # Event alone stops nothing that is already sounding. A worker cannot
         # leave mid-`play()`, and a real player's `play()` blocks for the
@@ -195,10 +207,11 @@ class Daemon:
             # retires itself — sentinel and all — when it finally gets out.
             # Clearing here instead would let the next start() spawn a rival
             # consumer, and leave a sentinel to close it again immediately.
-            return
+            return False
         with self._idle:
             if self._worker is worker:
                 self._worker = None
+        return True
 
     def _stop_player(self) -> None:
         """Silence the device, reporting rather than raising if it refuses.

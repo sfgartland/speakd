@@ -123,13 +123,24 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
     # anything could unwedge it.
     daemon.silence()
     server.stop()
-    daemon.stop()
     # Last, and never above `daemon.stop()`: `close()` is terminal by contract
     # -- the sink refuses every later write and start -- so the speech worker
-    # has to be gone before it runs, or a worker still inside play() meets a
-    # closed sink on its next chunk. Nothing may use the player after this
-    # line.
-    _close_player(daemon.player)
+    # has to be gone before it runs. And asked, not assumed: `stop()` joins
+    # for 5s and returns either way, so a worker can outlive it and still be
+    # inside the sink's write. Freeing the device under one is a segfault in
+    # the sound library rather than an exception -- it was, on real hardware,
+    # in libasound -- and no in-process counter can guard it, because the
+    # thread that faults is not one this process owns. The handle then
+    # outlives the daemon by the microseconds until the process exits, which
+    # is what happened before any of this existed and never crashed.
+    # Nothing may use the player after this line.
+    if daemon.stop():
+        _close_player(daemon.player)
+    else:
+        sys.stderr.write(
+            "speakd: the speech worker did not stop in time; "
+            "leaving the audio device for the OS to reclaim\n"
+        )
     return 0
 
 
