@@ -1,0 +1,39 @@
+[Unit]
+Description=speakd — streaming speech synthesis for local AI agents
+Documentation=file://@ROOT@/README.md
+# Not tied to graphical-session.target: speech wants the audio stack, not a
+# display, and a headless session should still be able to talk.
+After=default.target
+
+# Five failures in five minutes means it is broken, not unlucky: give up and
+# leave the journal intact rather than restarting into the same crash forever.
+# These two are [Unit] keys -- systemd ignores them under [Service], silently.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+Type=simple
+ExecStart=@VENV@/bin/speakd
+WorkingDirectory=@ROOT@
+
+# The hook wrapper reads this to find the interpreter when Claude Code has
+# copied the plugin out of the checkout. Harmless for the daemon itself.
+Environment=SPEAKD_HOME=@ROOT@
+
+# Kokoro loads a torch model at startup — roughly half a minute on a laptop
+# CPU. Nothing waits on it: the socket appearing is the readiness signal, and
+# speakctl prints its own "no daemon" line until then.
+
+# on-failure, not always: `systemctl --user stop speakd` is a decision, not a
+# fault, and must not be undone two seconds later.
+Restart=on-failure
+RestartSec=5
+# Speech is a background comfort. It must never win a scheduling contest
+# against the editor the user is actually typing into.
+Nice=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

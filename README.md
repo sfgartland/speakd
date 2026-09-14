@@ -50,6 +50,28 @@ Built and merged: the speaking pipeline, the plugin host and built-in
 transforms, the streaming player, the daemon, and the transcript reader for the
 Claude Code client. The client's hooks and the desktop shell are in progress.
 
+## Running it at login
+
+```bash
+./packaging/systemd/install-service.sh     # writes the unit with this checkout's paths
+systemctl --user daemon-reload
+systemctl --user enable --now speakd
+```
+
+Then `systemctl --user status speakd` and `journalctl --user -u speakd -f`.
+
+It takes about half a minute to load the model. Nothing waits on that: the
+socket appearing at `$XDG_RUNTIME_DIR/speakd/speakd.sock` is the readiness
+signal, and `speakctl` prints its own "no daemon" line until then.
+
+The unit also exports `SPEAKD_HOME`, which is how the Claude Code plugin finds
+this checkout after Claude Code has copied it elsewhere. Add the same line to
+your shell profile — hooks run from your shell, not from systemd:
+
+```bash
+export SPEAKD_HOME=/path/to/speakd
+```
+
 ## Using it
 
 ```bash
