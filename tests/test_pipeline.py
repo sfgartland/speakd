@@ -6,8 +6,8 @@ import time
 import numpy as np
 
 from speakd.metrics import SynthesisWindow
-from speakd.model import Piece, Span
-from speakd.pipeline import speak
+from speakd.model import Piece, Segment, Span
+from speakd.pipeline import SpeechResult, speak
 from speakd.player import RecordingPlayer
 from speakd.synth.fake import FakeEngine
 from speakd.timeline import Timeline
@@ -361,3 +361,147 @@ def test_a_supplied_timeline_can_be_read_while_it_is_still_being_built() -> None
     finally:
         driver.join(timeout=5.0)
     assert not driver.is_alive()
+
+
+# --- Reporting each segment as it begins playing ---
+
+
+def test_a_segment_is_reported_while_it_is_still_being_spoken() -> None:
+    """The report has to reach the caller during the sentence, not after it.
+
+    Reporting off the finished timeline passes every test that only asks
+    whether positions came out: they all do, in one burst, once playback is
+    over. The property that was missing is this one -- the first segment is in
+    the caller's hands while `play()` of that same segment has not returned.
+    An implementation that reports after a successful `play()` instead fails
+    here, which is the point: it would still report every segment, a whole
+    sentence late.
+    """
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    seen: list[Segment] = []
+    arrived = threading.Event()
+
+    def note(segment: Segment) -> None:
+        seen.append(segment)
+        arrived.set()
+
+    driver = threading.Thread(
+        target=speak,
+        args=([piece("One. Two. Three.")], FakeEngine(), player),
+        kwargs={"on_playing": note},
+        daemon=True,
+    )
+    driver.start()
+    try:
+        assert reached.wait(timeout=5.0), "playback of the first segment never began"
+        assert arrived.wait(timeout=5.0), "the first segment was not reported while it played"
+        assert [segment.text for segment in seen] == ["One."]
+    finally:
+        release.set()
+        driver.join(timeout=5.0)
+    assert not driver.is_alive()
+
+
+def test_every_segment_played_is_reported_exactly_once_and_in_order() -> None:
+    """One report per segment, and the same segment the timeline gets.
+
+    Same object, not merely equal fields: the daemon turns each report into a
+    `position` event, and the timeline is what seek and resume read. Building
+    the two separately is how they drift.
+    """
+    seen: list[Segment] = []
+    result = speak(
+        [piece("One. Two. Three.")], FakeEngine(), RecordingPlayer(), on_playing=seen.append
+    )
+    assert [segment.text for segment in seen] == ["One.", "Two.", "Three."]
+    assert seen == list(result.timeline.segments), "the reports and the timeline disagree"
+
+
+def test_a_raising_callback_does_not_cost_the_utterance() -> None:
+    """A caller's broken callback must not silence what is left to say.
+
+    Recorded like a failed synthesis rather than raised, and delivery carries
+    on: a callback that trips over one segment's text still gets the rest.
+    """
+
+    def explode(segment: Segment) -> None:
+        raise RuntimeError("monitor blew up")
+
+    player = RecordingPlayer()
+    result = speak([piece("One. Two. Three.")], FakeEngine(), player, on_playing=explode)
+    assert len(player.played) == 3, "a broken callback silenced the rest of the utterance"
+    assert len(result.timeline) == 3
+    assert result.aborted is False
+    assert len(result.errors) == 3, f"one report per failure, got {result.errors}"
+    assert all("monitor blew up" in message for message in result.errors)
+
+
+def test_a_callback_that_never_returns_does_not_hold_up_playback() -> None:
+    """The third liveness bug this project must not ship.
+
+    Two are already fixed: an unbounded audio write that wedged the daemon for
+    an hour, and an event subscriber that stopped reading its socket and
+    wedged it permanently. Both were arbitrary code on the speech worker's
+    path that stopped returning. A position callback is arbitrary code too --
+    in the daemon it ends inside a bus subscriber -- so the speech thread must
+    never be the thread that calls it. Here the callback never returns at all:
+    every segment must still play, and `speak()` must still come back.
+    """
+    stuck = threading.Event()
+    release = threading.Event()
+
+    def wedge(segment: Segment) -> None:
+        stuck.set()
+        assert release.wait(timeout=30.0), "the test never released the callback"
+
+    player = RecordingPlayer()
+    results: list[SpeechResult] = []
+
+    def run() -> None:
+        results.append(speak([piece("One. Two. Three.")], FakeEngine(), player, on_playing=wedge))
+
+    driver = threading.Thread(target=run, daemon=True)
+    driver.start()
+    try:
+        assert stuck.wait(timeout=5.0), "the callback was never called"
+        driver.join(timeout=10.0)
+        assert not driver.is_alive(), "speak() waited out a callback that never returned"
+        assert len(player.played) == 3, "playback stopped short while the callback was stuck"
+        assert len(results[0].timeline) == 3
+        assert any("callback" in message for message in results[0].errors), (
+            f"a wedged callback went unreported: {results[0].errors}"
+        )
+    finally:
+        release.set()
+
+
+def test_a_segment_whose_playback_failed_is_reported_but_not_in_the_timeline() -> None:
+    """The one behaviour this change moves, and the reason it has to move.
+
+    The report goes out before `play()`, because after it the sentence has
+    already been spoken. Nothing can know at that moment that `play()` is
+    about to raise, so a segment whose playback fails is now reported --
+    where reporting off the timeline stayed silent about it, the timeline
+    only ever receiving a segment that played. That silence was the wrong
+    half of the trade: a sink that fails mid-write has already put part of
+    that segment through the speakers, and this daemon's promise is that
+    nothing is spoken without being reported.
+
+    The timeline itself is untouched, which is what seek, resume and the
+    span-to-time map read.
+    """
+    seen: list[Segment] = []
+    player = RaisingPlayer(fail_on_call=2)
+    result = speak([piece("One. Two. Three.")], FakeEngine(), player, on_playing=seen.append)
+    assert [segment.text for segment in seen] == ["One.", "Two."]
+    assert [segment.text for segment in result.timeline.segments] == ["One."]
+    assert result.aborted is True
+
+
+def test_reporting_leaves_no_thread_behind() -> None:
+    """One notifier thread per utterance, and it leaves with the utterance."""
+    baseline = threading.active_count()
+    speak([piece("One. Two.")], FakeEngine(), RecordingPlayer(), on_playing=lambda _s: None)
+    assert threading.active_count() == baseline
