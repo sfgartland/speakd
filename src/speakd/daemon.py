@@ -19,12 +19,14 @@ from traceback import format_exc
 
 from speakd.channels import ChannelTable
 from speakd.events import Event, EventBus
+from speakd.metrics import SynthesisWindow, resident_bytes
 from speakd.model import Piece, Role, Span
 from speakd.pipeline import speak
 from speakd.player import Pausable, Player
 from speakd.protocol import Request, Response, Verb
 from speakd.scheduler import SpeechRequest, decide
 from speakd.synth import Synthesizer
+from speakd.timeline import Timeline
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
 
@@ -39,6 +41,18 @@ _SEEK_NOT_IMPLEMENTED = (
 )
 
 _NOT_RUNNING = "the daemon is not running: start() it before enqueuing speech"
+
+_METRICS_THREAD_NAME = "speakd-metrics"
+
+# How often the monitor's numbers go out while speech is in flight. A second
+# is what a pinned display refreshes at; faster would be traffic nobody reads,
+# and slower would show a stall after it had already been heard.
+_METRICS_INTERVAL_SECONDS = 1.0
+
+# How long stop() waits for the ticker to leave. It is woken by an Event
+# rather than the interval, so this is the length of one publish to a slow
+# subscriber, not of a tick.
+_JOIN_METRICS_SECONDS = 2.0
 
 _STILL_FINISHING = (
     "a previous speech worker has not finished yet: stop() timed out waiting for it, "
@@ -79,6 +93,7 @@ class Daemon:
         profile_for: Callable[[str], ProfileView],
         bus: EventBus | None = None,
         channels: ChannelTable | None = None,
+        metrics_interval: float = _METRICS_INTERVAL_SECONDS,
     ) -> None:
         self.engine = engine
         self.player = player
@@ -95,6 +110,21 @@ class Daemon:
         self._idle = threading.Condition()
         self._pending = 0
         self._cancel = threading.Event()
+        # Accepted work, ever. The metrics ticker compares it against what it
+        # last settled on, which is how an utterance that began and ended
+        # between two ticks still reaches a monitor. A count rather than a
+        # flag the ticker clears: written in one place, never read back here.
+        self._accepted = 0
+        # What the worker has already written down, read by the ticker. The
+        # window outlives an utterance -- it is a trailing measure of the
+        # machine, not of this sentence -- where the timeline is the utterance
+        # being spoken, or the last one, so that the tick which settles the
+        # display carries its final drift rather than a zero.
+        self._synthesis = SynthesisWindow()
+        self._timeline: Timeline | None = None
+        self._metrics_interval = metrics_interval
+        self._metrics: threading.Thread | None = None
+        self._metrics_stop = threading.Event()
 
     def start(self) -> Response:
         """Bring the speech worker up, saying which of three things happened.
@@ -114,17 +144,40 @@ class Daemon:
                 return Response(ok=False, error=_STILL_FINISHING)
             self._running = True
             worker = threading.Thread(target=self._run, name="speakd-speech", daemon=True)
-            # Published before the thread runs, so `_retire`'s identity check
-            # can never fail to recognise the worker it belongs to.
+            ticker = threading.Thread(
+                target=self._tick_metrics,
+                # The baseline is read here, under the lock, rather than on
+                # the ticker's own first pass: a thread that reads it after
+                # `start()` has released this lock can find an enqueue already
+                # counted, and then takes the first utterance for work it has
+                # already settled -- ticking through it and never settling.
+                args=(self._accepted,),
+                name=_METRICS_THREAD_NAME,
+                daemon=True,
+            )
+            # Published before the threads run, so `_retire`'s identity check
+            # and the ticker's own can never fail to recognise which thread
+            # they belong to.
             self._worker = worker
+            self._metrics_stop.clear()
+            self._metrics = ticker
             try:
-                # Started under the same lock that published it, so no other
+                # Started under the same lock that published them, so no other
                 # thread can see `_worker` before the thread is running. A
                 # stop() landing here waits for start() to finish instead of
                 # joining a thread that was never started -- a RuntimeError
                 # out of stop(), and out of serve() as a traceback.
                 # `Thread.start()` blocks only on its own `_started` event and
                 # never re-enters the daemon, so holding the lock is safe.
+                #
+                # The ticker goes first because it is the half that can still
+                # be taken back by hand: it publishes nothing until there is
+                # speech, and setting an Event retires it. A speech worker
+                # that has started cannot be withdrawn the same way -- it
+                # retires itself, by identity, off the `_worker` below -- so
+                # if it were up when the other half failed there would be
+                # nothing honest left to roll back.
+                ticker.start()
                 worker.start()
             except BaseException:  # noqa: B036 - rolled back, then re-raised
                 # "can't start new thread" would otherwise leave a daemon that
@@ -133,6 +186,13 @@ class Daemon:
                 if self._worker is worker:
                     self._worker = None
                     self._running = False
+                if self._metrics is ticker:
+                    # Signalled, not joined: the ticker takes this very lock on
+                    # every pass, so joining it here would deadlock. It leaves
+                    # at its next wake having published nothing, because the
+                    # daemon it would report on is idle and shut.
+                    self._metrics = None
+                    self._metrics_stop.set()
                 raise
         return Response(ok=True, data={"started": True})
 
@@ -170,6 +230,15 @@ class Daemon:
         with self._idle:
             self._running = False
             worker = self._worker
+            ticker = self._metrics
+            # Retired here rather than after the worker's join, so that a
+            # start() racing this cannot find the old ticker still installed
+            # and leave two of them publishing. Both halves matter: the Event
+            # wakes it now, and `_metrics` no longer being it is what stops a
+            # ticker that woke on a timeout the next start() has since
+            # cleared -- the same identity check `_retire` makes.
+            self._metrics = None
+            self._metrics_stop.set()
             # Set under the lock that guards it, as in the HUSH/CANCEL path
             # and for the same reason: released first, the worker could
             # finish this utterance and install the next job's Event in
@@ -177,6 +246,13 @@ class Daemon:
             # while that next job speaks on. `Event.set()` never blocks, so
             # holding the lock across it costs nothing.
             self._cancel.set()
+        if ticker is not None:
+            # Outside the lock it takes on every pass, and bounded like the
+            # worker's join: a shutdown must not hang on a monitor. The only
+            # thing that can hold it that long is a subscriber slow to take
+            # the last event, and it is already retired by identity, so a
+            # ticker that outlives this join publishes nothing after it.
+            ticker.join(timeout=_JOIN_METRICS_SECONDS)
         if worker is None:
             return True
         # Symmetric with the HUSH/CANCEL path, and for the same reason: the
@@ -393,6 +469,7 @@ class Daemon:
             if not self._running:
                 return Response(ok=False, error=_NOT_RUNNING)
             self._pending += 1
+            self._accepted += 1
             self._jobs.put(job)
         return Response(ok=True, data={"spoken": True})
 
@@ -552,8 +629,14 @@ class Daemon:
         # write to clients: a hush landing in either would otherwise set the
         # previous, already-consumed utterance's Event and be lost.
         cancel = threading.Event()
+        # Installed with the Event and for the same reason: this is what the
+        # metrics ticker reads drift off while the utterance is in flight, so
+        # it must be in place before anything else can run. A fresh one per
+        # utterance, since drift is measured across the current one.
+        timeline = Timeline()
         with self._idle:
             self._cancel = cancel
+            self._timeline = timeline
             # Read under the same lock that installs the Event, so a stop()
             # cannot land between the two and leave this job installed as the
             # current utterance and past its own liveness check at once.
@@ -582,6 +665,8 @@ class Daemon:
                 voice=job.profile.voice,
                 speed=job.profile.speed,
                 cancel=cancel,
+                window=self._synthesis,
+                timeline=timeline,
             )
         except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
             # `started` is already out. A subscriber pairing the two would
@@ -611,6 +696,69 @@ class Daemon:
             job.source_id,
             {"cancelled": result.cancelled, "aborted": result.aborted},
         )
+
+    def _tick_metrics(self, settled: int) -> None:
+        """Publish `metrics` once an interval while there is speech to report.
+
+        On its own thread, which is the whole point. Every number in the event
+        is read from state the speech worker has already written down -- the
+        pending count, the window the pipeline appends to as it synthesises,
+        the timeline it builds as it plays -- so the worker never waits on a
+        measurement, and a subscriber slow to take one of these stalls the
+        ticker rather than the speech.
+
+        Nothing goes out while the daemon is idle: a monitor that has been
+        told nothing since the last `finished` knows its numbers are stale in
+        the only way that matters. The exception is the tick that finds the
+        daemon newly idle, which goes out so the display settles at zero
+        instead of freezing on the last busy value.
+
+        `settled` is the accepted-work count this ticker starts from, taken by
+        `start()` under its own lock. Work accepted after that is work this
+        has not yet reported on, which is what makes an utterance that began
+        and ended between two ticks still settle the display.
+        """
+        me = threading.current_thread()
+        while not self._metrics_stop.wait(self._metrics_interval):
+            with self._idle:
+                if self._metrics is not me:
+                    # Retired by a stop(), which a start() may already have
+                    # followed: the Event this woke on belongs to the ticker
+                    # that came after. Identity says which of us is current,
+                    # as it does for the speech worker in `_retire`.
+                    return
+                pending = self._pending
+                accepted = self._accepted
+                timeline = self._timeline
+            if pending == 0:
+                if accepted == settled:
+                    continue
+                # Idle, with work finished since the last time this said so.
+                # One event to settle the display, then silence.
+                settled = accepted
+            # Gathered outside the lock: reading /proc and averaging the
+            # window have nothing to do with the queue, and holding the lock
+            # across them would put an enqueue behind a file read.
+            self._publish("metrics", "", self._metrics_payload(pending, timeline))
+
+    def _metrics_payload(self, pending: int, timeline: Timeline | None) -> dict[str, object]:
+        """The four numbers, leaving out any that is not knowable here.
+
+        `rtf` is missing only before the first segment of the daemon's life
+        has been synthesised, and `mem_bytes` only where there is no `/proc`.
+        Both are left out rather than sent as zero: a monitor can show a dash
+        for a number it was not given, where a zero it was given is a reading.
+        """
+        data: dict[str, object] = {}
+        rtf = self._synthesis.rtf()
+        if rtf is not None:
+            data["rtf"] = rtf
+        data["drift"] = timeline.drift if timeline is not None else 0.0
+        resident = resident_bytes()
+        if resident is not None:
+            data["mem_bytes"] = resident
+        data["queue"] = pending
+        return data
 
     def _publish(self, kind: str, source_id: str, data: dict[str, object]) -> None:
         self.bus.publish(Event(kind=kind, source_id=source_id, data=data))

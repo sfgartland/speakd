@@ -85,3 +85,57 @@ def test_a_segment_can_carry_a_playback_stamp() -> None:
 
     stamped = Segment(span=Span(0, 5), text="x", audio_offset=0.0, duration=1.0, played_at=12.5)
     assert stamped.played_at == 12.5
+
+
+def stamped(offset: float, duration: float, played_at: float) -> Segment:
+    """A segment as the pipeline builds one: nominal audio clock, real stamp."""
+    return Segment(
+        span=Span(0, 5),
+        text="x",
+        audio_offset=offset,
+        duration=duration,
+        played_at=played_at,
+    )
+
+
+def test_drift_is_measured_elapsed_minus_nominal_elapsed() -> None:
+    t = Timeline()
+    t.append(stamped(offset=0.0, duration=1.0, played_at=100.0))
+    t.append(stamped(offset=1.0, duration=1.0, played_at=101.5))
+    # 1.5s of wall clock carried 1.0s of audio: half a second behind.
+    assert t.drift == pytest.approx(0.5)
+
+
+def test_drift_is_measured_across_the_whole_utterance_not_the_last_hop() -> None:
+    t = Timeline()
+    t.append(stamped(offset=0.0, duration=2.0, played_at=500.0))
+    t.append(stamped(offset=2.0, duration=1.0, played_at=502.5))
+    t.append(stamped(offset=3.0, duration=1.0, played_at=503.5))
+    # Half a second lost getting to the second segment and none after it:
+    # 3.5s of wall clock against 3.0s of audio, first to last. Measured over
+    # the last pair alone it would read as nothing wrong at all.
+    assert t.drift == pytest.approx(0.5)
+
+
+def test_playback_that_ran_ahead_of_the_audio_clock_drifts_negative() -> None:
+    t = Timeline()
+    t.append(stamped(offset=0.0, duration=1.0, played_at=10.0))
+    t.append(stamped(offset=1.0, duration=1.0, played_at=10.25))
+    assert t.drift == pytest.approx(-0.75)
+
+
+def test_drift_before_anything_has_played_is_zero() -> None:
+    assert Timeline().drift == 0.0
+
+
+def test_drift_over_a_single_segment_is_zero() -> None:
+    t = Timeline()
+    t.append(stamped(offset=0.0, duration=1.0, played_at=100.0))
+    assert t.drift == 0.0
+
+
+def test_drift_of_segments_that_were_never_stamped_is_zero() -> None:
+    t = Timeline()
+    t.append(seg(0, 5, 0.0, 1.0))
+    t.append(seg(5, 12, 1.0, 1.0))
+    assert t.drift == 0.0

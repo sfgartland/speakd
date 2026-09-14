@@ -5,10 +5,12 @@ import time
 
 import numpy as np
 
+from speakd.metrics import SynthesisWindow
 from speakd.model import Piece, Span
 from speakd.pipeline import speak
 from speakd.player import RecordingPlayer
 from speakd.synth.fake import FakeEngine
+from speakd.timeline import Timeline
 
 
 def piece(text: str) -> Piece:
@@ -315,3 +317,47 @@ def test_a_raising_player_keeps_the_timeline_built_so_far() -> None:
 def test_a_clean_run_is_not_aborted() -> None:
     result = speak([piece("One.")], FakeEngine(), RecordingPlayer())
     assert result.aborted is False
+
+
+def test_speak_records_what_each_synthesis_cost_against_the_audio_it_made() -> None:
+    window = SynthesisWindow()
+    speak([piece("One. Two.")], FakeEngine(synthesis_cost=0.02), RecordingPlayer(), window=window)
+    rtf = window.rtf()
+    assert len(window) == 2
+    assert rtf is not None
+    # 0.02s a call against roughly 0.24s of audio a segment.
+    assert 0.02 < rtf < 0.3, f"rtf was {rtf:.3f}"
+
+
+def test_a_segment_that_failed_to_synthesise_is_not_counted_as_audio() -> None:
+    window = SynthesisWindow()
+    speak([piece("One. Two.")], ExplodingEngine("One."), RecordingPlayer(), window=window)
+    assert len(window) == 1, "a call that produced nothing was recorded as if it had"
+
+
+def test_speak_fills_a_timeline_the_caller_supplied() -> None:
+    timeline = Timeline()
+    result = speak([piece("One. Two.")], FakeEngine(), RecordingPlayer(), timeline=timeline)
+    assert result.timeline is timeline
+    assert len(timeline) == 2
+
+
+def test_a_supplied_timeline_can_be_read_while_it_is_still_being_built() -> None:
+    """The daemon reads drift off this from another thread mid-utterance."""
+    timeline = Timeline()
+    player = SleepingPlayer(cost=0.1)
+    driver = threading.Thread(
+        target=speak,
+        args=([piece("One. Two. Three.")], FakeEngine(), player),
+        kwargs={"timeline": timeline},
+    )
+    driver.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while len(timeline) < 1 and time.monotonic() < deadline:
+            time.sleep(0.002)
+        assert len(timeline) >= 1, "nothing was readable until speak() returned"
+        assert driver.is_alive(), "the utterance was over before the timeline was read"
+    finally:
+        driver.join(timeout=5.0)
+    assert not driver.is_alive()
