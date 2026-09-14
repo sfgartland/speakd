@@ -2,9 +2,12 @@
 
 import io
 import json
+import subprocess as sp
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 from speakd.clients.claude_code import hook
 from speakd.clients.claude_code.watermark import load, state_dir
@@ -352,3 +355,92 @@ def test_no_event_ever_writes_to_stdout(  # type: ignore[no-untyped-def]
         assert run(monkeypatch, body, sent) == 0
         captured = capsys.readouterr()
         assert captured.out == "", f"{body[:60]!r} printed {captured.out!r}"
+
+
+def test_a_payload_that_blows_the_parser_still_exits_zero(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """`json.loads` does not only raise JSONDecodeError.
+
+    Deeply nested JSON exhausts the C stack and comes out as RecursionError,
+    which is neither of the two exceptions the parse is guarded against. The
+    top level has to be the backstop, not the parse.
+    """
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    sent: list[tuple[str, str]] = []
+    assert run(monkeypatch, "[" * 200_000, sent) == 0
+    assert sent == []
+    assert "RecursionError" in (state_dir() / "hook.log").read_text(encoding="utf-8")
+
+
+def test_no_payload_ever_reaches_claude_code_as_a_traceback(tmp_path: Path) -> None:
+    """The console script, in its own process, which is how it actually runs.
+
+    A traceback on stderr surfaces in the transcript and a non-zero exit is a
+    hook failure, so this is asserted end to end rather than through `main`'s
+    return value alone.
+    """
+    venv_bin = Path(__file__).resolve().parent.parent / ".venv" / "bin"
+    entry = venv_bin / "speakd-claude-hook"
+    assert entry.exists(), "run `uv sync --group dev` first"
+    hostile = {
+        "deeply nested": "[" * 200_000,
+        "not json": "not json at all",
+        "empty": "",
+        "a bare list": "[1, 2, 3]",
+        "a lone number": "17",
+        "null": "null",
+        "a truncated object": '{"session_id": ',
+        "invalid utf-8ish": "\udcff".encode("utf-8", "surrogateescape").decode("latin-1"),
+    }
+    for name, body in hostile.items():
+        done = sp.run(
+            [str(entry)],
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(tmp_path / "home"),
+                "SPEAKD_STATE_DIR": str(tmp_path / "state"),
+            },
+        )
+        assert done.returncode == 0, f"{name}: exit {done.returncode}"
+        assert done.stdout == "", f"{name}: printed {done.stdout!r}"
+        assert done.stderr == "", f"{name}: stderr {done.stderr[-300:]!r}"
+
+
+def test_a_base_exception_is_survived_but_an_interrupt_is_re_raised(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Narrowing the backstop to `Exception` passes every other test here.
+
+    RecursionError happens to be an Exception, so the test above cannot tell
+    the two spellings apart. MemoryError is not, and neither is anything a
+    future caller raises off the Exception tree — those are the ones worth
+    surviving. KeyboardInterrupt and SystemExit are the two that are not
+    ours to swallow: something asked this process to stop.
+    """
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+
+    class Sudden(BaseException):
+        """Off the Exception tree entirely, as MemoryError is."""
+
+    def raise_sudden() -> None:
+        raise Sudden("the floor gave way")
+
+    monkeypatch.setattr(hook, "_read_and_dispatch", raise_sudden)
+    assert hook.main([]) == 0
+    assert "the floor gave way" in (state_dir() / "hook.log").read_text(encoding="utf-8")
+
+    for interrupt in (KeyboardInterrupt, SystemExit):
+
+        def raise_interrupt(which: type[BaseException] = interrupt) -> None:
+            raise which()
+
+        monkeypatch.setattr(hook, "_read_and_dispatch", raise_interrupt)
+        with pytest.raises(interrupt):
+            hook.main([])

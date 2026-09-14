@@ -93,28 +93,50 @@ def _dispatch(body: dict[str, object]) -> None:
         return
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Always 0. A hook that fails is a hook that breaks someone's editor."""
+def _read_and_dispatch() -> None:
+    """Everything `main` does, with none of the promises it makes."""
     try:
         raw = sys.stdin.read()
     except Exception as exc:
         _log(f"could not read stdin: {exc}")
-        return 0
+        return
 
     try:
         body = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         _log(f"unreadable hook payload ({exc}): {raw[:200]!r}")
-        return 0
+        return
 
     if not isinstance(body, dict):
         _log(f"hook payload was not an object: {raw[:200]!r}")
-        return 0
+        return
 
     try:
         _dispatch(body)
     except Exception as exc:
         _log(f"{body.get('hook_event_name')} hook failed: {exc!r}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Always 0. A hook that fails is a hook that breaks someone's editor.
+
+    The inner guards catch what each step is expected to raise; this one
+    catches what no step is expected to raise, which is the only kind of
+    failure that has ever reached a user. `json.loads` on deeply nested input
+    raises RecursionError -- not a JSONDecodeError, not a UnicodeDecodeError,
+    and so straight out through a parse guard that names only those two.
+
+    `BaseException`, because the failures worth surviving are not all
+    `Exception`: RecursionError happens to be one, MemoryError is not.
+    KeyboardInterrupt and SystemExit are re-raised, since both mean someone
+    or something asked this process to stop and neither is ours to swallow.
+    """
+    try:
+        _read_and_dispatch()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:  # noqa: B036 - the whole point of this level
+        _log(f"hook failed: {exc!r}")
     return 0
 
 
