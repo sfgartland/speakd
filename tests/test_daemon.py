@@ -1576,3 +1576,118 @@ def test_a_hush_whose_sink_fails_still_clears_the_queue() -> None:
     assert seen[0].data["count"] == 2
     assert "hush" in str(seen[0].data.get("reason", ""))
     assert len(player.played) == 1, "the daemon went on speaking through the hush"
+
+
+# --- Re-review: where speech has reached, while it is still speaking ---
+
+
+class PlayerThatLosesTheDevice(RecordingPlayer):
+    """Raises on its `fail_on`-th play(), as a sink whose device went does."""
+
+    def __init__(self, fail_on: int = 1) -> None:
+        super().__init__()
+        self.fail_on = fail_on
+        self.calls = 0
+
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        self.calls += 1
+        if self.calls == self.fail_on:
+            raise RuntimeError("PortAudioError: device unavailable")
+        super().play(audio, sample_rate)
+
+
+def test_a_position_reaches_subscribers_while_that_sentence_is_still_playing() -> None:
+    """A monitor highlights the sentence being spoken, so it needs it then.
+
+    Published off `result.timeline` instead, every position of an utterance
+    arrives in one burst after the last word -- measured against the real
+    daemon as five positions and `finished` at the same instant, eight
+    seconds of speech after `started`. The events' own `played_at` stamps are
+    right either way, which is why only arrival can show this.
+    """
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    bus = EventBus()
+    seen: list[Event] = []
+    arrived = threading.Event()
+
+    def watch(event: Event) -> None:
+        seen.append(event)
+        if event.kind == "position":
+            arrived.set()
+
+    bus.subscribe(watch, kinds=["started", "position", "finished"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        assert d.handle(enqueue("s", "One. Two. Three.")).ok is True
+        assert reached.wait(timeout=5.0), "playback of the first sentence never began"
+        assert arrived.wait(timeout=5.0), "no position arrived while the first sentence played"
+        positions = [event for event in seen if event.kind == "position"]
+        assert [event.data["text"] for event in positions] == ["One."]
+        assert positions[0].data["span_start"] == 0
+        assert positions[0].data["played_at"] is not None
+        assert "finished" not in [event.kind for event in seen], (
+            "the utterance was already over by the time the position arrived"
+        )
+    finally:
+        release.set()
+        d.stop()
+
+
+def test_every_sentence_is_announced_once_and_before_finished() -> None:
+    """Live publishing must not cost the guarantee it replaced.
+
+    One `position` per segment, in playback order, with the fields a
+    subscriber already reads -- and all of them out before `finished`, so a
+    monitor never sees the utterance end with a sentence still highlighted.
+    """
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["position", "finished"])
+    d = Daemon(FakeEngine(), RecordingPlayer(), profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        assert d.handle(enqueue("s", "One. Two. Three.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    kinds = [event.kind for event in seen]
+    assert kinds == ["position", "position", "position", "finished"], kinds
+    positions = [event for event in seen if event.kind == "position"]
+    assert [event.data["text"] for event in positions] == ["One.", "Two.", "Three."]
+    assert [event.data["span_start"] for event in positions] == [0, 5, 10]
+    offsets = [event.data["audio_offset"] for event in positions]
+    assert offsets == sorted(offsets)  # type: ignore[type-var]
+
+
+def test_a_sentence_whose_playback_failed_is_still_announced() -> None:
+    """The deliberate change, pinned so it cannot move back unnoticed.
+
+    A position is published before `play()` is called, because after it the
+    sentence has been spoken. Nothing can know then that the sink is about to
+    fail, so the failing sentence is announced -- where publishing off the
+    finished timeline said nothing about it, since only a segment that played
+    is ever appended there. A sink that fails mid-write has already put part
+    of that sentence through the speakers, so announcing it is this daemon's
+    promise rather than an exception to it. The failure is still reported
+    too, on its own `error` event.
+    """
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["position", "error", "finished"])
+    player = PlayerThatLosesTheDevice(fail_on=2)
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        assert d.handle(enqueue("s", "One. Two. Three.")).ok is True
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    positions = [event for event in seen if event.kind == "position"]
+    assert [event.data["text"] for event in positions] == ["One.", "Two."]
+    errors = [event for event in seen if event.kind == "error"]
+    assert any("device unavailable" in str(event.data.get("message", "")) for event in errors)
+    finished = [event for event in seen if event.kind == "finished"]
+    assert finished and finished[0].data["aborted"] is True

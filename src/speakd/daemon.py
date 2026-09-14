@@ -20,7 +20,7 @@ from traceback import format_exc
 from speakd.channels import ChannelTable
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
-from speakd.model import Piece, Role, Span
+from speakd.model import Piece, Role, Segment, Span
 from speakd.pipeline import speak
 from speakd.player import Pausable, Player
 from speakd.protocol import Request, Response, Verb
@@ -657,27 +657,22 @@ class Daemon:
             # playing the first segment.
             self._publish("finished", job.source_id, {"cancelled": True, "aborted": False})
             return
-        try:
-            result = speak(
-                pieces,
-                self.engine,
-                self.player,
-                voice=job.profile.voice,
-                speed=job.profile.speed,
-                cancel=cancel,
-                window=self._synthesis,
-                timeline=timeline,
-            )
-        except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
-            # `started` is already out. A subscriber pairing the two would
-            # wait for a `finished` that never came, so send both — including
-            # when the engine or the player raises outside `Exception`.
-            # `!r` because `str(SystemExit(3))` is just "3": a diagnostic
-            # that names neither the exception nor its type is no diagnostic.
-            self._publish("error", job.source_id, {"message": f"synthesis failed: {exc!r}"})
-            self._publish("finished", job.source_id, {"cancelled": False, "aborted": True})
-            return
-        for segment in result.timeline.segments:
+
+        def announce(segment: Segment) -> None:
+            """Publish one segment's position, as that segment starts playing.
+
+            Called by `speak()` from a thread of its own, so this may take as
+            long as the bus does without holding up a word of speech. What it
+            replaced read `result.timeline.segments` after `speak()` had
+            returned, which meant every position of an utterance arrived in a
+            single burst once the speaking was over -- measured against the
+            running daemon as five positions and `finished` at the same
+            instant, eight seconds after `started`. A monitor highlighting
+            the sentence being spoken could do nothing with any of them. The
+            `played_at` inside each was right the whole time; only its
+            delivery was late, which is why nothing short of watching arrival
+            times could show it.
+            """
             self._publish(
                 "position",
                 job.source_id,
@@ -689,6 +684,32 @@ class Daemon:
                     "played_at": segment.played_at,
                 },
             )
+
+        try:
+            result = speak(
+                pieces,
+                self.engine,
+                self.player,
+                voice=job.profile.voice,
+                speed=job.profile.speed,
+                cancel=cancel,
+                window=self._synthesis,
+                timeline=timeline,
+                on_playing=announce,
+            )
+        except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
+            # `started` is already out. A subscriber pairing the two would
+            # wait for a `finished` that never came, so send both — including
+            # when the engine or the player raises outside `Exception`.
+            # `!r` because `str(SystemExit(3))` is just "3": a diagnostic
+            # that names neither the exception nor its type is no diagnostic.
+            self._publish("error", job.source_id, {"message": f"synthesis failed: {exc!r}"})
+            self._publish("finished", job.source_id, {"cancelled": False, "aborted": True})
+            return
+        # No position loop here any more: they went out as they were spoken.
+        # `speak()` has already waited for its own reporting thread to drain,
+        # so every position of this utterance is on the bus ahead of the
+        # `finished` below.
         for message in result.errors:
             self._publish("error", job.source_id, {"message": message})
         self._publish(
