@@ -100,6 +100,13 @@
     flex-direction: column;
   }
 
+  /* The chrome keeps its natural height at every window size; the speech
+     text is the one region that grows and shrinks around it, because it is
+     the one whose content has no bound. Spelled out on each child rather
+     than left to the default `flex: 0 1 auto`, whose shrink factor of 1
+     lets a squeezed column steal height from the metrics row first. */
+  .bar, .scrub, .ctls, .metrics, .chans, .err { flex: none; }
+
   /* title bar */
   .bar {
     display: flex;
@@ -149,10 +156,20 @@
     padding: 14px 14px 12px;
     font-family: Newsreader, Georgia, serif;
     font-weight: 300;
-    display: flex; flex-direction: column; gap: 6px;
+    display: flex; flex-direction: column;
+    flex: 1 1 auto;
+    /* Drawn at this height in the mockup, where the page grows to fit it.
+       Inside the shell it is relaxed to 0 so the window can be dragged
+       small — see the `.shell` block at the end of this stylesheet. */
     min-height: 132px;
-    justify-content: center;
+    overflow-y: auto;
   }
+
+  /* Centred with an auto margin rather than `justify-content: center`.
+     They look identical while the text fits; they differ exactly when it
+     does not, and centred overflow puts the top of the text above the
+     scroll container's origin, where no scrollbar can reach it. */
+  .text-inner { margin-block: auto; display: flex; flex-direction: column; gap: 6px; }
 
   .line {
     font-size: 13px; line-height: 1.45; color: var(--spent);
@@ -172,13 +189,24 @@
     text-decoration-thickness: 2px; text-underline-offset: 4px;
   }
 
+  /* Nothing is being spoken, so the "now" line is holding a standing-in
+     phrase rather than speech. It must not wear the lit highlight, which
+     means "this is what you are hearing". */
+  .win[data-idle] .line.now {
+    background: none; box-shadow: none; text-decoration: none;
+    color: var(--faint); font-size: 13px; font-style: italic;
+  }
+
   .win[data-transport="hushed"] .line { opacity: .45; }
   .win[data-transport="hushed"] .line.now {
     background: none; box-shadow: none; color: var(--spent);
   }
 
   /* scrubber */
-  .scrub { display: flex; gap: 2px; height: 5px; padding: 0 12px 10px; }
+  /* 15px, not 5px: `box-sizing: border-box` counts the 10px of padding
+     below the strip against the height, so a 5px box left the ticks
+     themselves nothing to be drawn in. */
+  .scrub { display: flex; gap: 2px; height: 15px; padding: 0 12px 10px; }
   .tick { border: 0; padding: 0; background: var(--rule); border-radius: 1px;
           position: relative; overflow: hidden; cursor: pointer; }
   .tick[data-state="spent"] { background: var(--rule-strong); }
@@ -227,9 +255,6 @@
   .metric .v[data-level="bad"] { color: var(--bad); }
   .metric .sub { font-size: 8.5px; color: var(--faint); }
 
-  .meter { height: 2px; background: var(--rule); border-radius: 1px; overflow: hidden; margin-top: 1px; }
-  .meter span { display: block; height: 100%; background: var(--muted); }
-
   /* other channels */
   .chans {
     border-top: 1px solid var(--rule);
@@ -256,6 +281,36 @@
   }
   .err code { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; color: var(--muted); }
   .err[hidden] { display: none; }
+
+  /* ── inside the desktop shell, the page is not a picture of a window: it
+     IS the window ── */
+
+  .shell body {
+    padding: 0;
+    gap: 0;
+    height: 100vh;
+    /* The window fills the viewport exactly, so nothing here may scroll.
+       The one region whose content is unbounded is `.text`, which scrolls
+       within itself. */
+    overflow: hidden;
+  }
+
+  /* Captions explain the mockup to someone reading about it. Inside the
+     shell they would be explaining the thing to someone looking at it. */
+  .shell .caption { display: none; }
+
+  .shell .win {
+    width: 100%;
+    height: 100%;
+    /* The drop shadow placed this window on a page. There is no page. */
+    box-shadow: none;
+  }
+
+  /* A flex child will not shrink below its content without this, which is
+     what makes the whole column overflow instead of the text region
+     scrolling. The window's own `minHeight` is what actually keeps the
+     text area from vanishing. */
+  .shell .text { min-height: 0; }
 </style>
 
 <p class="caption" id="caption">
@@ -264,14 +319,16 @@
 </p>
 
 <script>
-  // Running inside the desktop shell? Then the caption is explaining the page
-  // to someone who is looking at the thing itself. Drop it and give the three
-  // lines back to the text.
+  // Running inside the desktop shell? Then the captions are explaining the
+  // page to someone who is looking at the thing itself, and the page's own
+  // margins are the mockup's backdrop. The `.shell` block at the end of the
+  // stylesheet drops both and lets the window fill the viewport.
+  //
+  // Set on <html>, which exists already, rather than waiting for
+  // DOMContentLoaded and <body>: the layout is never painted in its browser
+  // shape and then rearranged.
   if (typeof window !== "undefined" && window.__TAURI__) {
-    document.addEventListener("DOMContentLoaded", () => {
-      const caption = document.getElementById("caption");
-      if (caption) caption.hidden = true;
-    });
+    document.documentElement.classList.add("shell");
   }
 </script>
 
@@ -279,7 +336,7 @@
 
   <div class="bar" data-tauri-drag-region>
     <span class="pip" id="pip"></span>
-    <span class="chan">PhD articulation</span>
+    <span class="chan" id="chan">PhD articulation</span>
     <span class="role">foreground</span>
     <span class="bar-spacer"></span>
     <button class="pin" id="pin" aria-pressed="true" title="Always on top">
@@ -291,9 +348,11 @@
   </div>
 
   <div class="text">
-    <div class="line" id="prev"></div>
-    <div class="line now" id="now"></div>
-    <div class="line" id="next"></div>
+    <div class="text-inner">
+      <div class="line" id="prev"></div>
+      <div class="line now" id="now"></div>
+      <div class="line" id="next"></div>
+    </div>
   </div>
 
   <div class="scrub" id="scrub"></div>
@@ -308,23 +367,23 @@
   <div class="metrics">
     <div class="metric">
       <span class="k">rtf</span>
-      <span class="v" id="rtf" data-level="good">0.75&times;</span>
-      <span class="sub" id="rtf-sub">33% spare</span>
+      <span class="v" id="rtf">&mdash;</span>
+      <span class="sub" id="rtf-sub">&mdash;</span>
     </div>
     <div class="metric">
       <span class="k">drift</span>
-      <span class="v" id="drift">0.00s</span>
+      <span class="v" id="drift">&mdash;</span>
       <span class="sub">behind clock</span>
     </div>
     <div class="metric">
       <span class="k">mem</span>
-      <span class="v" id="mem">1.52<span style="font-size:9px"> GB</span></span>
-      <div class="meter"><span id="mem-bar" style="width:10%"></span></div>
+      <span class="v" id="mem">&mdash;</span>
+      <span class="sub">resident</span>
     </div>
     <div class="metric">
       <span class="k">queue</span>
-      <span class="v" id="queue">2</span>
-      <span class="sub" id="queue-sub">waiting</span>
+      <span class="v" id="queue">&mdash;</span>
+      <span class="sub" id="queue-sub">&mdash;</span>
     </div>
   </div>
 
@@ -366,7 +425,39 @@
   let playing = null; // null until the first event says otherwise
   let hushed = false;
   let message = null;
-  const metrics = { rtf: null, drift: null, queue: null };
+  // Kept apart from `message` because the two answer different questions and
+  // the link answers the more basic one: a window with no subscription has
+  // nothing current to say about speech at all, so its note wins the line.
+  let linkNote = null;
+  // The whole utterance, from `started`. The daemon announces the text before
+  // it knows a single segment of it — it segments one unit ahead of playback —
+  // and the gap is a whole synthesis wide. Showing nothing across it would be
+  // showing less than is known.
+  let utterance = null;
+  const metrics = { rtf: null, drift: null, mem_bytes: null, queue: null };
+
+  /** Forget the previous utterance's timeline, ticks and all. */
+  function clearSegments() {
+    segments.clear();
+    for (const tick of tickEls.values()) tick.remove();
+    tickEls.clear();
+    currentIndex = 0;
+  }
+
+  /**
+   * Daemon messages are arbitrary text — a synthesis error carries the repr
+   * of whatever an agent asked to have spoken — and this window runs with
+   * `window.__TAURI__` in reach, so none of it may become markup. Everything
+   * is escaped; only the <code> tags SimulatedSource's fixture has always
+   * carried are put back, and nothing else is.
+   */
+  function messageHtml(text) {
+    const escaped = String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return escaped.replace(/&lt;(\/?code)&gt;/g, "<$1>");
+  }
 
   function ensureSegment(index, info) {
     segments.set(index, { ...segments.get(index), ...info });
@@ -406,7 +497,13 @@
     const now = segments.get(currentIndex);
     const next = segments.get(currentIndex + 1);
     el("prev").textContent = prev ? prev.text : "";
-    el("now").textContent = now ? now.text : "";
+    // Before the first `position` there is no segment, only the utterance
+    // `started` named. Showing it is not a guess about position — it is all
+    // of what is being spoken, which is more than the window knows about
+    // which part of it.
+    el("now").textContent = now ? now.text : utterance ?? "nothing speaking";
+    if (now || utterance) delete win.dataset.idle;
+    else win.dataset.idle = "1";
     el("next").textContent = next ? next.text : "";
 
     for (const [i, t] of tickEls) {
@@ -424,6 +521,13 @@
 
     setMetric("drift", metrics.drift, (v) => v.toFixed(2) + "s", (v) => (v > 0.6 ? "warn" : ""));
 
+    // Bytes to GiB: 1632087232 bytes is 1.52 GiB, which is the unit this
+    // number was read in (a resident set from /proc), so the unit it is
+    // shown in. There is no total on the wire to scale it against, so there
+    // is no bar under it either — a meter needs a denominator, and inventing
+    // one is exactly what this row must not do.
+    setMetric("mem", metrics.mem_bytes, (v) => (v / 1073741824).toFixed(2) + " GiB");
+
     el("queue").textContent = metrics.queue == null ? "—" : String(metrics.queue);
     el("queue-sub").textContent = metrics.queue == null ? "—" : metrics.queue === 0 ? "clear" : "waiting";
 
@@ -435,18 +539,29 @@
     el("back").disabled = hushed;
     el("fwd").disabled = hushed;
     el("hush").disabled = hushed;
-    el("err").hidden = !message;
-    if (message) el("err-msg").innerHTML = message;
+    const note = linkNote ?? message;
+    el("err").hidden = !note;
+    if (note) el("err-msg").innerHTML = messageHtml(note);
 
     reportState();
   }
 
   function handleEvent(event) {
     const data = event.data ?? {};
+    // The wire names the channel every event belongs to; the simulation does
+    // not, so the mockup's own label stands in a plain browser tab.
+    if (event.source_id) el("chan").textContent = event.source_id;
     switch (event.kind) {
       case "started":
         hushed = false;
         message = null;
+        playing = true; // the daemon says nothing further; `started` means it began
+        utterance = data.text ?? null;
+        // A new utterance is a new timeline. Without this the previous one's
+        // segments stay in the map and its ticks in the scrubber, so a short
+        // utterance after a long one is spoken under a trailing row of ticks
+        // belonging to speech that is over.
+        clearSegments();
         for (const seg of data.segments ?? []) {
           ensureSegment(seg.index, {
             text: seg.text,
@@ -471,6 +586,23 @@
       case "metrics":
         Object.assign(metrics, data);
         break;
+      case "transport":
+        // Read rather than inferred: an absence of `position` events is also
+        // what a finished utterance sounds like.
+        playing = !data.paused;
+        break;
+      case "discarded":
+        message = `${data.count} queued ${data.count === 1 ? "utterance" : "utterances"} dropped`;
+        break;
+      case "link":
+        linkNote = data.connected ? null : data.detail || "speakd is not running";
+        if (!data.connected) {
+          playing = false;
+          // Every metric is a claim about now, and the last one received is a
+          // claim about a daemon that is no longer there.
+          for (const key of Object.keys(metrics)) metrics[key] = null;
+        }
+        break;
       case "error":
         message = data.message;
         break;
@@ -478,7 +610,9 @@
         message = data.reason;
         break;
       case "finished":
-        if (data.cancelled) { hushed = true; playing = false; }
+        playing = false;
+        utterance = null;
+        if (data.cancelled) hushed = true;
         break;
       default:
         return; // unknown/forward-compatible event kind — ignore rather than throw
@@ -546,4 +680,8 @@
   // ---- the one-line choice the whole interface exists for ----
   const source = await resolveSource();
   source.subscribe(handleEvent);
+  // ShellSource's first event arrives a round trip later, unlike the
+  // simulation's synchronous snapshot. Drawn once here so the window never
+  // shows the markup's own placeholder values as though they were readings.
+  render();
 </script>
