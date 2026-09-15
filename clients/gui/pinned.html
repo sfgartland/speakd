@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>speakd Pinned Monitor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -99,6 +100,13 @@
     flex-direction: column;
   }
 
+  /* The chrome keeps its natural height at every window size; the speech
+     text is the one region that grows and shrinks around it, because it is
+     the one whose content has no bound. Spelled out on each child rather
+     than left to the default `flex: 0 1 auto`, whose shrink factor of 1
+     lets a squeezed column steal height from the metrics row first. */
+  .bar, .scrub, .ctls, .metrics, .chans, .err { flex: none; }
+
   /* title bar */
   .bar {
     display: flex;
@@ -148,10 +156,20 @@
     padding: 14px 14px 12px;
     font-family: Newsreader, Georgia, serif;
     font-weight: 300;
-    display: flex; flex-direction: column; gap: 6px;
+    display: flex; flex-direction: column;
+    flex: 1 1 auto;
+    /* Drawn at this height in the mockup, where the page grows to fit it.
+       Inside the shell it is relaxed to 0 so the window can be dragged
+       small — see the `.shell` block at the end of this stylesheet. */
     min-height: 132px;
-    justify-content: center;
+    overflow-y: auto;
   }
+
+  /* Centred with an auto margin rather than `justify-content: center`.
+     They look identical while the text fits; they differ exactly when it
+     does not, and centred overflow puts the top of the text above the
+     scroll container's origin, where no scrollbar can reach it. */
+  .text-inner { margin-block: auto; display: flex; flex-direction: column; gap: 6px; }
 
   .line {
     font-size: 13px; line-height: 1.45; color: var(--spent);
@@ -171,13 +189,24 @@
     text-decoration-thickness: 2px; text-underline-offset: 4px;
   }
 
+  /* Nothing is being spoken, so the "now" line is holding a standing-in
+     phrase rather than speech. It must not wear the lit highlight, which
+     means "this is what you are hearing". */
+  .win[data-idle] .line.now {
+    background: none; box-shadow: none; text-decoration: none;
+    color: var(--faint); font-size: 13px; font-style: italic;
+  }
+
   .win[data-transport="hushed"] .line { opacity: .45; }
   .win[data-transport="hushed"] .line.now {
     background: none; box-shadow: none; color: var(--spent);
   }
 
   /* scrubber */
-  .scrub { display: flex; gap: 2px; height: 5px; padding: 0 12px 10px; }
+  /* 15px, not 5px: `box-sizing: border-box` counts the 10px of padding
+     below the strip against the height, so a 5px box left the ticks
+     themselves nothing to be drawn in. */
+  .scrub { display: flex; gap: 2px; height: 15px; padding: 0 12px 10px; }
   .tick { border: 0; padding: 0; background: var(--rule); border-radius: 1px;
           position: relative; overflow: hidden; cursor: pointer; }
   .tick[data-state="spent"] { background: var(--rule-strong); }
@@ -226,9 +255,6 @@
   .metric .v[data-level="bad"] { color: var(--bad); }
   .metric .sub { font-size: 8.5px; color: var(--faint); }
 
-  .meter { height: 2px; background: var(--rule); border-radius: 1px; overflow: hidden; margin-top: 1px; }
-  .meter span { display: block; height: 100%; background: var(--muted); }
-
   /* other channels */
   .chans {
     border-top: 1px solid var(--rule);
@@ -255,20 +281,64 @@
   }
   .err code { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; color: var(--muted); }
   .err[hidden] { display: none; }
+
+  /* ── inside the desktop shell, the page is not a picture of a window: it
+     IS the window ── */
+
+  .shell body {
+    padding: 0;
+    gap: 0;
+    height: 100vh;
+    /* The window fills the viewport exactly, so nothing here may scroll.
+       The one region whose content is unbounded is `.text`, which scrolls
+       within itself. */
+    overflow: hidden;
+  }
+
+  /* Captions explain the mockup to someone reading about it. Inside the
+     shell they would be explaining the thing to someone looking at it. */
+  .shell .caption { display: none; }
+
+  .shell .win {
+    width: 100%;
+    height: 100%;
+    /* The drop shadow placed this window on a page. There is no page. */
+    box-shadow: none;
+  }
+
+  /* A flex child will not shrink below its content without this, which is
+     what makes the whole column overflow instead of the text region
+     scrolling. The window's own `minHeight` is what actually keeps the
+     text area from vanishing. */
+  .shell .text { min-height: 0; }
 </style>
 
-<p class="caption">
+<p class="caption" id="caption">
   Pinned monitor at its real size — <b>384&thinsp;px</b> wide, sized to sit always-on-top
   beside an editor. Press play; the metrics move as speech does.
 </p>
 
+<script>
+  // Running inside the desktop shell? Then the captions are explaining the
+  // page to someone who is looking at the thing itself, and the page's own
+  // margins are the mockup's backdrop. The `.shell` block at the end of the
+  // stylesheet drops both and lets the window fill the viewport.
+  //
+  // Set on <html>, which exists already, rather than waiting for
+  // DOMContentLoaded and <body>: the layout is never painted in its browser
+  // shape and then rearranged.
+  if (typeof window !== "undefined" && window.__TAURI__) {
+    document.documentElement.classList.add("shell");
+  }
+</script>
+
 <div class="win" id="win" data-transport="paused">
 
-  <div class="bar">
-    <span class="pip" id="pip"></span>
-    <span class="chan">PhD articulation</span>
-    <span class="role">foreground</span>
-    <span class="bar-spacer"></span>
+  <div class="bar" data-tauri-drag-region>
+    <span class="pip" id="pip" data-tauri-drag-region></span>
+    <span class="chan" id="chan" data-tauri-drag-region>PhD articulation</span>
+    <span class="role" data-tauri-drag-region>foreground</span>
+    <span class="bar-spacer" data-tauri-drag-region></span>
     <button class="pin" id="pin" aria-pressed="true" title="Always on top">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M6 1.5h4l-.6 4.2 2.6 2.3v1.2H8.7V14L8 15.2 7.3 14V9.2H3v-1.2l2.6-2.3z"
@@ -278,9 +348,11 @@
   </div>
 
   <div class="text">
-    <div class="line" id="prev"></div>
-    <div class="line now" id="now"></div>
-    <div class="line" id="next"></div>
+    <div class="text-inner">
+      <div class="line" id="prev"></div>
+      <div class="line now" id="now"></div>
+      <div class="line" id="next"></div>
+    </div>
   </div>
 
   <div class="scrub" id="scrub"></div>
@@ -295,23 +367,23 @@
   <div class="metrics">
     <div class="metric">
       <span class="k">rtf</span>
-      <span class="v" id="rtf" data-level="good">0.75&times;</span>
-      <span class="sub" id="rtf-sub">33% spare</span>
+      <span class="v" id="rtf">&mdash;</span>
+      <span class="sub" id="rtf-sub">&mdash;</span>
     </div>
     <div class="metric">
       <span class="k">drift</span>
-      <span class="v" id="drift">0.00s</span>
+      <span class="v" id="drift">&mdash;</span>
       <span class="sub">behind clock</span>
     </div>
     <div class="metric">
       <span class="k">mem</span>
-      <span class="v" id="mem">1.52<span style="font-size:9px"> GB</span></span>
-      <div class="meter"><span id="mem-bar" style="width:10%"></span></div>
+      <span class="v" id="mem">&mdash;</span>
+      <span class="sub">resident</span>
     </div>
     <div class="metric">
       <span class="k">queue</span>
-      <span class="v" id="queue">2</span>
-      <span class="sub" id="queue-sub">waiting</span>
+      <span class="v" id="queue">&mdash;</span>
+      <span class="sub" id="queue-sub">&mdash;</span>
     </div>
   </div>
 
@@ -324,7 +396,7 @@
 
   <div class="err" id="err" hidden>
     <span>&#9888;</span>
-    <span>Profile <code>philosophy</code> wants <code>citations</code> — no plugin provides it.</span>
+    <span id="err-msg">Profile <code>philosophy</code> wants <code>citations</code> — no plugin provides it.</span>
   </div>
 
 </div>
@@ -335,106 +407,281 @@
   sentence follows a short one. Errors appear only when there are any.
 </p>
 
-<script>
-  const SEGMENTS = [
-    { text: "Kant gives the official definition at B25.", dur: 2.31, synth: 1.6 },
-    { text: "He calls transcendental all cognition occupied not so much with objects as with our mode of cognition of objects, insofar as this is to be possible a priori.", dur: 8.42, synth: 6.1 },
-    { text: "The crucial thing is that the term is reflexive, or second order.", dur: 3.55, synth: 2.4 },
-    { text: "It does not name a special class of objects lying beyond the ordinary ones.", dur: 4.48, synth: 5.9 },
-    { text: "It names an inquiry that turns back on cognition itself.", dur: 3.02, synth: 2.1 },
-  ];
+<script type="module">
+  // All of the segment/clock logic that used to live here now lives behind
+  // the Source interface in shared/speakd-source.js, so this window cannot
+  // tell whether it is watching a simulation or a real daemon. What is left
+  // below is a thin controller: it turns { kind, data } events into the same
+  // DOM writes this script always made, and turns button clicks into
+  // source.send(verb, payload) calls.
+  import { resolveSource } from "./shared/speakd-source.js";
 
   const el = (id) => document.getElementById(id);
   const win = el("win");
 
-  let index = 1, within = 2.4, playing = false, hushed = false;
-  let drift = 0.18, rtf = 0.75, queue = 2, raf = null, last = 0;
+  const segments = new Map(); // index -> { text, span_start, span_end, duration, elapsed }
+  const tickEls = new Map(); // index -> <button class="tick">
+  let currentIndex = 0;
+  let playing = null; // null until the first event says otherwise
+  let hushed = false;
+  let message = null;
+  // Kept apart from `message` because the two answer different questions and
+  // the link answers the more basic one: a window with no subscription has
+  // nothing current to say about speech at all, so its note wins the line.
+  let linkNote = null;
+  // The whole utterance, from `started`. The daemon announces the text before
+  // it knows a single segment of it — it segments one unit ahead of playback —
+  // and the gap is a whole synthesis wide. Showing nothing across it would be
+  // showing less than is known.
+  let utterance = null;
+  const metrics = { rtf: null, drift: null, mem_bytes: null, queue: null };
 
-  const ticks = SEGMENTS.map((seg, i) => {
+  /** Forget the previous utterance's timeline, ticks and all. */
+  function clearSegments() {
+    segments.clear();
+    for (const tick of tickEls.values()) tick.remove();
+    tickEls.clear();
+    currentIndex = 0;
+  }
+
+  /**
+   * Daemon messages are arbitrary text — a synthesis error carries the repr
+   * of whatever an agent asked to have spoken — and this window runs with
+   * `window.__TAURI__` in reach, so none of it may become markup. Everything
+   * is escaped; only the <code> tags SimulatedSource's fixture has always
+   * carried are put back, and nothing else is.
+   */
+  function messageHtml(text) {
+    const escaped = String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return escaped.replace(/&lt;(\/?code)&gt;/g, "<$1>");
+  }
+
+  function ensureSegment(index, info) {
+    segments.set(index, { ...segments.get(index), ...info });
+    if (tickEls.has(index)) return;
     const t = document.createElement("button");
     t.className = "tick";
     t.type = "button";
-    t.style.flex = seg.dur + " 1 0";
-    t.setAttribute("aria-label", "Seek: " + seg.text);
+    // A real position event may not know its own duration yet (see the
+    // interface doc comment in speakd-source.js) — an equal-share flex
+    // basis is the honest fallback rather than guessing a width.
+    t.style.flex = (info.duration ?? 1) + " 1 0";
+    t.setAttribute("aria-label", "Seek: " + (info.text ?? ""));
     t.innerHTML = '<span class="fill"></span>';
-    t.addEventListener("click", () => seek(i));
-    el("scrub").appendChild(t);
-    return t;
-  });
+    t.addEventListener("click", () => seekTo(index));
+    let before = null;
+    for (const [i, existing] of tickEls) if (i > index) { before = existing; break; }
+    el("scrub").insertBefore(t, before);
+    tickEls.set(index, t);
+  }
+
+  function setMetric(id, value, format, level) {
+    const target = el(id);
+    if (value == null) {
+      target.textContent = "—";
+      delete target.dataset.level;
+      return;
+    }
+    target.textContent = format(value);
+    if (level) target.dataset.level = level(value);
+    else delete target.dataset.level;
+  }
 
   function render() {
-    const seg = SEGMENTS[index];
     win.dataset.transport = hushed ? "hushed" : playing ? "playing" : "paused";
 
-    el("prev").textContent = index > 0 ? SEGMENTS[index - 1].text : "";
-    el("now").textContent = seg.text;
-    el("next").textContent = index < SEGMENTS.length - 1 ? SEGMENTS[index + 1].text : "";
+    const prev = segments.get(currentIndex - 1);
+    const now = segments.get(currentIndex);
+    const next = segments.get(currentIndex + 1);
+    el("prev").textContent = prev ? prev.text : "";
+    // Before the first `position` there is no segment, only the utterance
+    // `started` named. Showing it is not a guess about position — it is all
+    // of what is being spoken, which is more than the window knows about
+    // which part of it.
+    el("now").textContent = now ? now.text : utterance ?? "nothing speaking";
+    if (now || utterance) delete win.dataset.idle;
+    else win.dataset.idle = "1";
+    el("next").textContent = next ? next.text : "";
 
-    ticks.forEach((t, i) => {
-      t.dataset.state = hushed ? "ahead" : i < index ? "spent" : i === index ? "lit" : "ahead";
-      t.querySelector(".fill").style.width =
-        hushed ? "0" : i < index ? "100%" : i === index ? (within / seg.dur) * 100 + "%" : "0";
-    });
+    for (const [i, t] of tickEls) {
+      const seg = segments.get(i);
+      t.dataset.state = hushed ? "ahead" : i < currentIndex ? "spent" : i === currentIndex ? "lit" : "ahead";
+      const fill = t.querySelector(".fill");
+      if (hushed || i > currentIndex) fill.style.width = "0";
+      else if (i < currentIndex) fill.style.width = "100%";
+      else fill.style.width = seg && seg.duration ? Math.min(100, ((seg.elapsed ?? 0) / seg.duration) * 100) + "%" : "0";
+    }
 
-    el("rtf").textContent = rtf.toFixed(2) + "×";
-    el("rtf").dataset.level = rtf < 0.85 ? "good" : rtf < 1 ? "warn" : "bad";
-    el("rtf-sub").textContent = rtf < 1
-      ? Math.round((1 - rtf) * 100) + "% spare"
-      : "falling behind";
+    setMetric("rtf", metrics.rtf, (v) => v.toFixed(2) + "×", (v) => (v < 0.85 ? "good" : v < 1 ? "warn" : "bad"));
+    el("rtf-sub").textContent =
+      metrics.rtf == null ? "—" : metrics.rtf < 1 ? Math.round((1 - metrics.rtf) * 100) + "% spare" : "falling behind";
 
-    el("drift").textContent = drift.toFixed(2) + "s";
-    el("drift").dataset.level = drift > 0.6 ? "warn" : "";
+    setMetric("drift", metrics.drift, (v) => v.toFixed(2) + "s", (v) => (v > 0.6 ? "warn" : ""));
 
-    el("queue").textContent = String(queue);
-    el("queue-sub").textContent = queue === 0 ? "clear" : "waiting";
+    // Bytes to GiB: 1632087232 bytes is 1.52 GiB, which is the unit this
+    // number was read in (a resident set from /proc), so the unit it is
+    // shown in. There is no total on the wire to scale it against, so there
+    // is no bar under it either — a meter needs a denominator, and inventing
+    // one is exactly what this row must not do.
+    setMetric("mem", metrics.mem_bytes, (v) => (v / 1073741824).toFixed(2) + " GiB");
+
+    el("queue").textContent = metrics.queue == null ? "—" : String(metrics.queue);
+    el("queue-sub").textContent = metrics.queue == null ? "—" : metrics.queue === 0 ? "clear" : "waiting";
 
     el("pip").className = "pip" + (playing ? " live" : hushed ? "" : " held");
-    el("play").textContent = playing ? "Pause" : hushed ? "Again" : "Play";
+    const canReplay = source.capabilities.replay;
+    el("play").textContent = playing ? "Pause" : hushed ? (canReplay ? "Again" : "Play") : "Play";
+    el("play").disabled = hushed && !canReplay;
+    el("play").title = hushed && !canReplay ? "Nothing queued — waiting for another source to speak" : "";
     el("back").disabled = hushed;
     el("fwd").disabled = hushed;
     el("hush").disabled = hushed;
-    el("err").hidden = !hushed;
+    const note = linkNote ?? message;
+    el("err").hidden = !note;
+    if (note) el("err-msg").innerHTML = messageHtml(note);
+
+    reportState();
   }
 
-  function tick(now) {
-    if (!playing) return;
-    const dt = Math.min((now - last) / 1000, 0.25);
-    last = now;
-    within += dt;
-
-    const next = SEGMENTS[index + 1];
-    if (next) {
-      const slack = SEGMENTS[index].dur - next.synth;
-      drift = Math.max(0, drift + (slack < 0 ? dt * 0.22 : -dt * 0.12));
-      rtf = Math.min(1.12, Math.max(0.6, next.synth / SEGMENTS[index].dur));
-    }
-
-    if (within >= SEGMENTS[index].dur) {
-      within = 0;
-      if (index < SEGMENTS.length - 1) { index++; }
-      else { playing = false; within = SEGMENTS[index].dur; queue = Math.max(0, queue - 1); }
+  function handleEvent(event) {
+    const data = event.data ?? {};
+    // The wire names the channel every event belongs to; the simulation does
+    // not, so the mockup's own label stands in a plain browser tab.
+    if (event.source_id) el("chan").textContent = event.source_id;
+    switch (event.kind) {
+      case "started":
+        hushed = false;
+        message = null;
+        playing = true; // the daemon says nothing further; `started` means it began
+        utterance = data.text ?? null;
+        // A new utterance is a new timeline. Without this the previous one's
+        // segments stay in the map and its ticks in the scrubber, so a short
+        // utterance after a long one is spoken under a trailing row of ticks
+        // belonging to speech that is over.
+        clearSegments();
+        for (const seg of data.segments ?? []) {
+          ensureSegment(seg.index, {
+            text: seg.text,
+            span_start: seg.span_start,
+            span_end: seg.span_end,
+            duration: seg.duration,
+          });
+        }
+        break;
+      case "position":
+        currentIndex = data.index;
+        ensureSegment(data.index, {
+          text: data.text,
+          span_start: data.span_start,
+          span_end: data.span_end,
+          duration: data.duration ?? segments.get(data.index)?.duration ?? null,
+          elapsed: data.elapsed ?? 0,
+        });
+        if (typeof data.playing === "boolean") playing = data.playing;
+        else if (playing === null) playing = true; // a real daemon does not say; a position event implies "yes"
+        break;
+      case "metrics":
+        Object.assign(metrics, data);
+        break;
+      case "transport":
+        // Read rather than inferred: an absence of `position` events is also
+        // what a finished utterance sounds like.
+        playing = !data.paused;
+        break;
+      case "discarded":
+        message = `${data.count} queued ${data.count === 1 ? "utterance" : "utterances"} dropped`;
+        break;
+      case "link":
+        linkNote = data.connected ? null : data.detail || "speakd is not running";
+        if (!data.connected) {
+          playing = false;
+          // Every metric is a claim about now, and the last one received is a
+          // claim about a daemon that is no longer there.
+          for (const key of Object.keys(metrics)) metrics[key] = null;
+        }
+        break;
+      case "error":
+        message = data.message;
+        break;
+      case "declined":
+        message = data.reason;
+        break;
+      case "finished":
+        playing = false;
+        utterance = null;
+        if (data.cancelled) hushed = true;
+        break;
+      default:
+        return; // unknown/forward-compatible event kind — ignore rather than throw
     }
     render();
-    raf = requestAnimationFrame(tick);
   }
 
-  function start() {
-    if (playing) return;
-    if (hushed) { hushed = false; index = 0; within = 0; drift = 0; queue = 2; }
-    playing = true; last = performance.now();
-    raf = requestAnimationFrame(tick); render();
+  function seekTo(index) {
+    const seg = segments.get(index);
+    if (!seg) return;
+    source.send("seek", { offset: seg.span_start }).then((res) => {
+      if (!res.ok) { message = res.error; render(); }
+    });
   }
-  function pause() { playing = false; if (raf) cancelAnimationFrame(raf); render(); }
-  function seek(i) { index = i; within = 0; hushed = false; render(); }
 
-  el("play").addEventListener("click", () => (playing ? pause() : start()));
-  el("back").addEventListener("click", () => seek(Math.max(0, index - 1)));
-  el("fwd").addEventListener("click", () => seek(Math.min(SEGMENTS.length - 1, index + 1)));
-  el("hush").addEventListener("click", () => { pause(); hushed = true; queue = 0; render(); });
-  el("pin").addEventListener("click", (e) => {
+  // ---- Tauri bridge: no-ops entirely when this page is a plain browser tab ----
+  const tauri = () => (typeof window !== "undefined" ? window.__TAURI__ : undefined);
+
+  async function invoke(cmd, args) {
+    const t = tauri();
+    if (!t) return;
+    try { await t.core.invoke(cmd, args); } catch (err) { console.warn("speakd: invoke failed", cmd, err); }
+  }
+
+  function reportState() {
+    invoke("report_state", { state: hushed ? "hushed" : playing ? "playing" : "paused" });
+  }
+
+  function handleShellAction(action) {
+    if (action === "play_pause") el("play").click();
+    else if (action === "hush") el("hush").click();
+  }
+
+  const tauriApi = tauri();
+  if (tauriApi) {
+    tauriApi.event.listen("speakd://hotkey", (evt) => handleShellAction(evt.payload));
+    tauriApi.event.listen("speakd://tray", (evt) => handleShellAction(evt.payload));
+  }
+
+  // ---- wire the mockup's existing controls to verbs instead of local state ----
+  el("play").addEventListener("click", async () => {
+    if (el("play").disabled) return;
+    const res = await source.send(playing ? "pause" : "resume", {});
+    if (!res.ok) { message = res.error; render(); }
+  });
+  el("back").addEventListener("click", () => {
+    const seg = segments.get(currentIndex - 1);
+    if (seg) seekTo(currentIndex - 1);
+  });
+  el("fwd").addEventListener("click", () => {
+    const seg = segments.get(currentIndex + 1);
+    if (seg) seekTo(currentIndex + 1);
+  });
+  el("hush").addEventListener("click", async () => {
+    const res = await source.send("hush", {});
+    if (!res.ok) { message = res.error; render(); }
+  });
+  el("pin").addEventListener("click", async (e) => {
     const b = e.currentTarget;
-    b.setAttribute("aria-pressed", b.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    const pressed = b.getAttribute("aria-pressed") !== "true";
+    b.setAttribute("aria-pressed", pressed ? "true" : "false");
+    await invoke("set_always_on_top", { value: pressed });
   });
 
+  // ---- the one-line choice the whole interface exists for ----
+  const source = await resolveSource();
+  source.subscribe(handleEvent);
+  // ShellSource's first event arrives a round trip later, unlike the
+  // simulation's synchronous snapshot. Drawn once here so the window never
+  // shows the markup's own placeholder values as though they were readings.
   render();
 </script>

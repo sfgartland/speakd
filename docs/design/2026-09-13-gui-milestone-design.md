@@ -167,3 +167,53 @@ The streaming player is a prerequisite for everything else and touches shared co
 so it lands as its own plan with its own review, before any GUI work begins. HTTP
 and SSE come next and are independently testable. The frontend and the shell are
 last and can overlap.
+
+## Revision, 2026-09-13: the shell reads the socket, not HTTP
+
+Part 3 put HTTP and SSE on the GUI's critical path. Running the daemon for the
+first time showed that it does not belong there.
+
+`speakctl subscribe` already streams exactly what the monitor needs, over the
+Unix socket, one JSON object per line. Observed verbatim from a real run:
+
+```json
+{"event": "started",  "source_id": "smoke", "data": {"text": "One. Two. Three. Four. Five."}}
+{"event": "position", "source_id": "smoke", "data": {"text": "One.", "span_start": 0, "span_end": 4,
+                                                     "audio_offset": 0.0, "played_at": 89731.960452604}}
+{"event": "finished", "source_id": "smoke", "data": {"cancelled": false, "aborted": false}}
+```
+
+**The Tauri shell is a native process, so it can read that socket directly.** It
+does not need an HTTP server, an SSE framing layer, or a second copy of the wire
+format. What HTTP buys is browser clients and `opencode-voice-plugin` — both
+real, neither on this milestone's path.
+
+So Part 3 is **no longer a prerequisite for Part 4**. It becomes its own plan,
+sequenced after the GUI rather than before it, and the GUI's event source reads
+the socket through a Tauri command.
+
+### Consequence for `clients/gui/shared/speakd-source.js`
+
+`DaemonSource` was written against a guessed SSE shape before the daemon existed,
+and the guess was close: its normalised `{kind, data}` differs from the wire only
+in that the wire calls the field `event` and carries `source_id` alongside it. It
+is replaced by a `SocketSource` with the same interface — `subscribe(handler)`
+returning an unsubscribe — reading lines relayed from Rust. `SimulatedSource`
+stays exactly as it is; it remains how the window is developed with no daemon
+running, and how `pinned.html` opens in a plain browser.
+
+The mapping is one line, `kind = wire.event`, and `source_id` becomes available
+to the window for free — which the channel label in the title bar wants anyway.
+
+### What this does not change
+
+The event *content* is unchanged, so the four metrics, the position highlight and
+the transport controls are all unaffected. This is a decision about which pipe the
+same bytes arrive through.
+
+### Sequencing, revised
+
+The streaming player lands first (done). Transport wiring — the `Pausable` seam
+and the pause/resume verbs — comes next, because without it the window's controls
+have nothing to call. Then the frontend and the shell. HTTP and SSE last, for the
+clients that actually need them.
