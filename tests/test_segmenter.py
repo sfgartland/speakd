@@ -95,7 +95,23 @@ def test_whitespace_only_input_produces_nothing() -> None:
 
 
 def test_default_max_chars_is_exported() -> None:
-    assert DEFAULT_MAX_CHARS == 180
+    assert DEFAULT_MAX_CHARS == 90
+
+
+def test_the_default_keeps_an_ordinary_clause_whole() -> None:
+    """The cap is a compromise, and this is the side of it that can regress.
+
+    Lowering it further shortens the silence after a very short segment --
+    measured at 7.65s, 2.63s and 0.66s for 180, 90 and 60 -- but the split
+    falls back sentence -> clause -> word, so below about 80 this clause stops
+    fitting and breaks between "while the" and "global flag", a pause in the
+    middle of a phrase. The number in the constant above is chosen to keep
+    this whole; a change that does not is the regression worth catching.
+    """
+    clause = "A channel that is not itself muted stays silent while the global flag is set,"
+    assert len(clause) <= DEFAULT_MAX_CHARS
+    spoken = [u.spoken for u in segment([piece(f"Global wins. {clause} and on it goes.")])]
+    assert clause in spoken
 
 
 @pytest.mark.parametrize("max_chars", [0, -5])

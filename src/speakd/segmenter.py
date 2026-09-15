@@ -13,7 +13,28 @@ from collections.abc import Iterator, Sequence
 
 from speakd.model import Piece, Span
 
-DEFAULT_MAX_CHARS = 180
+# Measured, 2026-09-15, against the case that exposed it: a bold lead-in, which
+# renders to a very short sentence followed by a long one. The pipeline
+# prefetches exactly one segment and its producer is serial, so while a short
+# segment plays, the next one is still being made. Playback runs dry.
+#
+#   cap   silence after a 1.33s "Global wins."
+#   180   +7.65s
+#    90   +2.63s, and playback ahead of synthesis from the next segment on
+#    60   +0.66s
+#
+# 60 is not the answer despite the number. A cap only forces a split when a
+# sentence exceeds it, and the split falls back sentence -> clause -> word: at
+# 60 the 76-character clause in that fixture no longer fits, so it breaks
+# between "while the" and "global flag is set", which is a pause in the middle
+# of a phrase. At 90 every split in it lands on a comma.
+#
+# The residual 2.63s cannot be segmented away. After a 1.33s segment there is
+# 1.33s to synthesise the next, which at RTF 0.7 buys under two seconds of
+# audio -- some seventeen characters. No natural sentence is that small. The
+# remedy for the rest is to stop the segmentation producing a one-second unit
+# in the first place, which belongs in the markdown transform, not here.
+DEFAULT_MAX_CHARS = 90
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 _CLAUSE_END = re.compile(r"(?<=[,;:])\s+")
