@@ -125,6 +125,21 @@ def test_set_priority_updates_the_channel(daemon) -> None:  # type: ignore[no-un
     assert channel is not None and channel.priority == 5
 
 
+def test_set_label_reaches_status(daemon) -> None:  # type: ignore[no-untyped-def]
+    d, _player, _bus = daemon
+    d.handle(Request(verb=Verb.SET_LABEL, source_id="s", payload={"label": "named"}))
+    status = d.handle(Request(verb=Verb.STATUS, source_id=""))
+    channels = status.data["channels"]
+    assert [c["label"] for c in channels if c["source_id"] == "s"] == ["named"]
+
+
+def test_set_label_without_a_label_is_refused() -> None:
+    table = ChannelTable()
+    d = Daemon(FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=table)
+    response = d.handle(Request(verb=Verb.SET_LABEL, source_id="s", payload={}))
+    assert not response.ok
+
+
 def test_speaking_publishes_lifecycle_and_position_events(daemon) -> None:  # type: ignore[no-untyped-def]
     d, _player, bus = daemon
     seen: list[Event] = []

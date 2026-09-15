@@ -2,6 +2,12 @@ __pycache__/
 *.py[cod]
 .venv/
 dist/
+# ...except the Tauri shell's, which is not a build output at all: two
+# symlinks naming exactly the files the window loads, which is what keeps
+# frontendDist from serving the whole of clients/gui. Ignored along with
+# every real dist/, the shell could not be built from a fresh clone -- the
+# directory simply was not there.
+!clients/gui/app/dist/
 build/
 *.egg-info/
 .pytest_cache/

@@ -6,7 +6,7 @@ from speakd.transforms.markdown import markdown
 
 def render(text: str) -> str:
     pieces = markdown([Piece(span=Span(0, len(text)), spoken=text)])
-    return pieces[0].spoken if pieces else ""
+    return " ".join(piece.spoken for piece in pieces)
 
 
 def test_headings_become_sentences() -> None:
@@ -55,19 +55,97 @@ def test_emphasis_markers_are_removed() -> None:
     )
 
 
-def test_blockquote_markers_are_removed() -> None:
-    assert render("> quoted text.") == "quoted text."
-
-
 def test_horizontal_rules_are_dropped() -> None:
     assert render("Before.\n---\nAfter.") == "Before. After."
 
 
 def test_output_is_marked_inexact() -> None:
-    pieces = markdown([Piece(span=Span(0, 9), spoken="## Results")])
+    source = "## Results"
+    pieces = markdown([Piece(span=Span(0, len(source)), spoken=source)])
     assert pieces[0].exact is False
-    assert pieces[0].span == Span(0, 9)
+    assert pieces[0].span == Span(0, len(source))
 
 
 def test_a_piece_that_renders_to_nothing_is_dropped() -> None:
     assert markdown([Piece(span=Span(0, 3), spoken="---")]) == []
+
+
+def blocks(text: str) -> list[str]:
+    return [piece.spoken for piece in markdown([Piece(span=Span(0, len(text)), spoken=text)])]
+
+
+def test_each_paragraph_becomes_its_own_piece() -> None:
+    assert blocks("First para.\n\nSecond para.") == ["First para.", "Second para."]
+
+
+def test_wrapped_lines_stay_one_paragraph() -> None:
+    # A blank line separates paragraphs; a newline inside one does not.
+    assert blocks("One sentence\nwrapped over lines.") == ["One sentence wrapped over lines."]
+
+
+def test_each_bullet_is_its_own_piece() -> None:
+    assert blocks("- first\n- second") == ["first.", "second."]
+
+
+def test_a_heading_is_its_own_piece() -> None:
+    assert blocks("## Results\n\nThe body.") == ["Results.", "The body."]
+
+
+def test_a_code_fence_is_one_piece() -> None:
+    assert blocks("Before.\n```py\nx = 1\n```\nAfter.") == [
+        "Before.",
+        "Code block omitted.",
+        "After.",
+    ]
+
+
+def test_a_blocks_span_points_at_the_text_it_came_from() -> None:
+    source = "First para.\n\nSecond para."
+    pieces = markdown([Piece(span=Span(0, len(source)), spoken=source)])
+    second = pieces[1]
+    assert source[second.span.start : second.span.end].strip() == "Second para."
+
+
+def test_spans_are_offset_by_the_input_pieces_own_start() -> None:
+    # The piece is a window into a larger job, so block offsets are relative
+    # to the piece's start, not to zero.
+    source = "First para.\n\nSecond para."
+    pieces = markdown([Piece(span=Span(100, 100 + len(source)), spoken=source)])
+    assert pieces[0].span.start == 100
+    assert pieces[1].span.start > 100
+
+
+def test_an_inexact_piece_gives_every_block_the_whole_span() -> None:
+    # Offsets into rewritten text do not correspond to the source, so
+    # sub-spans would point at the wrong characters. Better to be coarse
+    # than wrong -- see Piece.exact in model.py.
+    source = "First para.\n\nSecond para."
+    piece = Piece(span=Span(0, 999), spoken=source, exact=False)
+    assert [p.span for p in markdown([piece])] == [Span(0, 999), Span(0, 999)]
+
+
+def test_a_block_quote_is_announced_and_closed() -> None:
+    assert blocks("> Nothing waits on that.") == ["Quote, Nothing waits on that. End quote."]
+
+
+def test_consecutive_quote_lines_are_one_quotation() -> None:
+    assert blocks("> One line.\n> And another.") == ["Quote, One line. And another. End quote."]
+
+
+def test_prose_after_a_quote_is_its_own_block() -> None:
+    assert blocks("> Quoted.\n\nMine.") == ["Quote, Quoted. End quote.", "Mine."]
+
+
+def test_a_table_is_announced_rather_than_read() -> None:
+    table = "| a | b |\n| --- | --- |\n| 1 | 2 |"
+    assert blocks(table) == ["Table omitted."]
+
+
+def test_a_table_between_paragraphs_keeps_them_apart() -> None:
+    source = "Before.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nAfter."
+    assert blocks(source) == ["Before.", "Table omitted.", "After."]
+
+
+def test_a_pipe_in_prose_is_not_a_table() -> None:
+    # A table row is delimited at both ends; prose mentioning a pipe is not.
+    assert blocks("Use a | to pipe.") == ["Use a | to pipe."]

@@ -16,7 +16,9 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from traceback import format_exc
+from typing import Protocol, runtime_checkable
 
+from speakd import state
 from speakd.channels import ChannelTable
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
@@ -44,6 +46,8 @@ _NOT_RUNNING = "the daemon is not running: start() it before enqueuing speech"
 
 _METRICS_THREAD_NAME = "speakd-metrics"
 
+_ENGINE_THREAD_NAME = "speakd-engine-load"
+
 # How often the monitor's numbers go out while speech is in flight. A second
 # is what a pinned display refreshes at; faster would be traffic nobody reads,
 # and slower would show a stall after it had already been heard.
@@ -65,6 +69,36 @@ _STILL_FINISHING = (
 _DISCARDED_STOPPED = "discarded unspoken: the daemon stopped before this reached the engine"
 
 _DISCARDED_HUSHED = "discarded unspoken: a hush cleared the queue before this was spoken"
+
+_DISCARDED_MUTED = "discarded unspoken: a mute cleared the queue before this was spoken"
+
+
+@runtime_checkable
+class Loadable(Protocol):
+    """An engine that can be put down and picked up again.
+
+    Separate from `Synthesizer` for the reason `Pausable` is separate from
+    `Player`: nothing in the speech path needs an engine to be unloadable,
+    and folding these in would make every test double carry four members it
+    has no use for. The daemon asks with `isinstance` and refuses
+    `set_engine`, naming the engine, when the answer is no — a daemon whose
+    engine cannot be put down is a fact about how it was built, not an error
+    in it.
+
+    `runtime_checkable` checks only that the attributes exist, not their
+    signatures. That is what is wanted here: the question is whether this
+    engine can be unloaded at all.
+    """
+
+    @property
+    def loaded(self) -> bool: ...
+
+    @property
+    def loading(self) -> bool: ...
+
+    def load(self) -> None: ...
+
+    def unload(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -100,6 +134,15 @@ class Daemon:
         self.profile_for = profile_for
         self.bus = bus if bus is not None else EventBus()
         self.channels = channels if channels is not None else ChannelTable()
+        # Loaded rather than defaulted: after a reboot, surprising silence is
+        # a smaller failure than surprising speech.
+        self.muted = state.load().muted
+        # Whose utterance the worker is on, so that a channel-scoped silence
+        # can tell whether the voice it would cut off is the one being muted.
+        # Stale between jobs in exactly the way `_cancel` is, and harmlessly
+        # so: the Event it stands beside has already been consumed, and
+        # setting a consumed Event stops nothing.
+        self._speaking = ""
         self._jobs: queue.Queue[_Job | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._running = False
@@ -304,6 +347,111 @@ class Daemon:
         except Exception as exc:
             self._publish("error", "", {"message": f"could not silence the player: {exc!r}"})
 
+    def _stop_speaking(self, source_id: str, *, drain: bool, reason: str) -> int:
+        """Stop what is sounding, and say how much queued speech went with it.
+
+        Factored out of the HUSH/CANCEL branch so that mute and disable stop
+        speech by this path rather than a second one: the ordering below is
+        too particular to keep two copies of, and an off switch that lets the
+        current paragraph finish is not an off switch.
+
+        `source_id` empty means everything; a named one reaches only that
+        channel, which is what a per-channel mute needs — silencing one
+        session must not cut another off mid-sentence, nor throw away its
+        queue. `_speaking` is what says whether the voice in the room is the
+        one being silenced.
+
+        The Event is read AND set under the lock. Set outside it, the worker
+        could finish this utterance, take the next job off the queue and
+        install its fresh Event in between — leaving this set() on an Event
+        nobody is watching, the drain below finding an already-empty queue,
+        and that next job speaking on after hush answered `ok`.
+        `Event.set()` never blocks. Only `player.stop()` does, on a real
+        device, which is why that one stays outside: holding the lock across
+        it would stall enqueue. This narrows the window rather than closing
+        it; `_speak` says what is left of it.
+        """
+        with self._idle:
+            sounding = not source_id or self._speaking == source_id
+            if sounding:
+                self._cancel.set()
+        try:
+            if sounding:
+                self.player.stop()
+        finally:
+            # In a finally, because a sink that refuses to stop — the
+            # headset out of range again — must not carry the drain off
+            # with it. Without this, a hush that met a failing player
+            # reported an error and left every queued utterance in place:
+            # the daemon answering a request to stop talking by going on
+            # talking. The failure still reaches the caller; only the
+            # drain is no longer hostage to it.
+            discarded = self._drain_queued(source_id, reason=reason) if drain else 0
+        return discarded
+
+    def _silence_for_mute(self, source_id: str) -> None:
+        """Stop speech for a mute or a disable, reporting a failing sink rather than raising.
+
+        Where this differs from hush: by the time it runs, the flag is
+        already set and already persisted, so a raise here would report a
+        failure for a switch that did in fact flip — and leave the caller
+        unable to tell which. Hush has nothing behind it to be wrong about,
+        which is why it lets the sink's failure out instead.
+        """
+        try:
+            self._stop_speaking(source_id, drain=True, reason=_DISCARDED_MUTED)
+        except Exception as exc:
+            self._publish("error", source_id, {"message": f"could not silence the player: {exc!r}"})
+
+    def _engine_status(self) -> dict[str, object]:
+        """What STATUS says about the model, for an engine of either kind.
+
+        An engine that cannot be unloaded reports as loaded, because it is: a
+        control surface asking whether this daemon can speak must not read
+        `false` off one that will speak perfectly well.
+        """
+        engine = self.engine
+        if not isinstance(engine, Loadable):
+            return {"loaded": True, "loading": False}
+        return {"loaded": engine.loaded, "loading": engine.loading}
+
+    def _set_engine_loaded(self, wanted: bool) -> Response:
+        """Load or unload the model, without ever blocking the socket.
+
+        Loading takes tens of seconds. Doing it on the request thread would
+        stall every other client for the duration — including the hush of
+        whoever changed their mind — so the verb returns at once and
+        readiness is announced on the bus instead. Unloading is immediate and
+        stays here.
+
+        The flag is written before either happens, so that a daemon killed
+        mid-load comes back to the state the user asked for rather than the
+        one it managed to reach.
+        """
+        if not isinstance(self.engine, Loadable):
+            return Response(
+                ok=False,
+                error=f"{type(self.engine).__name__} cannot be loaded or unloaded",
+            )
+        engine: Loadable = self.engine
+        state.save(state.DaemonState(muted=state.load().muted, disabled=not wanted))
+        if not wanted:
+            # Silenced before the model goes: the utterance in flight is
+            # holding audio synthesised from it, and letting that finish
+            # would be the paragraph this switch exists to cut off.
+            self._silence_for_mute("")
+            engine.unload()
+            self._publish("engine", "", {"state": "unloaded"})
+            return Response(ok=True, data={"loaded": False})
+        self._publish("engine", "", {"state": "loading"})
+
+        def run() -> None:
+            engine.load()
+            self._publish("engine", "", {"state": "ready"})
+
+        threading.Thread(target=run, name=_ENGINE_THREAD_NAME, daemon=True).start()
+        return Response(ok=True, data={"loading": True})
+
     def _set_paused(self, paused: bool) -> Response:
         """Suspend or take up playback, announcing only a real change.
 
@@ -365,29 +513,15 @@ class Daemon:
             # talking, so the queue goes with it. Each reports what it did, so
             # a client can tell them apart from the response alone.
             #
-            # The Event is read AND set under the lock. Set outside it, the
-            # worker could finish this utterance, take the next job off the
-            # queue and install its fresh Event in between — leaving this
-            # set() on an Event nobody is watching, the drain below finding
-            # an already-empty queue, and that next job speaking on after
-            # hush answered `ok`. `Event.set()` never blocks. Only
-            # `player.stop()` does, on a real device, which is why that one
-            # stays outside: holding the lock across it would stall enqueue.
-            # This narrows the window rather than closing it; `_speak` says
-            # what is left of it.
-            with self._idle:
-                self._cancel.set()
-            try:
-                self.player.stop()
-            finally:
-                # In a finally, because a sink that refuses to stop — the
-                # headset out of range again — must not carry the drain off
-                # with it. Without this, a hush that met a failing player
-                # reported an error and left every queued utterance in place:
-                # the daemon answering a request to stop talking by going on
-                # talking. The failure still reaches the caller; only the
-                # drain is no longer hostage to it.
-                discarded = self._drain_queued() if request.verb is Verb.HUSH else 0
+            # Neither is narrowed to the source that sent it. `hush` has
+            # always meant stop talking, not stop talking to me, and a client
+            # that has been reading it that way would be silently changed by
+            # scoping it now — which is why mute, where the scope is the
+            # point, asks for the same stop through the same helper rather
+            # than teaching this verb a new meaning.
+            discarded = self._stop_speaking(
+                "", drain=request.verb is Verb.HUSH, reason=_DISCARDED_HUSHED
+            )
             return Response(ok=True, data={"discarded": discarded})
         if request.verb is Verb.STATUS:
             # Read-only, deliberately: asking what the channels are must not
@@ -403,9 +537,16 @@ class Daemon:
                             "priority": c.priority,
                             "profile": c.profile,
                             "label": c.label,
+                            "muted": c.muted,
                         }
                         for c in self.channels.all()
-                    ]
+                    ],
+                    # Both levels, separately. A GUI that had only the union
+                    # could not draw the two switches it is being asked to
+                    # draw: a channel that is audible behind a global mute
+                    # looks identical to one that is muted itself.
+                    "muted": self.muted,
+                    "engine": self._engine_status(),
                 },
             )
         if request.verb in (Verb.PAUSE, Verb.RESUME):
@@ -428,6 +569,42 @@ class Daemon:
                 return Response(ok=False, error="priority must be an integer")
             self.channels.set_priority(request.source_id, raw_priority)
             return Response(ok=True)
+        if request.verb is Verb.SET_LABEL:
+            label = request.payload.get("label")
+            # A blank label is what an unnamed channel already carries, so
+            # storing one would answer `ok` to a request that leaves the
+            # listing showing the source_id it was sent to replace.
+            if not isinstance(label, str) or not label.strip():
+                return Response(ok=False, error="set_label needs a non-empty label")
+            self.channels.set_label(request.source_id, label)
+            return Response(ok=True, data={"label": label})
+        if request.verb is Verb.MUTE:
+            wanted = request.payload.get("muted")
+            if not isinstance(wanted, bool):
+                return Response(ok=False, error="mute needs a boolean 'muted'")
+            if request.source_id:
+                self.channels.set_muted(request.source_id, wanted)
+                scope = "channel"
+            else:
+                # Global, and kept apart from the per-channel flags rather
+                # than written across them: clearing it has to give each
+                # channel back what it had, not unmute everything. It names
+                # no source, so it opens no channel, for the same reason
+                # STATUS does not.
+                self.muted = wanted
+                state.save(state.DaemonState(muted=wanted, disabled=state.load().disabled))
+                scope = "global"
+            if wanted:
+                # An off switch that lets the current paragraph finish is not
+                # an off switch.
+                self._silence_for_mute(request.source_id)
+            self._publish("mute", request.source_id, {"muted": wanted, "scope": scope})
+            return Response(ok=True, data={"muted": wanted, "scope": scope})
+        if request.verb is Verb.SET_ENGINE:
+            loaded = request.payload.get("loaded")
+            if not isinstance(loaded, bool):
+                return Response(ok=False, error="set_engine needs a boolean 'loaded'")
+            return self._set_engine_loaded(loaded)
         return Response(ok=False, error=f"{request.verb.value} is not handled here")
 
     def _enqueue(self, request: Request) -> Response:
@@ -441,6 +618,29 @@ class Daemon:
             return Response(ok=False, error=_NOT_RUNNING)
         kind = str(request.payload.get("kind", "response"))
         channel = self.channels.open(request.source_id)
+        if self.muted or channel.muted:
+            # Dropped at the door, not held: unmuting must not release ten
+            # minutes of backlog into the room. Nothing reaches the worker,
+            # so a muted channel costs no synthesis at all — which is the
+            # difference between this and turning the volume down.
+            self._publish(
+                "declined",
+                request.source_id,
+                {"text": text, "kind": kind, "reason": "muted"},
+            )
+            return Response(ok=True, data={"spoken": False, "reason": "muted"})
+        if isinstance(self.engine, Loadable) and not self.engine.loaded:
+            # Disabled, or still loading: either way there is no model to say
+            # this with. Dropped for the same reason as a mute, and it covers
+            # the load as well as the disable deliberately — an enable that
+            # queued thirty seconds of arrivals would speak them all at once
+            # the moment the model landed.
+            self._publish(
+                "declined",
+                request.source_id,
+                {"text": text, "kind": kind, "reason": "disabled"},
+            )
+            return Response(ok=True, data={"spoken": False, "reason": "disabled"})
         profile_name = str(request.payload.get("profile", channel.profile))
         profile = self.profile_for(profile_name)
         decision = decide(
@@ -555,8 +755,8 @@ class Daemon:
             else:
                 jobs.append(item)
 
-    def _drain_queued(self) -> int:
-        """Drop everything queued and report it, returning how many there were.
+    def _drain_queued(self, source_id: str, *, reason: str) -> int:
+        """Drop what is queued and report it, returning how many there were.
 
         Taken off the queue in one step under the lock, with any stop signal
         put straight back, and only then reported. `EventBus.publish` swallows
@@ -570,9 +770,27 @@ class Daemon:
         GUI redrawing forty times to say so. It carries the count and the
         channels the count came from, which is what the per-job events said
         between them.
+
+        `source_id` empty means everything. A named one keeps the other
+        channels' jobs and puts them back in the order they came out, because
+        muting one session must not throw away another's queue. Nothing can
+        interleave with that: `_enqueue` puts under this same lock. The stop
+        signals go back last, where `stop()` deposited them — behind the work
+        they were meant to follow.
+
+        `reason` is given rather than assumed for the same reason the two
+        `_DISCARDED_` texts exist at all: a mute that reported its drops as a
+        hush would send whoever read the event looking for a verb nobody
+        sent.
         """
         with self._idle:
-            jobs, signals = self._empty_queue()
+            taken, signals = self._empty_queue()
+            jobs: list[_Job] = []
+            for job in taken:
+                if not source_id or job.source_id == source_id:
+                    jobs.append(job)
+                else:
+                    self._jobs.put(job)
             for _ in range(signals):
                 self._jobs.put(None)
         try:
@@ -587,7 +805,7 @@ class Daemon:
                     "",
                     {
                         "count": len(jobs),
-                        "reason": _DISCARDED_HUSHED,
+                        "reason": reason,
                         "sources": sorted({job.source_id for job in jobs}),
                     },
                 )
@@ -637,6 +855,10 @@ class Daemon:
         with self._idle:
             self._cancel = cancel
             self._timeline = timeline
+            # Installed with the Event it belongs to, so a channel-scoped
+            # silence reading the two together can never match this job's
+            # source against the previous job's Event.
+            self._speaking = job.source_id
             # Read under the same lock that installs the Event, so a stop()
             # cannot land between the two and leave this job installed as the
             # current utterance and past its own liveness check at once.

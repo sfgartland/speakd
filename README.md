@@ -11,14 +11,16 @@ can follow along.
 ## Design
 
 One daemon owns the model, the queue, the plugin host and the API. Everything else
-is a client: editor plugins, agent hooks, document readers.
+is a client: editor plugins, agent followers, document readers. The daemon spawns
+and restarts the clients that have to outlive a single command — the Claude Code
+follower is one — so there is still only one service to start and stop.
 
 ```
-hooks/CLI ──enqueue──▶ speakd ──▶ transforms ──▶ segmenter ──▶ engine ──▶ player
-                         │                                       │
-                         └────── event bus ◀── span-to-time map ◀─┘
-                                    │
-                         out-of-proc subscribers (PDF highlighter, …)
+follower/CLI ──enqueue──▶ speakd ──▶ transforms ──▶ segmenter ──▶ engine ──▶ player
+                            │                                       │
+                            └────── event bus ◀── span-to-time map ◀─┘
+                                       │
+                            out-of-proc subscribers (PDF highlighter, …)
 ```
 
 **The span-to-time map** is the core data structure. Every synthesised segment
@@ -47,8 +49,9 @@ The daemon works. It speaks over a Unix socket, streams position events as it
 goes, and can be interrupted mid-word.
 
 Built and merged: the speaking pipeline, the plugin host and built-in
-transforms, the streaming player, the daemon, and the transcript reader for the
-Claude Code client. The client's hooks and the desktop shell are in progress.
+transforms, the streaming player, the daemon, and the Claude Code client — its
+two hooks, its transcript reader, and the follower that speaks a session as it
+is written. The desktop shell is in progress.
 
 ## Running it at login
 
@@ -81,13 +84,48 @@ uv run speakctl hush   --source mine                   # stop talking, drop the 
 uv run speakctl cancel --source mine                   # skip this one, queue continues
 uv run speakctl pause  --source mine
 uv run speakctl resume --source mine
+uv run speakctl mute                                   # silence everything, at once
+uv run speakctl unmute
+uv run speakctl mute   --source mine                   # silence one channel only
+uv run speakctl disable                                # unload the model (see below)
+uv run speakctl enable                                 # load it again, tens of seconds
 uv run speakctl subscribe                              # live events, JSON lines
-uv run speakctl status                                 # channels, as JSON
+uv run speakctl status                                 # channels, mute and engine state
 uv run speakctl say "No daemon needed."                # speak locally, in-process
 ```
 
 `enqueue` returns as soon as the daemon accepts the text, not when it stops
-speaking — which is what lets an agent hook call it and get out of the way.
+speaking — which is what lets a caller on an agent's critical path get out of the
+way. The Claude Code client no longer has such a caller: its hooks only hush and
+register, and the prose is enqueued by the follower, which runs outside anyone's
+turn and speaks a message the moment it reaches the transcript.
+
+**Mute and disable are two depths of the same switch.** Mute is instant and
+instantly undone: a muted channel's text is accepted and *dropped*, never held, so
+unmuting does not release ten minutes of backlog — and because it is dropped at
+`enqueue`, nothing is synthesised and the channel costs no CPU. What it does not do
+is give back the model's memory. `disable` unloads the model and charges tens of
+seconds to load it back; while disabled, nothing loads it implicitly, so a stray
+enqueue cannot undo the decision by accident. Both survive a restart.
+
+**How much memory `disable` actually returns, measured** — because the honest
+answer is less than you would hope:
+
+| | RSS |
+|---|---|
+| running, model loaded | 2.19 GiB |
+| after `speakctl disable` | 1.77 GiB |
+| **started** while disabled | **0.03 GiB** |
+
+Unloading at runtime gives back 0.42 GiB, not the two gigabytes the model
+occupies: dropping the reference frees the tensors to Python, and torch's
+allocator and CPython's arenas keep the address space. If you want the memory
+genuinely back, disable and then restart the daemon — because the flag persists,
+it comes back up in 32 MB and never builds the model at all.
+
+Global mute and per-channel mute are separate flags, not one setting written twice:
+a channel stays silent under a global mute whatever its own flag says, and clearing
+the global one gives each channel back what it had.
 
 The event stream is the same one the GUI reads:
 
@@ -111,6 +149,33 @@ settles rather than freezing on the last busy value — and nothing in between,
 because a monitor that has heard nothing since `finished` knows its numbers are
 stale in the only way that matters.
 
+## The window
+
+`clients/gui/` is a 384px always-on-top monitor meant to sit beside an editor. It
+shows the text being spoken — previous line, current, next — a scrubber over the
+segments, and four numbers: synthesis speed against realtime, drift, resident
+memory and queue depth.
+
+Both off switches are in it, and they follow `speakctl`: mute one from the CLI and
+the window's button moves, without a reload. Behind a disclosure — closed by
+default, because the window's whole argument is that it is small — are the open
+channels, each with a mute of its own and each named by its label rather than its
+session id, and a box that speaks text you paste into it (Ctrl+Enter, 8 KiB cap).
+
+Pasted text is an ordinary channel called `gui`: it appears in the list, it can be
+muted on its own, and `hush` reaches it like anything else. The window can do that
+one thing and no other — `enqueue` is not on the shell's forwarding allowlist and
+sending it through the general command is refused, so a bug in the frontend still
+cannot speak arbitrary traffic on another session's channel.
+
+```bash
+cd clients/gui/app/src-tauri && cargo run      # the desktop shell
+python3 -m http.server 8765 --directory clients/gui   # or a plain tab, on a simulation
+```
+
+The second needs no daemon and no Rust: opened at `/pinned.html` in a browser, the
+page drives itself from a fixture, which is how the frontend is developed.
+
 ## Measured
 
 On an i7-10510U with Kokoro on CPU (RTF 0.75). **Read the provenance** — some of
@@ -122,7 +187,7 @@ matters:
 | Time to first audio, 417-char passage | 20.2s batched -> **10.9s** streamed | real device |
 | Audio after a hush | 1.816s -> **0.256s** | substitute rig |
 | `speakctl enqueue` return | **0.27s**, five sentences still queued | real device |
-| Hook latency, against a 3s budget | **0.22s** | real device, no daemon |
+| Claude Code hook, against a 3s budget | 0.25s per tool call -> **0.09s** twice a turn | real device |
 
 The hush figures are a sound *contrast* — both arms ran the identical script —
 but the absolute numbers were taken with a sleeping fake sink and want
@@ -133,10 +198,12 @@ not evidence.
 ## Clients
 
 **Claude Code** — [`clients/claude-code/`](clients/claude-code/) is a loadable
-plugin that speaks a session's responses as they arrive. Four hooks, one entry
-point; it exits 0 on every path and writes nothing to stdout, so a daemon that
-is not running costs silence and nothing else. See its
-[README](clients/claude-code/README.md) for the install.
+plugin that speaks a session's responses as they land on disk. The speaking is
+done by a follower process the daemon keeps alive, which tails the transcript;
+two hooks remain, both once per turn, to stop the speech when a new prompt
+arrives and to read the permission prompts aloud. Every hook path exits 0 and
+writes nothing to stdout, so a daemon that is not running costs silence and
+nothing else. See its [README](clients/claude-code/README.md) for the install.
 
 ## Development
 

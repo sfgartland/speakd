@@ -99,7 +99,8 @@ fn main() {
             set_always_on_top,
             report_state,
             bridge::speakd_link,
-            bridge::speakd_send
+            bridge::speakd_send,
+            bridge::speakd_say
         ])
         .setup(|app| {
             hotkeys::register(app.handle())?;

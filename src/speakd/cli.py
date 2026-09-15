@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from speakd.model import Piece, Role, Span
+from speakd.paths import default_profiles_path, default_socket_path
 from speakd.pipeline import speak
 from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginHost
@@ -26,12 +26,10 @@ from speakd.transforms.chain import apply_chain
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from speakd.transport import SocketClient
 
-
-def default_socket_path() -> Path:
-    """Where the daemon listens, following XDG with a sensible fallback."""
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(runtime) if runtime else Path(os.environ.get("TMPDIR", "/tmp"))
-    return base / "speakd" / "speakd.sock"
+# `default_socket_path` moved to `speakd.paths` so the Claude Code hook could
+# build a socket path without importing the synthesis pipeline. It is re-exported
+# because `speakctl`, `__main__` and the tests all learned to ask `cli` for it.
+__all__ = ["default_socket_path", "main"]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -117,6 +115,37 @@ def _build_parser() -> argparse.ArgumentParser:
     # the other to anyone calling `main`.
     priority.add_argument("priority", metavar="INTEGER", help="higher is heard first")
 
+    label = sub.add_parser("label", parents=[common], help="name a channel for display")
+    # Emptiness is checked in `_label`, not by an argparse `type=` callable,
+    # for the reason the two above give: argparse raises SystemExit, and this
+    # subcommand has to fail in the same shape as its neighbours.
+    label.add_argument("label", help="what to show for this channel")
+
+    # The off switches are daemon-wide unless told otherwise, which is the
+    # one place `--source cli` would be wrong: `speakctl mute` means stop
+    # talking, not stop talking to the shell that just asked. Its own parent
+    # rather than a per-subcommand override, so the four cannot drift apart.
+    wide = argparse.ArgumentParser(add_help=False)
+    wide.add_argument(
+        "--source",
+        default="",
+        help="the channel this applies to (default: the whole daemon)",
+    )
+    wide.add_argument(
+        "--socket",
+        type=Path,
+        default=default_socket_path(),
+        help="where the daemon listens (default: %(default)s)",
+    )
+
+    # Two levels of off, and the difference is three gigabytes: mute keeps
+    # the model loaded and starts speaking again the instant it is cleared,
+    # disable gives the memory back and takes tens of seconds to come round.
+    sub.add_parser("mute", parents=[wide], help="stop speaking, keeping the model loaded")
+    sub.add_parser("unmute", parents=[wide], help="speak again")
+    sub.add_parser("disable", parents=[wide], help="unload the model; nothing is spoken")
+    sub.add_parser("enable", parents=[wide], help="load the model again")
+
     # Transport, in the same shape as the verbs above: --source, --socket,
     # and one line back when nothing answers.
     sub.add_parser("pause", parents=[common], help="suspend playback where it is")
@@ -125,13 +154,6 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("subscribe", parents=[common], help="stream events as JSON lines")
     sub.add_parser("status", parents=[common], help="print the daemon's channels as JSON")
     return parser
-
-
-def _default_profiles_path() -> Path:
-    """Where profiles live when `--profiles-file` is not given."""
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "speakd" / "profiles.toml"
 
 
 def _validate_say_args(args: argparse.Namespace) -> str | None:
@@ -167,7 +189,7 @@ def _say(args: argparse.Namespace) -> int:
     text = args.text if args.text is not None else sys.stdin.read()
 
     profiles_path = (
-        Path(args.profiles_file) if args.profiles_file is not None else _default_profiles_path()
+        Path(args.profiles_file) if args.profiles_file is not None else default_profiles_path()
     )
     try:
         profiles = load_profiles(profiles_path)
@@ -427,6 +449,55 @@ def _priority(args: argparse.Namespace) -> int:
     return 0 if response.ok else _refused(response)
 
 
+def _mute(args: argparse.Namespace, muted: bool) -> int:
+    """mute and unmute. Silent on success, like every other switch here."""
+    response = _call(
+        args.socket,
+        Request(verb=Verb.MUTE, source_id=args.source, payload={"muted": muted}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
+def _set_engine(args: argparse.Namespace, loaded: bool) -> int:
+    """enable and disable.
+
+    `enable` returns while the model is still loading -- tens of seconds of
+    it -- so it says so. An off switch may be silent because it took effect
+    before the command returned; an on switch that stays quiet for half a
+    minute reads as one that did nothing.
+    """
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_ENGINE, source_id=args.source, payload={"loaded": loaded}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    if not response.ok:
+        return _refused(response)
+    if response.data.get("loading") is True:
+        print(
+            "speakctl: loading the model; speech starts when it is ready "
+            "(watch for the `engine` event on `speakctl subscribe`)",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _label(args: argparse.Namespace) -> int:
+    if not args.label.strip():
+        print("speakctl: a label must not be empty", file=sys.stderr)
+        return _UNREACHABLE
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_LABEL, source_id=args.source, payload={"label": args.label}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
 def _status(args: argparse.Namespace) -> int:
     response = _call(args.socket, Request(verb=Verb.STATUS, source_id=args.source))
     if response is None:
@@ -480,6 +551,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _role(args)
     if args.command == "priority":
         return _priority(args)
+    if args.command == "label":
+        return _label(args)
+    if args.command == "mute":
+        return _mute(args, True)
+    if args.command == "unmute":
+        return _mute(args, False)
+    if args.command == "disable":
+        return _set_engine(args, False)
+    if args.command == "enable":
+        return _set_engine(args, True)
     if args.command == "status":
         return _status(args)
     if args.command == "subscribe":

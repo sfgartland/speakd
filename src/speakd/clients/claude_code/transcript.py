@@ -20,6 +20,9 @@ class Record:
     kind: str
     is_sidechain: bool
     text: str
+    # Only an `ai-title` record carries one, and it is not speech: it is the
+    # name the GUI shows for the session.
+    title: str | None = None
 
 
 def _text_of(message: object) -> str:
@@ -43,8 +46,19 @@ def _text_of(message: object) -> str:
 
 
 def _record_of(body: dict[str, object]) -> Record | None:
-    uuid = body.get("uuid")
     kind = body.get("type")
+    if kind == "ai-title":
+        title = body.get("aiTitle")
+        if isinstance(title, str) and title.strip():
+            # No uuid on these records, and no need of one: nothing walks
+            # back to a title, and `speakable` skips every kind but
+            # "assistant" anyway. Loosening the uuid check below instead
+            # would let every other uuid-less record through -- summaries
+            # among them, whose empty uuid would become a saved watermark
+            # that fails to load and re-speaks the turn.
+            return Record(uuid="", kind="ai-title", is_sidechain=False, text="", title=title)
+        return None
+    uuid = body.get("uuid")
     if not isinstance(uuid, str) or not isinstance(kind, str):
         return None
     text = _text_of(body.get("message")) if kind == "assistant" else ""
@@ -99,3 +113,14 @@ def speakable(records: Sequence[Record]) -> str:
         for record in records
         if record.kind == "assistant" and not record.is_sidechain and record.text
     )
+
+
+def ai_title(records: Sequence[Record]) -> str | None:
+    """The session's latest human-readable name, if it has one yet.
+
+    Claude Code rewrites this as a session develops, so the last one wins.
+    """
+    for record in reversed(records):
+        if record.kind == "ai-title" and record.title:
+            return record.title
+    return None

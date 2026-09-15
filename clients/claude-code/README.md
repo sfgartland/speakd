@@ -1,9 +1,14 @@
 # speakd for Claude Code
 
-Speaks Claude Code's prose responses aloud while the session runs: each block of
-text is sent to the `speakd` daemon as it appears, so audio starts on the first
-sentence rather than at the end of the answer. A new prompt stops whatever is
-being said.
+Speaks Claude Code's prose responses aloud while the session runs. A follower
+process tails the session transcript and sends each block of text to the
+`speakd` daemon as it lands on disk — while the next tool is still running,
+rather than after it. A new prompt stops whatever is being said.
+
+Two hooks, both firing once per turn: `UserPromptSubmit`, which stops the
+speech and tells the follower this session is live, and `Notification`, which
+speaks the permission prompts. Neither reads the transcript, so a tool call
+costs nothing at all.
 
 ## Install, once
 
@@ -15,17 +20,11 @@ Add this checkout as a plugin marketplace and install from it:
 ```
 
 If you would rather not use a marketplace, point `~/.claude/settings.json` at the
-wrapper directly. Every event runs the same command:
+wrapper directly. Both events run the same command:
 
 ```json
 {
   "hooks": {
-    "Stop": [
-      { "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 5 }] }
-    ],
-    "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 5 }] }
-    ],
     "Notification": [
       { "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 5 }] }
     ],
@@ -35,6 +34,10 @@ wrapper directly. Every event runs the same command:
   }
 }
 ```
+
+If you installed an earlier version, delete any `Stop` and `PostToolUse` entries
+you added by hand. They are no-ops now — the follower has already spoken what
+they used to — but each one still costs an interpreter start-up per tool call.
 
 ### Tell it where speakd lives
 
@@ -59,9 +62,12 @@ is a line in the log, not silence.
 speakd &
 ```
 
-Nothing breaks if you don't. With no daemon listening, every hook notes the
-missing socket in its log and exits 0 — the session runs on in silence, which is
-also what you get by simply not starting it on a day you don't want speech.
+The daemon spawns the follower and restarts it if it dies, so there is one thing
+to start and one thing to stop.
+
+Nothing breaks if you don't start it. With no daemon listening, every hook notes
+the missing socket in its log and exits 0 — the session runs on in silence, which
+is also what you get by simply not starting it on a day you don't want speech.
 
 ## Check it
 
@@ -71,15 +77,18 @@ tail -f ~/.local/state/speakd/claude-code/hook.log
 
 An empty or absent log is the healthy state: it is written to only when
 something went wrong — a daemon that is not listening, or a wrapper that could
-not find the entry point at all. The watermark files beside it — one JSON file per session
-— record how far into each transcript has been spoken.
+not find the entry point at all. Two kinds of file sit beside it, one of each per
+session: a `.session.json` is how a prompt tells the follower a session is live,
+and a `.json` watermark records how far into that session's transcript has been
+spoken.
 
-## Known limitation
+## What gets spoken, and when
 
-A long answer with no tool calls arrives as a single block, because the hook
-only sees the transcript at the points Claude Code fires it. Audio starts at
-that block's first sentence and streams from there, but not before the answer is
-complete. Answers interleaved with tool calls do not have this problem: each
-prose block speaks while the next tool runs, which is the common case.
+Every prose block the main agent writes, as soon as Claude Code flushes it to the
+transcript. That flush happens when a message completes, not sentence by
+sentence — its content blocks land within a couple of milliseconds of each other,
+measured — so the message is the smallest unit there is to speak, and the
+follower speaks each one the moment it appears. A long answer with no tool calls
+used to wait for the next hook to notice it; it no longer waits for anything.
 
 Sub-agent output is never spoken.

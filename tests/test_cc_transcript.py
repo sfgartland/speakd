@@ -2,7 +2,7 @@
 
 import json
 
-from speakd.clients.claude_code.transcript import Record, parse, speakable
+from speakd.clients.claude_code.transcript import Record, ai_title, parse, speakable
 
 
 def line(**fields: object) -> bytes:
@@ -238,3 +238,23 @@ def test_a_user_record_carrying_text_is_still_not_spoken() -> None:
 
 def test_speakable_of_nothing_is_empty() -> None:
     assert speakable([]) == ""
+
+
+def test_an_ai_title_record_yields_the_session_name() -> None:
+    line = b'{"type": "ai-title", "aiTitle": "Claude code feature enablement", "sessionId": "x"}\n'
+    records, _ = parse(line)
+    assert ai_title(records) == "Claude code feature enablement"
+
+
+def test_the_latest_title_wins() -> None:
+    chunk = (
+        b'{"type": "ai-title", "aiTitle": "First guess", "sessionId": "x"}\n'
+        b'{"type": "ai-title", "aiTitle": "Better name", "sessionId": "x"}\n'
+    )
+    records, _ = parse(chunk)
+    assert ai_title(records) == "Better name"
+
+
+def test_no_title_record_yields_none() -> None:
+    records, _ = parse(b'{"type": "assistant", "uuid": "u", "message": {"content": []}}\n')
+    assert ai_title(records) is None

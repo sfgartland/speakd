@@ -16,8 +16,16 @@ def test_the_plugin_manifest_parses() -> None:
 
 
 def test_every_hook_we_handle_is_registered() -> None:
+    """Two events, and `_dispatch` acts on exactly these two.
+
+    Stop and PostToolUse were deleted rather than left declared and ignored:
+    the follower speaks a message when it lands on disk, which is before the
+    tool after it has finished, so those hooks bought nothing and cost a
+    Python start-up on every single tool call. Declaring an event we do not
+    act on would put that cost straight back.
+    """
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
-    assert set(hooks) == {"Stop", "PostToolUse", "Notification", "UserPromptSubmit"}
+    assert set(hooks) == {"Notification", "UserPromptSubmit"}
 
 
 def test_every_registered_hook_runs_the_one_entry_point() -> None:
@@ -275,7 +283,9 @@ def test_the_wrapper_logs_where_the_entry_point_would_have(tmp_path: Path) -> No
 
 
 def test_the_wrapper_stays_silent_and_zero_however_often_it_is_run(tmp_path: Path) -> None:
-    """Claude Code fires this once per tool call. It must not drift."""
+    """Twice a turn now rather than once a tool call, but for a whole day of
+    them. It must not drift.
+    """
     state = tmp_path / "state"
     results = [
         _invoke(WRAPPER, VALID, state=state, path="/usr/bin:/bin", home=tmp_path / "home")
@@ -309,8 +319,8 @@ def test_the_marketplace_entry_points_at_the_plugin_we_ship() -> None:
 def test_the_prompt_hushes_fit_inside_the_manifests_budget() -> None:
     """The arithmetic, checked against the manifest rather than remembered.
 
-    `UserPromptSubmit` sends two hushes in sequence and has the shortest
-    window of the four events. Either number can be changed by someone who
+    `UserPromptSubmit` sends two hushes in sequence and has the shorter
+    window of the two events. Either number can be changed by someone who
     is not thinking about the other; this is what notices.
     """
     from speakd.clients.claude_code.hook import HUSH_TIMEOUT
@@ -359,7 +369,7 @@ def test_the_quoted_command_actually_runs_from_a_path_with_a_space(tmp_path: Pat
     target.write_text(WRAPPER.read_text(encoding="utf-8"), encoding="utf-8")
     target.chmod(0o755)
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
-    command = hooks["Stop"][0]["hooks"][0]["command"]
+    command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
     done = sp.run(
         ["bash", "-c", command],
         input=GARBAGE,

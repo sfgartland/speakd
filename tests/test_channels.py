@@ -65,6 +65,22 @@ def test_setting_a_role_on_an_unknown_source_opens_it() -> None:
     assert channel is not None and channel.role is Role.BACKGROUND
 
 
+def test_set_label_names_a_channel() -> None:
+    table = ChannelTable()
+    table.set_label("s", "Claude Code · a session")
+    channel = table.get("s")
+    assert channel is not None
+    assert channel.label == "Claude Code · a session"
+
+
+def test_set_label_on_an_unknown_source_opens_it() -> None:
+    # Consistent with set_role and set_priority: a source may name itself
+    # before it has said anything.
+    table = ChannelTable()
+    table.set_label("new", "named")
+    assert table.get("new") is not None
+
+
 def test_all_lists_channels_highest_priority_first() -> None:
     table = ChannelTable()
     table.open("low", priority=0)
