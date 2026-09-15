@@ -43,6 +43,42 @@ fn set_always_on_top(window: tauri::Window, value: bool) -> Result<(), String> {
     window.set_always_on_top(value).map_err(|e| e.to_string())
 }
 
+/// Minimise, grow and dismiss, for a window that has no decorations to do it
+/// with. Commands of this app's own rather than the window plugin's JS API,
+/// for the same reason `set_always_on_top` is one: the frontend then needs to
+/// know nothing about running inside Tauri beyond feature-detecting
+/// `window.__TAURI__`, and an app command is not ACL-gated, so the capability
+/// file stays as small as its own description claims it is.
+#[tauri::command]
+fn minimize_window(window: tauri::Window) -> Result<(), String> {
+    window.minimize().map_err(|e| e.to_string())
+}
+
+/// Toggles, and answers with the state it left the window in, so the button
+/// reflects what happened rather than what it asked for. `maxWidth` and
+/// `maxHeight` in tauri.conf.json still apply, so "maximised" here means 800px
+/// wide, not the whole screen.
+#[tauri::command]
+fn toggle_maximize_window(window: tauri::Window) -> Result<bool, String> {
+    let maximized = window.is_maximized().map_err(|e| e.to_string())?;
+    if maximized {
+        window.unmaximize().map_err(|e| e.to_string())?;
+    } else {
+        window.maximize().map_err(|e| e.to_string())?;
+    }
+    Ok(!maximized)
+}
+
+/// Hides. Deliberately not `close`, and named for what it does: the
+/// close-request handler below already decided that this window hides and only
+/// the tray's Quit ends the process. A button doing something else under the
+/// same glyph would leave two meanings of "close" in one shell, and the one
+/// behind the ✕ would be the destructive one.
+#[tauri::command]
+fn hide_window(window: tauri::Window) -> Result<(), String> {
+    window.hide().map_err(|e| e.to_string())
+}
+
 /// The frontend's one report to the shell: what it currently is doing
 /// (`"playing"` | `"paused"` | `"hushed"`), sent after every state change
 /// (see `reportState()` in pinned.html). Exists only because the tray has
@@ -97,6 +133,9 @@ fn main() {
         .plugin(hotkeys::plugin())
         .invoke_handler(tauri::generate_handler![
             set_always_on_top,
+            minimize_window,
+            toggle_maximize_window,
+            hide_window,
             report_state,
             bridge::speakd_link,
             bridge::speakd_send,

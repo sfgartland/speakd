@@ -144,12 +144,23 @@
 
   .bar-spacer { flex: 1 1 auto; }
 
-  .pin {
+  .pin, .winbtn {
     border: 0; background: none; padding: 2px; cursor: pointer;
     color: var(--lit); display: flex; line-height: 0; border-radius: 3px;
   }
   .pin[aria-pressed="false"] { color: var(--faint); }
-  .pin:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+  .pin:focus-visible,
+  .winbtn:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+
+  /* Only the shell has a window to minimise, grow or dismiss. In a browser
+     tab these would be three controls that silently do nothing, which is
+     worse than not offering them — the same reason `.caption` goes the other
+     way and is hidden in the shell. */
+  .winbtn { display: none; color: var(--faint); }
+  .shell .winbtn { display: flex; }
+  .winbtn:hover,
+  .winbtn[aria-pressed="true"] { color: var(--lit); }
+  .winbtn.dismiss:hover { color: var(--bad); }
 
   /* the speaking text — three lines of context, current one lit */
   .text {
@@ -482,6 +493,23 @@
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M6 1.5h4l-.6 4.2 2.6 2.3v1.2H8.7V14L8 15.2 7.3 14V9.2H3v-1.2l2.6-2.3z"
               fill="currentColor"/>
+      </svg>
+    </button>
+    <button class="winbtn" id="win-min" title="Minimise">
+      <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3 8.5h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <button class="winbtn" id="win-max" aria-pressed="false" title="Maximise">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="3.4" y="3.4" width="9.2" height="9.2" rx="1.2"
+              stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+    </button>
+    <button class="winbtn dismiss" id="win-close" title="Hide — the tray icon brings it back">
+      <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6"
+              stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
       </svg>
     </button>
   </div>
@@ -1110,7 +1138,11 @@
   async function invoke(cmd, args) {
     const t = tauri();
     if (!t) return;
-    try { await t.core.invoke(cmd, args); } catch (err) { console.warn("speakd: invoke failed", cmd, err); }
+    // Returns the command's answer: `toggle_maximize_window` reports the state
+    // it left the window in, and a button that assumed its own request landed
+    // is the mistake the mute scope check exists to catch. Callers that want
+    // nothing back ignore it, and outside the shell this yields undefined.
+    try { return await t.core.invoke(cmd, args); } catch (err) { console.warn("speakd: invoke failed", cmd, err); }
   }
 
   function reportState() {
@@ -1243,6 +1275,22 @@
   el("more").addEventListener("toggle", () => {
     if (el("more").open) refreshStatus();
   });
+
+  el("win-min").addEventListener("click", () => invoke("minimize_window"));
+  el("win-max").addEventListener("click", async (e) => {
+    const button = e.currentTarget;
+    // The shell answers with the state it left the window in, not the one
+    // asked for. Outside the shell `invoke` yields undefined and the button
+    // stays as it was, which is right: there is no window to have grown.
+    const maximized = await invoke("toggle_maximize_window");
+    if (typeof maximized !== "boolean") return;
+    button.setAttribute("aria-pressed", maximized ? "true" : "false");
+    button.title = maximized ? "Restore" : "Maximise";
+  });
+  // Hides, and says so. The shell's close-request handler settled long ago
+  // that this window hides and only the tray's Quit ends the process; a ✕
+  // that quit would put the destructive reading behind the familiar glyph.
+  el("win-close").addEventListener("click", () => invoke("hide_window"));
 
   el("pin").addEventListener("click", async (e) => {
     const b = e.currentTarget;
