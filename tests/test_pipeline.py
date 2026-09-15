@@ -505,3 +505,67 @@ def test_reporting_leaves_no_thread_behind() -> None:
     baseline = threading.active_count()
     speak([piece("One. Two.")], FakeEngine(), RecordingPlayer(), on_playing=lambda _s: None)
     assert threading.active_count() == baseline
+
+
+def three_sentences() -> list[Piece]:
+    text = "One thing. Two things. Three things."
+    return [Piece(span=Span(0, len(text)), spoken=text)]
+
+
+def test_the_result_carries_the_whole_segmentation() -> None:
+    # Seek and rewind both mean "speak this again from unit k", and the
+    # caller cannot index units it was never given. Returning them is what
+    # lets the daemon re-speak without re-segmenting -- and without having to
+    # assume segmentation is deterministic, which is the assumption the GUI
+    # milestone doc flagged as the alternative.
+    result = speak(three_sentences(), FakeEngine(), RecordingPlayer())
+    assert [u.spoken for u in result.units] == ["One thing.", "Two things.", "Three things."]
+
+
+def test_start_index_skips_the_units_before_it() -> None:
+    engine, player = FakeEngine(), RecordingPlayer()
+    result = speak(three_sentences(), engine, player, start_index=1)
+    assert [s.text for s in result.timeline.segments] == ["Two things.", "Three things."]
+
+
+def test_start_index_still_reports_the_whole_segmentation() -> None:
+    # Otherwise seeking once would make every later seek target the wrong
+    # unit, each one compounding the last.
+    result = speak(three_sentences(), FakeEngine(), RecordingPlayer(), start_index=2)
+    assert len(result.units) == 3
+
+
+def test_a_start_index_past_the_end_speaks_nothing() -> None:
+    player = RecordingPlayer()
+    result = speak(three_sentences(), FakeEngine(), player, start_index=99)
+    assert not result.timeline.segments
+    assert player.played == []
+
+
+def test_a_negative_start_index_starts_at_the_beginning() -> None:
+    # Clamped rather than passed to the slice: Python would read -1 as "the
+    # last unit", so a caller that computed an index one step below zero
+    # would hear the end of the utterance instead of the start of it, with
+    # nothing raised to say so.
+    result = speak(three_sentences(), FakeEngine(), RecordingPlayer(), start_index=-1)
+    assert [s.text for s in result.timeline.segments] == [
+        "One thing.",
+        "Two things.",
+        "Three things.",
+    ]
+
+
+def test_start_offset_continues_the_audio_clock() -> None:
+    # A seek is a position within one utterance, so the offsets it reports
+    # have to stay comparable with the ones reported before it. Restarting at
+    # zero would make a progress display jump backwards.
+    result = speak(
+        three_sentences(), FakeEngine(), RecordingPlayer(), start_index=1, start_offset=10.0
+    )
+    assert result.timeline.segments[0].audio_offset == 10.0
+    assert result.timeline.segments[1].audio_offset > 10.0
+
+
+def test_start_offset_defaults_to_zero() -> None:
+    result = speak(three_sentences(), FakeEngine(), RecordingPlayer())
+    assert result.timeline.segments[0].audio_offset == 0.0

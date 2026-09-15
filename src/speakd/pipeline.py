@@ -25,10 +25,21 @@ from speakd.timeline import Timeline
 
 @dataclass
 class SpeechResult:
+    """What was played, and what it was played from.
+
+    `units` is the *whole* segmentation, not the part this call spoke. Seek
+    and rewind both mean "speak this again from unit k", and a caller cannot
+    index units it was never handed. Returning them is also what lets the
+    daemon re-speak without re-segmenting -- the alternative the GUI
+    milestone doc names is assuming segmentation is deterministic, which is a
+    promise the segmenter has never made.
+    """
+
     timeline: Timeline
     cancelled: bool = False
     aborted: bool = False
     errors: list[str] = field(default_factory=list)
+    units: tuple[Piece, ...] = ()
 
 
 _Item = tuple[Piece, np.ndarray] | str | None
@@ -121,6 +132,8 @@ def speak(
     window: SynthesisWindow | None = None,
     timeline: Timeline | None = None,
     on_playing: Callable[[Segment], None] | None = None,
+    start_index: int = 0,
+    start_offset: float = 0.0,
 ) -> SpeechResult:
     """Speak `pieces`, returning the timeline of what was actually played.
 
@@ -157,11 +170,13 @@ def speak(
     # stays untouched and `speak()` is a pure function of its arguments.
     stop = threading.Event()
     units = segment(pieces, max_chars)
+    # Clamped, never sliced with a negative: see `start_index` above.
+    to_speak = units[max(0, start_index) :]
     work: queue.Queue[_Item] = queue.Queue(maxsize=1)
 
     def produce() -> None:
         try:
-            for unit in units:
+            for unit in to_speak:
                 if cancel.is_set() or stop.is_set():
                     break
                 started = time.monotonic()
@@ -190,7 +205,7 @@ def speak(
     timeline = timeline if timeline is not None else Timeline()
     errors: list[str] = []
     delivery: list[str] = []
-    offset = 0.0
+    offset = start_offset
     exhausted = False
     aborted = False
     try:
@@ -287,5 +302,9 @@ def speak(
         # accumulates stuck threads, one per utterance, with nothing to see.
         errors.append("synthesis thread did not exit within 1.0s")
     return SpeechResult(
-        timeline=timeline, cancelled=cancel.is_set(), aborted=aborted, errors=errors
+        timeline=timeline,
+        cancelled=cancel.is_set(),
+        aborted=aborted,
+        errors=errors,
+        units=tuple(units),
     )
