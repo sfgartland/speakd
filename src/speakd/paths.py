@@ -18,3 +18,15 @@ def default_socket_path() -> Path:
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     base = Path(runtime) if runtime else Path(os.environ.get("TMPDIR", "/tmp"))
     return base / "speakd" / "speakd.sock"
+
+
+def default_profiles_path() -> Path:
+    """Where profiles live when `--profiles-file` is not given.
+
+    Here rather than in `cli.py` for the same reason as the socket path: the
+    daemon needs it too, and reaching into `cli` for it would drag the
+    synthesis pipeline into anything that only wanted a filename.
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "speakd" / "profiles.toml"

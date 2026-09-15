@@ -7,25 +7,85 @@ import os
 import signal
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import FrameType
 
 from speakd.channels import ChannelTable
-from speakd.cli import default_socket_path
 from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece
+from speakd.paths import default_profiles_path, default_socket_path
 from speakd.player import Closeable, Player
+from speakd.plugins.builtin import register_builtins
+from speakd.plugins.host import PluginHost
+from speakd.plugins.registry import ServiceRegistry
+from speakd.profiles import Profile, load_profiles, resolve_chain
+from speakd.supervise import Supervisor
+from speakd.transforms.chain import apply_chain
 from speakd.transport import SocketServer
 
 
-def _profile_for(name: str) -> ProfileView:
-    # Until the plugin host is wired in, every profile speaks plainly.
-    def prepare(pieces: Sequence[Piece]) -> tuple[list[Piece], list[str]]:
-        return list(pieces), []
+def _view_of(profile: Profile, host: PluginHost) -> ProfileView:
+    """Bind one profile to a resolved transform chain.
 
-    return ProfileView(voice="af_heart", speed=1.1, interrupt_on=("error",), prepare=prepare)
+    The chain is resolved here, once, rather than inside `prepare`: prepare
+    runs on the path to first audio, and re-resolving names against the host
+    for every utterance would put work there that cannot change between them.
+
+    Names nobody provides are reported on every utterance rather than dropped
+    at startup. A profile asking for a transform that is not installed should
+    be visible to whoever is listening to that profile -- the daemon has no
+    other way to say so, and a chain that silently does less than it was asked
+    is an afternoon spent wondering why.
+    """
+    chain, missing = resolve_chain(profile, host)
+    absent = [
+        f"profile {profile.name!r} wants {name!r} -- no plugin provides it" for name in missing
+    ]
+
+    def prepare(pieces: Sequence[Piece]) -> tuple[list[Piece], list[str]]:
+        result = apply_chain(pieces, chain)
+        return list(result.pieces), absent + result.errors
+
+    return ProfileView(
+        voice=profile.voice,
+        speed=profile.speed,
+        interrupt_on=profile.interrupt_on,
+        prepare=prepare,
+    )
+
+
+def build_profiles() -> Callable[[str], ProfileView]:
+    """Every profile the daemon will speak with, resolved once at startup.
+
+    Until this existed the daemon handed every job a `prepare` that returned
+    its input untouched, so everything it spoke was raw markdown -- asterisks,
+    backticks and table pipes read aloud. `cli.py` wired the host for
+    `speakctl say`, which is exactly why that path sounded correct and hid it.
+
+    A malformed profiles file is reported and then ignored. Refusing to start
+    would leave someone with a typo in a TOML file and no speech at all, where
+    the built-in default profile is a perfectly good thing to fall back to.
+    """
+    host = PluginHost(ServiceRegistry())
+    register_builtins(host)
+    path = default_profiles_path()
+    try:
+        profiles = load_profiles(path)
+    except ValueError as exc:
+        sys.stderr.write(f"speakd: ignoring {path}: {exc}\n")
+        profiles = load_profiles(Path(os.devnull))
+    views = {name: _view_of(profile, host) for name, profile in profiles.items()}
+    default = views["default"]
+
+    def profile_for(name: str) -> ProfileView:
+        # An unknown name falls back rather than failing: the profile is
+        # chosen by whoever sent the utterance, and a typo there should cost
+        # them the profile's transforms, not the sentence.
+        return views.get(name, default)
+
+    return profile_for
 
 
 def build_player(*, sample_rate: int, fake: bool = False) -> Player:
@@ -115,7 +175,22 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
         return 1
 
     server.start()
+    # After the socket, never before: the follower's first act is to connect
+    # to it, and a child that starts into a closed socket spends its backoff
+    # on an absence we created.
+    #
+    # Suppressed by SPEAKD_NO_FOLLOWER=1, whose only callers are the test
+    # suite and someone debugging the follower by hand.
+    follower: Supervisor | None = None
+    if not os.environ.get("SPEAKD_NO_FOLLOWER"):
+        follower = Supervisor([sys.executable, "-m", "speakd.clients.claude_code.follow"])
+        follower.start()
+
     stop.wait()
+    # Before the daemon goes quiet, so the follower cannot enqueue into a
+    # daemon that is shutting down and have it discarded as unspoken.
+    if follower is not None:
+        follower.stop()
     # Silenced first, so Ctrl-C goes quiet at once. The two calls below keep
     # their order: server.stop()'s shutdown() is what frees a speech worker
     # wedged writing to a subscriber that stopped reading, and putting
@@ -188,7 +263,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # rate plays the right samples at the wrong speed, which sounds like
         # a broken voice rather than like a misconfiguration.
         build_player(sample_rate=engine.sample_rate),
-        _profile_for,
+        build_profiles(),
         bus=EventBus(),
         channels=ChannelTable(),
     )

@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from speakd.model import Piece, Role, Span
-from speakd.paths import default_socket_path
+from speakd.paths import default_profiles_path, default_socket_path
 from speakd.pipeline import speak
 from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginHost
@@ -157,11 +156,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _default_profiles_path() -> Path:
-    """Where profiles live when `--profiles-file` is not given."""
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "speakd" / "profiles.toml"
 
 
 def _validate_say_args(args: argparse.Namespace) -> str | None:
@@ -197,7 +191,7 @@ def _say(args: argparse.Namespace) -> int:
     text = args.text if args.text is not None else sys.stdin.read()
 
     profiles_path = (
-        Path(args.profiles_file) if args.profiles_file is not None else _default_profiles_path()
+        Path(args.profiles_file) if args.profiles_file is not None else default_profiles_path()
     )
     try:
         profiles = load_profiles(profiles_path)

@@ -357,13 +357,28 @@ from the mute toggle, since one is instant and the other is not. The GUI should
 report the **measured** RSS it already receives in the `metrics` event rather
 than advertising a saving.
 
-### Risk: the memory may not come back
+### Measured, 2026-09-15 — and the risk was real
 
-Dropping the reference frees the tensors to Python; it does not guarantee the
-resident set returns to the OS, because torch's allocator and CPython's arenas
-both retain freed memory. The implementation must **measure RSS before and
-after** and record the real delta. If it turns out to be small, that is a
-finding to report, not a number to quietly restate from this document.
+| | RSS |
+|---|---|
+| running, model loaded | 2.19 GiB |
+| after `speakctl disable` | 1.77 GiB |
+| **started** while disabled | **0.03 GiB** |
+| after `speakctl enable` | 1.08 GiB |
+
+**Unloading at runtime returns only 0.42 GiB**, not the two gigabytes the model
+occupies. Exactly the risk this section was written to flag: dropping the
+reference frees the tensors to Python, and torch's allocator and CPython's
+arenas keep the address space. Anyone wanting the memory genuinely back should
+disable and restart, not disable.
+
+The saving that is real is at **startup**: a daemon that starts disabled never
+constructs the model, and runs in 32 MB — a sixty-eighth of the loaded figure.
+That is what makes the persisted flag worth having, more than the runtime verb
+is.
+
+The 1.08 GiB after a fresh load against 2.19 GiB before it is the same effect
+seen from the other side: the gap is arena growth from use, not the model.
 
 ## §7 — The GUI speaks pasted text
 
