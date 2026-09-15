@@ -156,8 +156,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-
-
 def _validate_say_args(args: argparse.Namespace) -> str | None:
     """Check `say` arguments that would otherwise reach broken code paths.
 
