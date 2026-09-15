@@ -55,21 +55,56 @@ const LINK_CHANNEL: &str = "speakd://link";
 /// read back in the daemon's "dropped subscriber" diagnostic.
 const SUBSCRIBE_LINE: &[u8] = b"{\"verb\":\"subscribe\",\"source_id\":\"\",\"payload\":{}}\n";
 
-/// Named on control requests. The daemon ignores `source_id` for every verb
-/// below — pause, resume, hush and cancel are global, exactly as they are
-/// from `speakctl` — so this is a label in a log, not a routing decision.
+/// Named on control requests that do not route by channel. Pause, resume,
+/// hush, cancel and seek are global, exactly as they are from `speakctl`, and
+/// the daemon ignores their `source_id` — so for those this is a label in a
+/// log, not a routing decision. `mute` is the exception and says so at
+/// `speakd_send`.
 const CONTROL_SOURCE_ID: &str = "gui";
 
 /// The verbs the shell will forward. Not an arbitrary passthrough: this
-/// window monitors speech, it never originates it (see "Settled: now-playing
-/// only" in the milestone design), so `enqueue` is deliberately absent and a
-/// bug in the frontend cannot make the monitor start talking.
+/// window monitors speech that other clients originate (see "Settled:
+/// now-playing only" in the milestone design, and its 2026-09-15 amendment).
+///
+/// `enqueue` is still absent, and deliberately: a bug in the frontend must not
+/// be able to make the window speak arbitrary traffic on an arbitrary channel.
+/// Pasted text goes through `speakd_say` below, which can do that one thing and
+/// nothing else.
+///
+/// `status` joins the control verbs because the window needs to read mute and
+/// engine state at startup — the event stream reports changes, but a window
+/// opened against an already-muted daemon has missed them.
 ///
 /// `seek` rides along with the four the buttons need even though the daemon
 /// answers it with "not implemented" today: the window already has the two
 /// arrow buttons, and the daemon's own refusal is a better thing to show in
 /// the error line than a refusal this file invented.
-const FORWARDED: &[&str] = &["pause", "resume", "hush", "cancel", "seek"];
+const FORWARDED: &[&str] = &[
+    "pause", "resume", "hush", "cancel", "seek", "mute", "set_engine", "status",
+];
+
+/// The one way the window originates speech.
+///
+/// Not `enqueue` on the forwarding allowlist: that would let any frontend bug
+/// send any payload on any channel. This can do exactly one thing — speak text
+/// a person typed, on the window's own channel — so the property `FORWARDED`
+/// was protecting mostly survives.
+///
+/// The source is a literal, never a parameter, so the pasted speech is an
+/// ordinary channel: it appears in the channel list, it can be muted on its
+/// own, and `hush` reaches it like anything else.
+///
+/// It is the same string as `CONTROL_SOURCE_ID`, which is a trap worth naming:
+/// the paste box's channel and the shell's control label are now one channel,
+/// so a global `mute` must go out with an **empty** `source_id`. Passing
+/// `CONTROL_SOURCE_ID` there — the obvious simplification of `speakd_send` —
+/// would silently turn the window's master mute into a per-channel mute of
+/// this box, and nothing else would look wrong.
+const SAY_SOURCE: &str = "gui";
+
+/// Past this the box refuses. The segmenter will accept a novel; the person
+/// who pasted one did not mean to hear it.
+const SAY_MAX_BYTES: usize = 8192;
 
 /// Matches `speakd.transport._REQUEST_TIMEOUT_SECONDS`. Applied only around
 /// a request's reply and around the subscribe ack — never to the event
@@ -265,8 +300,22 @@ pub fn speakd_link(state: tauri::State<'_, Arc<LinkState>>) -> Value {
 /// reaching the daemon at all — a refusal *by* the daemon is an `Ok` whose
 /// `ok` is false, and the difference is exactly what the window's error line
 /// should be able to show.
+///
+/// `source` exists for `mute` alone, which is the one forwarded verb the
+/// daemon routes by `source_id`: an empty one means the global switch and a
+/// named one means that channel (§3 of the streaming-narration design). The
+/// window therefore has to be able to say which, and it says so here rather
+/// than in the payload — this file does not read the daemon's payloads, and
+/// a special case for one verb's field would be the first place it did.
+/// Letting the frontend name a channel is not the thing `FORWARDED` guards:
+/// every verb on that list is a control, `enqueue` is not on it, and muting
+/// someone else's channel silences speech rather than originating it.
 #[tauri::command]
-pub async fn speakd_send(verb: String, payload: Option<Value>) -> Result<Value, String> {
+pub async fn speakd_send(
+    verb: String,
+    payload: Option<Value>,
+    source: Option<String>,
+) -> Result<Value, String> {
     if !FORWARDED.contains(&verb.as_str()) {
         return Err(format!("the shell does not forward {verb:?} to speakd"));
     }
@@ -274,12 +323,46 @@ pub async fn speakd_send(verb: String, payload: Option<Value>) -> Result<Value, 
     // `async` alone would only move this off the main thread and onto the
     // async runtime, where a blocking socket read would hold a worker; this
     // puts it somewhere blocking is allowed.
-    tauri::async_runtime::spawn_blocking(move || request(&verb, payload))
+    tauri::async_runtime::spawn_blocking(move || match source {
+        Some(source) => request_on(&verb, &source, payload),
+        None => request(&verb, payload),
+    })
+    .await
+    .map_err(|err| format!("the speakd request thread died: {err}"))?
+}
+
+/// Speak text a person typed into the window, and nothing else.
+///
+/// Deliberately not reachable through `speakd_send`: the verb, the channel and
+/// the shape of the payload are all fixed here, so the only thing a caller
+/// controls is the words. See `SAY_SOURCE` above for why the channel is a
+/// literal.
+#[tauri::command]
+pub async fn speakd_say(text: String) -> Result<Value, String> {
+    let trimmed = text.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("nothing to say".into());
+    }
+    // Bytes rather than characters, matching the cap the frontend enforces so
+    // that the two agree about a paste full of em dashes.
+    if trimmed.len() > SAY_MAX_BYTES {
+        return Err(format!("that is longer than {SAY_MAX_BYTES} bytes"));
+    }
+    let payload = json!({ "text": trimmed, "kind": "response" });
+    tauri::async_runtime::spawn_blocking(move || request_on("enqueue", SAY_SOURCE, payload))
         .await
         .map_err(|err| format!("the speakd request thread died: {err}"))?
 }
 
+/// One control request on the window's own control id.
 fn request(verb: &str, payload: Value) -> Result<Value, String> {
+    request_on(verb, CONTROL_SOURCE_ID, payload)
+}
+
+/// One control request, naming the channel it is about. The socket work lives
+/// here and only here — `speakd_say` differs from `speakd_send` in what it is
+/// allowed to send, not in how it sends it.
+fn request_on(verb: &str, source: &str, payload: Value) -> Result<Value, String> {
     let path = socket_path();
     let stream = UnixStream::connect(&path)
         .map_err(|err| format!("speakd is not listening on {}: {err}", path.display()))?;
@@ -289,7 +372,7 @@ fn request(verb: &str, payload: Value) -> Result<Value, String> {
 
     let mut line = serde_json::to_vec(&json!({
         "verb": verb,
-        "source_id": CONTROL_SOURCE_ID,
+        "source_id": source,
         "payload": payload,
     }))
     .map_err(|err| format!("could not encode {verb}: {err}"))?;

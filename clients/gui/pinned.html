@@ -105,7 +105,7 @@
      the one whose content has no bound. Spelled out on each child rather
      than left to the default `flex: 0 1 auto`, whose shrink factor of 1
      lets a squeezed column steal height from the metrics row first. */
-  .bar, .scrub, .ctls, .metrics, .chans, .err { flex: none; }
+  .bar, .scrub, .ctls, .offs, .metrics, .more, .err { flex: none; }
 
   /* title bar */
   .bar {
@@ -230,6 +230,41 @@
   .ctls button:disabled { opacity: .35; cursor: default; }
   .ctls button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
 
+  /* the two off switches — their own row, and not shaped like the transport
+     buttons above, because neither of them resumes by itself. Mute is
+     instant; unloading the model frees about three gigabytes and costs tens
+     of seconds to undo, so the two are not interchangeable and must not look
+     it (§6, docs/design/2026-09-15-streaming-narration-design.md). */
+  .offs { display: flex; gap: 6px; padding: 0 12px 11px; }
+  .offs button {
+    font: inherit; font-size: 11px; font-weight: 500;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+    padding: 4px 0; cursor: pointer; flex: 1 1 0; color: var(--ink-soft);
+  }
+  .offs button:disabled { opacity: .4; cursor: default; }
+  .offs button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+
+  /* Pressed means silent, so it is filled rather than outlined: an off
+     switch whose "on" state is a one-pixel border change is one you have to
+     read instead of see. */
+  #mute[aria-pressed="true"] {
+    background: var(--ink); border-color: var(--ink); color: var(--ground);
+  }
+
+  /* Deliberately unlike the mute button: monospaced, small-capped and
+     dashed, the vocabulary this window already uses for the metrics row —
+     a machine fact rather than a preference. */
+  #engine {
+    font-family: "IBM Plex Mono", monospace; font-size: 9px;
+    text-transform: uppercase; letter-spacing: .08em;
+    border-style: dashed; color: var(--muted); flex: 1.4 1 0;
+  }
+  #engine[data-state="unloaded"] { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+  #engine[data-state="loading"] { color: var(--warn); border-style: solid; border-color: var(--lit-edge); }
+  @media (prefers-reduced-motion: no-preference) {
+    #engine[data-state="loading"] { animation: breathe 1.4s ease-in-out infinite; }
+  }
+
   /* metrics — the glance row */
   .metrics {
     display: grid; grid-template-columns: repeat(4, 1fr);
@@ -255,23 +290,78 @@
   .metric .v[data-level="bad"] { color: var(--bad); }
   .metric .sub { font-size: 8.5px; color: var(--faint); }
 
-  /* other channels */
-  .chans {
-    border-top: 1px solid var(--rule);
-    padding: 7px 10px; display: flex; align-items: center; gap: 6px;
-    font-size: 10.5px; color: var(--muted); flex-wrap: wrap;
-  }
-  .chans .lbl {
+  /* ── the disclosure: other channels, and the paste box ──
+
+     Both live behind it and it is closed by default. This window is 384 px
+     wide because it is meant to sit beside an editor; a permanent channel
+     list and a permanent textarea would make it taller than the sidebar it
+     is pinned next to, which is the one thing it cannot be. Open, the space
+     comes out of the speech region, which is the only part with unbounded
+     content and therefore the only part that can afford to give any up. */
+  .more { border-top: 1px solid var(--rule); }
+
+  .more > summary {
+    list-style: none; cursor: pointer;
+    padding: 6px 10px; display: flex; align-items: center; gap: 6px;
     font-family: "IBM Plex Mono", monospace; font-size: 8.5px;
     text-transform: uppercase; letter-spacing: .1em; color: var(--faint);
   }
-  .cpill {
-    border: 1px solid var(--rule-strong); border-radius: 9px;
-    padding: 1px 7px; display: inline-flex; align-items: center; gap: 4px;
-    white-space: nowrap;
+  .more > summary::-webkit-details-marker { display: none; }
+  .more > summary::before { content: "\25B8"; font-size: 9px; }
+  .more[open] > summary::before { content: "\25BE"; }
+  .more > summary:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: -2px; }
+  .more > summary .count { color: var(--muted); letter-spacing: .06em; }
+
+  /* Bounded so that a daemon with a dozen channels cannot push the paste box
+     off the bottom of a window whose height someone else chose. */
+  .more-body { padding: 0 10px 9px; max-height: 190px; overflow-y: auto; }
+
+  .chans { display: flex; flex-direction: column; }
+  .chan-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 0; font-size: 11px; min-width: 0;
   }
-  .cdot { width: 4px; height: 4px; border-radius: 50%; background: var(--spent); }
-  .cpill[data-state="queued"] .cdot { background: var(--lit-edge); }
+  .cdot { width: 4px; height: 4px; border-radius: 50%; background: var(--spent); flex: none; }
+  .chan-row[data-live="1"] .cdot { background: var(--lit); }
+  .chan-row .nm {
+    flex: 1 1 auto; min-width: 0; color: var(--ink-soft);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chan-row[data-muted="1"] .nm { color: var(--faint); text-decoration: line-through; }
+  .chan-row button {
+    font: inherit; font-size: 9px; font-family: "IBM Plex Mono", monospace;
+    text-transform: uppercase; letter-spacing: .07em;
+    background: none; border: 1px solid var(--rule); border-radius: 2px;
+    color: var(--muted); padding: 1px 5px; cursor: pointer; flex: none;
+  }
+  .chan-row button[aria-pressed="true"] {
+    background: var(--ink); border-color: var(--ink); color: var(--ground);
+  }
+  .chan-row button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+  .chans .none { font-size: 10.5px; color: var(--faint); font-style: italic; padding: 3px 0; }
+
+  .say { display: flex; flex-direction: column; gap: 5px; padding-top: 8px; }
+  .say textarea {
+    font: inherit; font-size: 11.5px; line-height: 1.4;
+    background: var(--ground); color: var(--ink);
+    border: 1px solid var(--rule-strong); border-radius: 3px;
+    padding: 5px 6px; resize: vertical; min-height: 48px;
+  }
+  .say textarea:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: -1px; }
+  .say-row { display: flex; align-items: center; gap: 6px; }
+  .say-count {
+    flex: 1 1 auto; font-family: "IBM Plex Mono", monospace; font-size: 9px;
+    color: var(--faint); font-variant-numeric: tabular-nums;
+  }
+  .say-count[data-over="1"] { color: var(--bad); }
+  .say button {
+    font: inherit; font-size: 11px; font-weight: 500;
+    background: var(--ink); color: var(--ground);
+    border: 1px solid var(--ink); border-radius: 3px;
+    padding: 3px 12px; cursor: pointer; flex: none;
+  }
+  .say button:disabled { opacity: .35; cursor: default; }
+  .say button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
 
   /* error line — present only when there is one */
   .err {
@@ -364,6 +454,11 @@
     <button class="danger" id="hush">Hush</button>
   </div>
 
+  <div class="offs">
+    <button id="mute" aria-pressed="false" title="Silence every channel; instant, and instantly undone">Mute</button>
+    <button id="engine" data-state="ready" title="Free the model's memory — tens of seconds to load it back">Unload&nbsp;model</button>
+  </div>
+
   <div class="metrics">
     <div class="metric">
       <span class="k">rtf</span>
@@ -387,12 +482,19 @@
     </div>
   </div>
 
-  <div class="chans">
-    <span class="lbl">also</span>
-    <span class="cpill" data-state="idle"><span class="cdot"></span>ReSem&nbsp;paper</span>
-    <span class="cpill" data-state="queued"><span class="cdot"></span>Kronikk</span>
-    <span style="color:var(--faint)">both background</span>
-  </div>
+  <details class="more" id="more">
+    <summary>channels <span class="count" id="chan-count"></span></summary>
+    <div class="more-body">
+      <div class="chans" id="chans"></div>
+      <div class="say">
+        <textarea id="say" rows="3" placeholder="Paste text to speak it — Ctrl+Enter"></textarea>
+        <div class="say-row">
+          <span class="say-count" id="say-count"></span>
+          <button id="speak">Speak</button>
+        </div>
+      </div>
+    </div>
+  </details>
 
   <div class="err" id="err" hidden>
     <span>&#9888;</span>
@@ -414,7 +516,7 @@
   // below is a thin controller: it turns { kind, data } events into the same
   // DOM writes this script always made, and turns button clicks into
   // source.send(verb, payload) calls.
-  import { resolveSource } from "./shared/speakd-source.js";
+  import { resolveSource, SAY_MAX_BYTES } from "./shared/speakd-source.js";
 
   const el = (id) => document.getElementById(id);
   const win = el("win");
@@ -435,6 +537,27 @@
   // showing less than is known.
   let utterance = null;
   const metrics = { rtf: null, drift: null, mem_bytes: null, queue: null };
+
+  // What `status` last said. Read once at startup and again whenever the link
+  // returns, because the event stream only reports *changes*: a window opened
+  // against an already-muted daemon has missed every one of them.
+  let channels = []; // [{ source_id, role, priority, profile, label, muted }]
+  let globalMuted = false;
+  // "ready" | "loading" | "unloaded", or null while the answer is unknown —
+  // no daemon reached yet, or the link is down. A switch that shows a
+  // confident position it has not been told is worse than one that is greyed.
+  let engineState = null;
+  let statusKnown = false;
+  // Which channel is currently speaking, for the dot in the channel list.
+  let speakingSource = null;
+
+  const ENGINE_LABEL = { ready: "Unload model", loading: "Loading model…", unloaded: "Load model" };
+
+  /** §5's channel labels, with the id as the fallback the daemon itself uses. */
+  function labelFor(source_id) {
+    const channel = channels.find((c) => c.source_id === source_id);
+    return (channel && channel.label) || source_id;
+  }
 
   /** Forget the previous utterance's timeline, ticks and all. */
   function clearSegments() {
@@ -539,6 +662,24 @@
     el("back").disabled = hushed;
     el("fwd").disabled = hushed;
     el("hush").disabled = hushed;
+
+    // The two off switches. Cheap attribute writes only: `render()` runs on
+    // every position event, so anything that rebuilds DOM belongs in
+    // `renderChannels()`, which runs when the channel list actually changes.
+    el("mute").setAttribute("aria-pressed", globalMuted ? "true" : "false");
+    el("mute").textContent = globalMuted ? "Muted" : "Mute";
+    el("mute").disabled = !statusKnown;
+    const engine = el("engine");
+    engine.dataset.state = engineState ?? "ready";
+    engine.textContent = ENGINE_LABEL[engineState] ?? "Unload model";
+    engine.disabled = engineState === null || engineState === "loading";
+    engine.title =
+      engineState === "loading"
+        ? "Loading the model — tens of seconds"
+        : engineState === "unloaded"
+          ? "Load the model back; speech is dropped until it is"
+          : "Free the model's memory — tens of seconds to load it back";
+
     const note = linkNote ?? message;
     el("err").hidden = !note;
     if (note) el("err-msg").innerHTML = messageHtml(note);
@@ -546,13 +687,116 @@
     reportState();
   }
 
+  /**
+   * The channel list, rebuilt. Kept out of `render()` deliberately: that runs
+   * once per position event — sixty times a second under the simulation —
+   * and rebuilding these rows there would take the focus out from under
+   * anyone mid-click on a mute toggle.
+   */
+  function renderChannels() {
+    const host = el("chans");
+    host.textContent = "";
+    el("chan-count").textContent = channels.length ? String(channels.length) : "";
+    if (!channels.length) {
+      const none = document.createElement("div");
+      none.className = "none";
+      none.textContent = statusKnown ? "no channels open" : "waiting for speakd";
+      host.append(none);
+      return;
+    }
+    for (const channel of channels) {
+      const row = document.createElement("div");
+      row.className = "chan-row";
+      // Muted *anywhere*: the row is silent whether it is the channel's own
+      // flag or the global one. Which of the two is showing is the master
+      // button's job to say, not this row's.
+      if (channel.muted || globalMuted) row.dataset.muted = "1";
+      if (channel.source_id === speakingSource) row.dataset.live = "1";
+
+      const dot = document.createElement("span");
+      dot.className = "cdot";
+
+      const name = document.createElement("span");
+      name.className = "nm";
+      // textContent, not innerHTML: a label is whatever a session called
+      // itself, which for a Claude Code channel is text a model wrote.
+      name.textContent = channel.label || channel.source_id;
+      name.title = channel.source_id;
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.setAttribute("aria-pressed", channel.muted ? "true" : "false");
+      toggle.textContent = channel.muted ? "muted" : "mute";
+      toggle.title = `Mute ${channel.label || channel.source_id} alone`;
+      toggle.addEventListener("click", () => muteChannel(channel));
+
+      row.append(dot, name, toggle);
+      host.append(row);
+    }
+  }
+
+  /**
+   * Read both switches and the channel list from the daemon. The bus reports
+   * changes; this is how the window learns the state it was already in.
+   */
+  async function refreshStatus() {
+    const res = await source.send("status", {});
+    if (!res.ok) {
+      statusKnown = false;
+      engineState = null;
+      renderChannels();
+      render();
+      return;
+    }
+    const data = res.data ?? {};
+    channels = Array.isArray(data.channels) ? data.channels.map((c) => ({ ...c, muted: !!c.muted })) : [];
+    globalMuted = !!data.muted;
+    const engine = data.engine ?? {};
+    engineState = engine.loading ? "loading" : engine.loaded ? "ready" : "unloaded";
+    statusKnown = true;
+    // The title bar has been showing a source_id since the first event; now
+    // that labels are readable it can show the name instead.
+    if (speakingSource) el("chan").textContent = labelFor(speakingSource);
+    renderChannels();
+    render();
+  }
+
+  async function muteChannel(channel) {
+    const res = await source.send("mute", { muted: !channel.muted }, channel.source_id);
+    if (!res.ok) { message = res.error; render(); return; }
+    // The daemon puts a `mute` event on the bus and the handler below reads
+    // it; this is the same answer arriving by the shorter road, so a window
+    // whose subscription has fallen behind still moves its own button.
+    if (res.data && typeof res.data.muted === "boolean") {
+      channel.muted = res.data.muted;
+      renderChannels();
+    }
+  }
+
   function handleEvent(event) {
     const data = event.data ?? {};
-    // The wire names the channel every event belongs to; the simulation does
-    // not, so the mockup's own label stands in a plain browser tab.
-    if (event.source_id) el("chan").textContent = event.source_id;
+    // The wire names the channel every event belongs to — but `mute` and
+    // `engine` name the channel they are *about*, which is not the one being
+    // spoken. Retitling the bar from those would rename the window every time
+    // another session was muted from `speakctl`.
+    // Written only when it changed: a real `position` carries the channel on
+    // every event, and this fires once per segment start.
+    if (
+      event.source_id &&
+      event.kind !== "mute" &&
+      event.kind !== "engine" &&
+      event.source_id !== speakingSource
+    ) {
+      speakingSource = event.source_id;
+      el("chan").textContent = labelFor(event.source_id);
+      renderChannels(); // the dot moves with it
+    }
     switch (event.kind) {
       case "started":
+        // A channel the window has not heard of: a new session opened, or
+        // this is the first utterance since the link came back. Ask for the
+        // list rather than inventing a row for it.
+        if (event.source_id && !channels.some((c) => c.source_id === event.source_id)) refreshStatus();
         hushed = false;
         message = null;
         playing = true; // the daemon says nothing further; `started` means it began
@@ -594,13 +838,35 @@
       case "discarded":
         message = `${data.count} queued ${data.count === 1 ? "utterance" : "utterances"} dropped`;
         break;
+      case "mute":
+        // Two flags, not one: a channel that is audible behind a global mute
+        // must not be recorded as muted itself, or clearing the global switch
+        // would leave it silent with nothing showing why.
+        if (data.scope === "channel") {
+          const channel = channels.find((c) => c.source_id === event.source_id);
+          if (channel) channel.muted = !!data.muted;
+          else refreshStatus(); // a channel this window has not seen yet
+        } else {
+          globalMuted = !!data.muted;
+        }
+        renderChannels();
+        break;
+      case "engine":
+        engineState = data.state ?? engineState;
+        break;
       case "link":
         linkNote = data.connected ? null : data.detail || "speakd is not running";
-        if (!data.connected) {
+        if (data.connected) {
+          // Everything below was true of a daemon that has since been away.
+          refreshStatus();
+        } else {
           playing = false;
+          statusKnown = false;
+          engineState = null;
           // Every metric is a claim about now, and the last one received is a
           // claim about a daemon that is no longer there.
           for (const key of Object.keys(metrics)) metrics[key] = null;
+          renderChannels();
         }
         break;
       case "error":
@@ -670,6 +936,91 @@
     const res = await source.send("hush", {});
     if (!res.ok) { message = res.error; render(); }
   });
+  el("mute").addEventListener("click", async () => {
+    if (el("mute").disabled) return;
+    // An explicit empty `source_id` is what the daemon reads as the global
+    // switch. It has to be passed, not omitted: omitting it lets the shell
+    // fall back to its own control id, which is the paste box's channel.
+    const res = await source.send("mute", { muted: !globalMuted }, "");
+    if (!res.ok) { message = res.error; render(); return; }
+    // The scope is checked, not assumed. A global mute that came back as a
+    // channel one means the source_id never reached the daemon empty, and the
+    // honest symptom of that is an error line -- not a button reading "Muted"
+    // over a session that is still talking.
+    if (res.data && res.data.scope !== "global") {
+      message = `mute went to ${res.data.scope ?? "an unknown scope"}, not the whole daemon`;
+      render();
+      return;
+    }
+    if (res.data && typeof res.data.muted === "boolean") globalMuted = res.data.muted;
+    renderChannels();
+    render();
+  });
+
+  el("engine").addEventListener("click", async () => {
+    if (el("engine").disabled) return;
+    const wanted = engineState !== "ready";
+    // Shown immediately rather than on the event: enabling takes tens of
+    // seconds, and a button that stays idle across them reads as one that did
+    // not register the click.
+    if (wanted) { engineState = "loading"; render(); }
+    const res = await source.send("set_engine", { loaded: wanted });
+    if (!res.ok) {
+      message = res.error;
+      engineState = wanted ? "unloaded" : "ready"; // the click did not take
+      render();
+      return;
+    }
+    const data = res.data ?? {};
+    if (data.loading) engineState = "loading";
+    else if (typeof data.loaded === "boolean") engineState = data.loaded ? "ready" : "unloaded";
+    render();
+  });
+
+  // ---- the paste box ----
+
+  /** Bytes, because that is the unit the cap is in on both sides. */
+  const sayBytes = () => new TextEncoder().encode(el("say").value.trim()).length;
+
+  function renderSayCount() {
+    const bytes = sayBytes();
+    const over = bytes > SAY_MAX_BYTES;
+    // Silent until it is worth saying: a byte counter under an empty box is
+    // noise in a window whose whole argument is that it is small.
+    el("say-count").textContent = bytes > SAY_MAX_BYTES / 2 ? `${bytes} / ${SAY_MAX_BYTES} bytes` : "";
+    el("say-count").dataset.over = over ? "1" : "";
+    el("speak").disabled = over || bytes === 0;
+  }
+
+  async function speakPasted() {
+    if (el("speak").disabled) return;
+    const res = await source.say(el("say").value);
+    if (!res.ok) { message = res.error; render(); return; }
+    el("say").value = "";
+    renderSayCount();
+    // Accepted and dropped is what a muted or disabled daemon does with an
+    // enqueue — it never holds one — so silence after a Speak has a reason,
+    // and the window says it rather than looking broken.
+    const data = res.data ?? {};
+    message = data.spoken === false ? `nothing spoken — ${data.reason ?? "refused"}` : null;
+    render();
+  }
+
+  el("say").addEventListener("input", renderSayCount);
+  el("say").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      speakPasted();
+    }
+  });
+  el("speak").addEventListener("click", speakPasted);
+
+  // Opening the disclosure is the one moment the list is being looked at, so
+  // it is the one moment worth spending a round trip on. Nothing polls.
+  el("more").addEventListener("toggle", () => {
+    if (el("more").open) refreshStatus();
+  });
+
   el("pin").addEventListener("click", async (e) => {
     const b = e.currentTarget;
     const pressed = b.getAttribute("aria-pressed") !== "true";
@@ -683,5 +1034,10 @@
   // ShellSource's first event arrives a round trip later, unlike the
   // simulation's synchronous snapshot. Drawn once here so the window never
   // shows the markup's own placeholder values as though they were readings.
+  renderSayCount();
   render();
+  // Once, and not awaited: the event stream carries changes, so a window
+  // opened against a daemon that was muted an hour ago would otherwise show
+  // both switches off and be wrong about both. `link` asks again on reconnect.
+  refreshStatus();
 </script>

@@ -57,6 +57,23 @@
  *       "error"     data: { message }
  *       "finished"  data: { cancelled, aborted }
  *
+ *       "mute"      data: { muted, scope }
+ *                   An off switch moved, here or in `speakctl`. `scope` is
+ *                   "global" or "channel"; for a channel the event's
+ *                   `source_id` names which. The two are independent state
+ *                   and not one setting written twice — global wins while it
+ *                   is set, and clearing it gives each channel back whatever
+ *                   it had — so a window that collapsed them into one flag
+ *                   could not draw the two switches it is being asked to
+ *                   draw (§3, docs/design/2026-09-15-streaming-narration-design.md).
+ *
+ *       "engine"    data: { state }
+ *                   "loading" | "ready" | "unloaded". The model, not the
+ *                   audio device: disabling frees some three gigabytes and
+ *                   enabling costs tens of seconds to get them back, which is
+ *                   why this is a separate switch from mute and why
+ *                   "loading" is a state a window has to be able to show.
+ *
  *       "link"      data: { connected, detail }
  *                   Not a daemon event: `ShellSource` alone emits it, for
  *                   whether the shell currently holds a subscription at all.
@@ -64,23 +81,37 @@
  *                   say so, since "nothing is speaking" and "nothing is
  *                   listening" look identical from inside the window.
  *
- *   send(verb, payload = {}) -> Promise<{ ok: true, data } | { ok: false, error }>
+ *   send(verb, payload = {}, source) -> Promise<{ ok: true, data } | { ok: false, error }>
  *     `verb` is one of the control verbs in src/speakd/protocol.py. The
- *     shell forwards only the five this window's buttons need — pause,
- *     resume, hush, cancel, seek — and refuses the rest, `enqueue` above
- *     all: this window monitors speech and never originates it. `seek` is
- *     forwarded but the daemon answers it with "not implemented" until a
- *     seekable player lands (docs/plans/2026-09-13-streaming-player.md);
- *     `SimulatedSource` honours it locally, owning no real audio device to
- *     be blocked on.
+ *     shell forwards eight — pause, resume, hush, cancel, seek, mute,
+ *     set_engine, status — and refuses the rest, `enqueue` above all: this
+ *     window monitors speech and originates none except through `say()`
+ *     below. `seek` is forwarded but the daemon answers it with "not
+ *     implemented" until a seekable player lands
+ *     (docs/plans/2026-09-13-streaming-player.md); `SimulatedSource` honours
+ *     it locally, owning no real audio device to be blocked on.
+ *
+ *     `source` is for `mute` alone, the one forwarded verb the daemon routes
+ *     by `source_id`: omitted or "" is the global switch, a channel id is
+ *     that channel. Every other verb ignores it.
+ *
+ *   say(text) -> Promise<{ ok: true, data } | { ok: false, error }>
+ *     Speak text a person typed into the window, on a channel of the
+ *     window's own — the one thing this window originates, added 2026-09-15
+ *     (§7 of the streaming-narration design). It is not `send("enqueue")`
+ *     and cannot be reached that way: the shell command behind it fixes the
+ *     verb, the channel and the payload, so the only thing a caller chooses
+ *     is the words. Text over 8 KiB is refused here rather than sent.
  *
  *   capabilities: { replay: boolean }
  *     Can this source restart speech on its own after a hush, with no other
  *     client re-enqueuing? Only true for `SimulatedSource`, which owns its
  *     own fixture text. A real daemon connection has nothing to replay —
- *     this window only ever *monitors* speech (see "Settled: now-playing
- *     only" in the milestone design) — so after a hush the Play control has
- *     nothing to do until some other source speaks again.
+ *     this window watches speech other clients originate (see "Settled:
+ *     now-playing only" in the milestone design) — so after a hush the Play
+ *     control has nothing to do until some other source speaks again.
+ *     `say()` is not a replay and does not change this: it speaks new text a
+ *     person just typed, and it has no memory of what was hushed.
  *
  * The two shapes differ in one more place, at the outermost layer: the wire
  * calls the field `event` where everything above calls it `kind`, and the
@@ -90,6 +121,22 @@
  * Swapping which source drives the UI is the one-line choice at the bottom
  * of this file: `resolveSource()`.
  */
+
+/**
+ * The channel pasted text speaks on, and the cap past which the box refuses.
+ *
+ * Both mirror `SAY_SOURCE` and `SAY_MAX_BYTES` in
+ * clients/gui/app/src-tauri/src/bridge.rs, which is where they are enforced —
+ * the shell fixes the channel and would refuse an over-long paste even if
+ * this file did not. They are repeated here so the window can say so
+ * immediately instead of a round trip away, and so a plain browser tab
+ * behaves the same as the shell.
+ */
+export const SAY_SOURCE = "gui";
+export const SAY_MAX_BYTES = 8192;
+
+/** The channel `SimulatedSource`'s fixture text speaks on. */
+const FIXTURE_SOURCE = "sim:phd-articulation";
 
 // ---------------------------------------------------------------------------
 // SimulatedSource
@@ -136,6 +183,27 @@ export class SimulatedSource {
     this._rtf = 0.75;
     this._queue = 2;
 
+    // The channels `status` reports. Three, because one channel makes a
+    // channel list look like a title bar with extra steps, and the point of
+    // the list is choosing between sessions. The labels are what §5's
+    // SET_LABEL puts on a real channel — a name, not a session UUID — so a
+    // browser tab shows the list the daemon will show.
+    this._channels = [
+      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation" },
+      { source_id: "sim:resem-paper", role: "background", priority: 0, profile: "default", label: "Claude Code · ReSem paper" },
+      { source_id: "sim:kronikk", role: "background", priority: 0, profile: "default", label: "Claude Code · Kronikk" },
+    ];
+    // Global and per-channel mute, kept apart exactly as the daemon keeps
+    // them: global wins while it is set, and clearing it gives each channel
+    // back whatever it had rather than unmuting everything.
+    this._muted = false;
+    this._channelMuted = new Map();
+    // The model, and whether it is on its way in. A real load is tens of
+    // seconds; this fakes enough of a wait for the window's busy state to be
+    // something a person can see.
+    this._engineLoaded = true;
+    this._engineLoading = false;
+
     this._listeners = new Set();
     this._raf = null;
     this._last = 0;
@@ -157,8 +225,11 @@ export class SimulatedSource {
   _emitSnapshot(handler) {
     handler({
       kind: "started",
+      // Beside `data`, not inside it — that is where the wire carries it, and
+      // the window reads it from there to name the channel and to move the
+      // dot in the channel list.
+      source_id: FIXTURE_SOURCE,
       data: {
-        source_id: "sim:phd-articulation",
         segments: this._segments.map((seg, i) => ({
           index: i,
           text: seg.text,
@@ -177,6 +248,7 @@ export class SimulatedSource {
     const seg = this._segments[this._index];
     return {
       kind: "position",
+      source_id: FIXTURE_SOURCE,
       data: {
         index: this._index,
         text: seg.text,
@@ -198,7 +270,7 @@ export class SimulatedSource {
     return { kind: "metrics", data: { rtf: this._rtf, drift: this._drift, queue: this._queue } };
   }
 
-  send(verb, payload = {}) {
+  send(verb, payload = {}, source = "") {
     switch (verb) {
       case "pause":
         return this._doPause();
@@ -210,19 +282,120 @@ export class SimulatedSource {
         return this._doSeek(payload);
       case "cancel":
         return this._doHush();
+      case "mute":
+        return this._doMute(payload, source);
+      case "set_engine":
+        return this._doSetEngine(payload);
       case "status":
-        return Promise.resolve({ ok: true, data: { queue: this._queue, rtf: this._rtf, drift: this._drift } });
+        return Promise.resolve({ ok: true, data: this._status() });
       case "enqueue":
       case "set_role":
       case "set_priority":
+      case "set_label":
       case "subscribe":
-        // Not exercised by this window (it only monitors — see the module
-        // doc comment on `capabilities.replay`), but acknowledged rather
-        // than silently dropped.
+        // Not exercised by this window (it only monitors, and originates
+        // through `say()` alone — see the module doc comment), but
+        // acknowledged rather than silently dropped.
         return Promise.resolve({ ok: true, data: {} });
       default:
         return Promise.resolve({ ok: false, error: `unknown verb: ${verb}` });
     }
+  }
+
+  /**
+   * Speak pasted text. Shaped like the daemon's `enqueue`, mute path
+   * included: a muted channel's text is *accepted and dropped*, never held,
+   * so unmuting does not release a backlog.
+   */
+  say(text) {
+    const trimmed = String(text ?? "").trim();
+    if (!trimmed) return Promise.resolve({ ok: false, error: "nothing to say" });
+    // Bytes, matching the shell command's own cap so the two agree about a
+    // paste full of em dashes.
+    if (new TextEncoder().encode(trimmed).length > SAY_MAX_BYTES) {
+      return Promise.resolve({ ok: false, error: `that is longer than ${SAY_MAX_BYTES} bytes` });
+    }
+    // The pasted speech is an ordinary channel, which is the whole point of
+    // the fixed source: it can be muted on its own and it shows in the list.
+    if (!this._channels.some((c) => c.source_id === SAY_SOURCE)) {
+      this._channels.push({
+        source_id: SAY_SOURCE,
+        role: "foreground",
+        priority: 0,
+        profile: "default",
+        label: "Pasted text",
+      });
+    }
+    if (this._muted || this._channelMuted.get(SAY_SOURCE)) {
+      this._emit({ kind: "declined", source_id: SAY_SOURCE, data: { text: trimmed, kind: "response", reason: "muted" } });
+      return Promise.resolve({ ok: true, data: { spoken: false, reason: "muted" } });
+    }
+    if (!this._engineLoaded) {
+      this._emit({ kind: "declined", source_id: SAY_SOURCE, data: { text: trimmed, kind: "response", reason: "disabled" } });
+      return Promise.resolve({ ok: true, data: { spoken: false, reason: "disabled" } });
+    }
+    this._silence();
+    this._hushed = false;
+    this._emit({ kind: "started", source_id: SAY_SOURCE, data: { text: trimmed } });
+    // A real utterance ends; leaving the simulation's pip breathing forever
+    // would be the one way this differs visibly from the daemon.
+    setTimeout(() => this._emit({ kind: "finished", source_id: SAY_SOURCE, data: { cancelled: false, aborted: false } }), 1800);
+    return Promise.resolve({ ok: true, data: { spoken: true } });
+  }
+
+  /** Shaped exactly like the daemon's STATUS response. */
+  _status() {
+    return {
+      channels: this._channels.map((c) => ({ ...c, muted: !!this._channelMuted.get(c.source_id) })),
+      muted: this._muted,
+      engine: { loaded: this._engineLoaded, loading: this._engineLoading },
+    };
+  }
+
+  _doMute(payload, source) {
+    const wanted = payload.muted;
+    if (typeof wanted !== "boolean") {
+      return Promise.resolve({ ok: false, error: "mute needs a boolean 'muted'" });
+    }
+    const scope = source ? "channel" : "global";
+    if (source) this._channelMuted.set(source, wanted);
+    else this._muted = wanted;
+    // An off switch that lets the current paragraph finish is not an off
+    // switch: muting stops what is playing, if what is playing is covered.
+    if (wanted && (!source || source === FIXTURE_SOURCE || source === SAY_SOURCE)) this._silence();
+    this._emit({ kind: "mute", source_id: source || "", data: { muted: wanted, scope } });
+    return Promise.resolve({ ok: true, data: { muted: wanted, scope } });
+  }
+
+  _doSetEngine(payload) {
+    const wanted = payload.loaded;
+    if (typeof wanted !== "boolean") {
+      return Promise.resolve({ ok: false, error: "set_engine needs a boolean 'loaded'" });
+    }
+    if (!wanted) {
+      // Disabling hushes first and then unloads — the order the daemon uses,
+      // since dropping the model out from under a playing utterance is not
+      // something the engine is asked to survive.
+      this._silence();
+      this._engineLoading = false;
+      this._engineLoaded = false;
+      this._emit({ kind: "engine", source_id: "", data: { state: "unloaded" } });
+      return Promise.resolve({ ok: true, data: { loaded: false } });
+    }
+    if (this._engineLoaded || this._engineLoading) {
+      return Promise.resolve({ ok: true, data: { loaded: this._engineLoaded } });
+    }
+    // Loaded on a background thread in the daemon, so the socket stays
+    // answerable across the tens of seconds it takes; the response says the
+    // load started, and the bus says when it finished.
+    this._engineLoading = true;
+    this._emit({ kind: "engine", source_id: "", data: { state: "loading" } });
+    setTimeout(() => {
+      this._engineLoading = false;
+      this._engineLoaded = true;
+      this._emit({ kind: "engine", source_id: "", data: { state: "ready" } });
+    }, 1600);
+    return Promise.resolve({ ok: true, data: { loading: true } });
   }
 
   _doPause() {
@@ -244,7 +417,7 @@ export class SimulatedSource {
       this._within = 0;
       this._drift = 0;
       this._queue = 2;
-      this._emit({ kind: "started", data: { source_id: "sim:phd-articulation" } });
+      this._emit({ kind: "started", source_id: FIXTURE_SOURCE, data: {} });
     }
     this._playing = true;
     this._last = performance.now();
@@ -254,13 +427,21 @@ export class SimulatedSource {
     return Promise.resolve({ ok: true, data: {} });
   }
 
-  _doHush() {
+  /**
+   * Stop what is playing and drop the queue. Hush does this and says why;
+   * so do mute and disable, which stop speech without an error to report.
+   */
+  _silence() {
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
     this._playing = false;
     this._hushed = true;
     this._queue = 0;
     this._emit({ kind: "finished", data: { cancelled: true, aborted: false } });
+  }
+
+  _doHush() {
+    this._silence();
     // Reproduces today's coupling of the error line to the hushed state —
     // see pinned.html's original `el("err").hidden = !hushed`. A real hush
     // does not inherently cause a plugin error; this is preserved only
@@ -334,7 +515,9 @@ export class SimulatedSource {
  *
  * This class is what turns that back into the interface above: it renames
  * `event` to `kind`, numbers the segments the wire does not number, and
- * sends control verbs back through one Tauri command. It knows the wire
+ * sends control verbs back through the shell's two commands — `speakd_send`
+ * for the allowlisted control verbs, `speakd_say` for pasted text and
+ * nothing else. It knows the wire
  * format and nothing else knows it — not the Rust relay, which forwards
  * lines without reading them, and not the window, which only ever sees
  * `{ kind, data }`.
@@ -447,17 +630,44 @@ export class ShellSource {
     return { kind, source_id, data };
   }
 
-  async send(verb, payload = {}) {
+  async send(verb, payload = {}, source) {
+    // `undefined` and `""` are different answers and must stay different.
+    // Omitting `source` lets the shell supply its own control id, which is
+    // the literal "gui" -- the same string as the paste box's channel. An
+    // empty string is what the daemon reads as *global*, so a master mute
+    // has to send one, and a falsy check here would swallow it and silently
+    // mute the paste box instead while the button said "Muted".
+    const args = source === undefined ? { verb, payload } : { verb, payload, source };
+    return this._invoke("speakd_send", args, `speakd refused ${verb}`);
+  }
+
+  /**
+   * The window's one way of originating speech. A separate command, not
+   * `send("enqueue")` — the shell will not forward that verb at all, and this
+   * one fixes the channel and the payload, so a frontend bug can neither send
+   * arbitrary traffic nor speak on another session's channel.
+   */
+  async say(text) {
+    const trimmed = String(text ?? "").trim();
+    if (!trimmed) return { ok: false, error: "nothing to say" };
+    if (new TextEncoder().encode(trimmed).length > SAY_MAX_BYTES) {
+      return { ok: false, error: `that is longer than ${SAY_MAX_BYTES} bytes` };
+    }
+    return this._invoke("speakd_say", { text: trimmed }, "speakd refused the text");
+  }
+
+  /** One `{ok, error}` answer, whichever of the two commands produced it. */
+  async _invoke(command, args, refusal) {
     let response;
     try {
-      response = await this._tauri.core.invoke("speakd_send", { verb, payload });
+      response = await this._tauri.core.invoke(command, args);
     } catch (err) {
       // The shell could not reach the daemon at all, or refused to forward
       // the verb. A refusal *by* the daemon comes back below instead.
       return { ok: false, error: String(err && err.message ? err.message : err) };
     }
     if (response && response.ok) return { ok: true, data: response.data || {} };
-    return { ok: false, error: (response && response.error) || `speakd refused ${verb}` };
+    return { ok: false, error: (response && response.error) || refusal };
   }
 }
 

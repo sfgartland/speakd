@@ -117,6 +117,38 @@ navigation and the corpus features that go with them — gets its own milestone 
 than riding along inside this one, where it would double the scope of the part that
 is already gated behind a rewrite.
 
+### Amendment, 2026-09-15: a paste box, and what it does not reopen
+
+The owner asked for a box in the window: paste text, press a key, hear it. It
+shipped the same day (§7 of `docs/design/2026-09-15-streaming-narration-design.md`).
+Recorded here rather than left to be discovered, because a settled decision that
+quietly stops being true is worse than one revised in writing.
+
+**What it reverses.** Not this decision, but a narrower one in `bridge.rs`, which
+documented `enqueue`'s absence from the shell's forwarding allowlist as deliberate:
+"the window monitors speech, it never originates it … a bug in the frontend cannot
+make the monitor start talking." It now can originate speech — but only text a
+person typed into that box.
+
+**What survives.** `enqueue` is still **not** on the allowlist, and sending it
+through `speakd_send` is still refused. The box goes through one narrow command,
+`speakd_say(text)`, which fixes the verb, the payload and the channel: the source
+is the literal `"gui"`, never a parameter. So a frontend bug still cannot send
+arbitrary verbs, and still cannot speak on another session's channel. What it can
+do is say something on the window's own channel — which is an ordinary channel,
+listed with the others, mutable on its own, and reached by `hush` like any other.
+Text is capped at 8 KiB, refused in the frontend so the message is immediate.
+
+**What this does not reopen.** The decision above stands. There is still no file
+picker and no reader: a paste box is a line of text, not a corpus. The window shows
+the text being spoken and nothing else.
+
+Nor does it cost the window its height. The box and the channel list that landed
+with it both sit behind a disclosure that is **closed by default** — at rest the
+window is 352 px tall against the 560 it opens at, and open it is 519 — so the
+next section's constraint is unchanged: this is still something that fits beside
+an editor, not a panel that competes with one.
+
 ## Settled: the window is pinned, small, and shows four numbers
 
 The primary form is a **384px always-on-top monitor** meant to sit beside an editor,
