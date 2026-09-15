@@ -1,9 +1,15 @@
 """The one command every Claude Code hook runs.
 
-Four events, one code path for two of them. Nothing here decides how text
-should sound — markdown, pronunciation and summarising are daemon
-transforms — so this module is only: read stdin, work out what is new, send
-it, and under no circumstances fail the user's turn.
+Two events, and neither of them carries a word of the answer. Prose is the
+follower's work: it sees a message land on disk before the tool after it has
+even started, where a hook could not fire until that tool had finished. What
+is left here is what only a hook can know — that a prompt was submitted, and
+what a notification said — and both of those happen once per turn rather than
+once per tool call.
+
+Nothing here decides how text should sound — markdown, pronunciation and
+summarising are daemon transforms — so this module is only: read stdin, work
+out what happened, send it, and under no circumstances fail the user's turn.
 """
 
 from __future__ import annotations
@@ -14,12 +20,12 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-from speakd.clients.claude_code.reader import new_text
+from speakd.clients.claude_code import registry
 from speakd.clients.claude_code.send import enqueue, hush
-from speakd.clients.claude_code.watermark import load, locked, save, state_dir
+from speakd.clients.claude_code.watermark import state_dir
 
 # Two hushes go out on the UserPromptSubmit path, one per channel, and Claude
-# Code gives that event the shortest window of the four (3s in the manifest
+# Code gives that event the shorter window of the two (3s in the manifest
 # this client ships). At `send.TIMEOUT` the pair costs 4s against it: measured
 # at 4.01s, the second hush never lands and the user's prompt stalls waiting
 # for a hook that has already lost. Halved so that both, plus interpreter
@@ -28,9 +34,11 @@ from speakd.clients.claude_code.watermark import load, locked, save, state_dir
 HUSH_TIMEOUT = 1.0
 
 
-# Past this, the log is emptied and started again. With the daemon off every
-# PostToolUse writes a line, so an unbounded file grows for as long as someone
-# forgets to start speakd -- 1.8 MB per twenty thousand hooks, measured. Not
+# Past this, the log is emptied and started again. The follower writes to this
+# same file and polls ten times a second, so with the daemon off a session
+# with anything to say now writes a line per poll -- far faster than the hooks
+# ever did, and they alone reached 1.8 MB per twenty thousand entries, measured.
+# An unbounded file grows for as long as someone forgets to start speakd. Not
 # rotation: one file, one cap, and the newest failures are the ones a person
 # tailing it needs. A quarter of a megabyte is some 2,500 lines, far more
 # history than any diagnosis of this uses.
@@ -66,40 +74,10 @@ def _channels(session_id: str) -> tuple[str, str]:
     return f"claude-code:{session_id}", f"claude-code:{session_id}:notify"
 
 
-def _speak_new(session_id: str, transcript_path: str) -> None:
-    """Send whatever this session has not spoken, exactly once.
-
-    The lock spans read, send and save. Claude Code fires PostToolUse
-    concurrently for parallel tool calls and Stop can overlap one; two
-    holders that each read the watermark before either wrote it would both
-    send the same text.
-
-    `new_text` returns an empty string with a real watermark when everything
-    new was a sub-agent's: the enqueue is then a no-op but the save is not,
-    and skipping it would leave those records to be rescanned on every hook
-    for the rest of the session.
-    """
-    response, _ = _channels(session_id)
-    with locked(session_id):
-        text, mark = new_text(Path(transcript_path), load(session_id))
-        if mark is None:
-            return
-        reason = enqueue(response, text)
-        if reason is not None:
-            _log(reason)
-        save(session_id, mark)
-
-
 def _dispatch(body: dict[str, object]) -> None:
     session_id = str(body.get("session_id") or "unknown")
     event = str(body.get("hook_event_name") or "")
     response, notify = _channels(session_id)
-
-    if event in ("Stop", "PostToolUse"):
-        transcript_path = body.get("transcript_path")
-        if isinstance(transcript_path, str) and transcript_path:
-            _speak_new(session_id, transcript_path)
-        return
 
     if event == "Notification":
         message = body.get("message")
@@ -110,11 +88,25 @@ def _dispatch(body: dict[str, object]) -> None:
         return
 
     if event == "UserPromptSubmit":
+        transcript_path = body.get("transcript_path")
+        if isinstance(transcript_path, str) and transcript_path:
+            # Before the hushes, and to a file rather than over the socket.
+            # This is the one hook left inside the user's critical path: a
+            # local write costs microseconds, where a round trip costs
+            # milliseconds against a daemon that answers and a full hush
+            # timeout against one that does not -- and a registration written
+            # after that is one a hook killed at its budget never writes at
+            # all, leaving the follower unaware of the session.
+            registry.register(session_id, Path(transcript_path), str(body.get("cwd") or ""))
         for channel in (response, notify):
             reason = hush(channel, timeout=HUSH_TIMEOUT)
             if reason is not None:
                 _log(reason)
         return
+
+    # Every other event is deliberately nothing at all, Stop and PostToolUse
+    # included: an install still carrying the old four-event manifest keeps
+    # firing them, and the follower has already said what they would have.
 
 
 def _read_and_dispatch() -> None:

@@ -4,21 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from speakd.clients.claude_code.transcript import Record, parse, speakable
+from speakd.clients.claude_code.transcript import parse, speakable
 from speakd.clients.claude_code.watermark import Watermark
-
-
-def _from_start(records: list[Record]) -> list[Record]:
-    """Records belonging to the current turn only.
-
-    With no usable watermark the alternative is reading the whole session
-    aloud, which is what a resumed session would otherwise do on its first
-    Stop hook.
-    """
-    for index in range(len(records) - 1, -1, -1):
-        if records[index].kind == "user":
-            return records[index + 1 :]
-    return records
 
 
 def new_text(transcript: Path, mark: Watermark | None) -> tuple[str, Watermark | None]:
@@ -26,6 +13,16 @@ def new_text(transcript: Path, mark: Watermark | None) -> tuple[str, Watermark |
 
     Returns `("", None)` when there is nothing new: the caller then writes
     no state at all.
+
+    With no usable watermark this reads from the top of the file. It used to
+    guess the current turn instead, by scanning back for the last record of
+    type "user" -- but a tool result is itself a "user" record, so the guess
+    threw away every prose block before the last tool call, which on a turn
+    that used any tools at all is most of what was said. There is no guess
+    that survives that, so there is none. A caller that must not hear a
+    session's history writes its own watermark at end of file first, which is
+    what the follower does the moment a session registers; here, "no usable
+    watermark" means "start here".
     """
     try:
         size = transcript.stat().st_size
@@ -43,8 +40,6 @@ def new_text(transcript: Path, mark: Watermark | None) -> tuple[str, Watermark |
         return "", None
 
     records, consumed = parse(chunk)
-    if not resumable:
-        records = _from_start(records)
     if not records:
         return "", None
 

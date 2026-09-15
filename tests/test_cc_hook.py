@@ -4,15 +4,14 @@ import io
 import json
 import socket as socketlib
 import subprocess as sp
-import threading
 import time
 from pathlib import Path
 
 import pytest
 
-from speakd.clients.claude_code import hook
+from speakd.clients.claude_code import hook, registry
 from speakd.clients.claude_code import send as send_module
-from speakd.clients.claude_code.watermark import load, state_dir
+from speakd.clients.claude_code.watermark import state_dir
 
 PLUGIN = Path(__file__).resolve().parent.parent / "clients" / "claude-code"
 # Read from the manifest rather than restated, so the two cannot drift.
@@ -29,7 +28,7 @@ def payload(**fields: object) -> str:
     body: dict[str, object] = {
         "session_id": "s1",
         "transcript_path": "/nonexistent/t.jsonl",
-        "hook_event_name": "Stop",
+        "hook_event_name": "UserPromptSubmit",
         "cwd": "/tmp",
     }
     body.update(fields)
@@ -75,32 +74,6 @@ def run(monkeypatch, stdin: str, sent: list[tuple[str, str]]) -> int:  # type: i
     return hook.main([])
 
 
-def test_stop_speaks_the_new_text(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = transcript(tmp_path, "Hello there.")
-    sent: list[tuple[str, str]] = []
-    assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    assert sent == [("claude-code:s1", "Hello there.")]
-    assert capsys.readouterr().out == ""
-
-
-def test_the_same_text_is_not_spoken_twice(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = transcript(tmp_path, "Once only.")
-    sent: list[tuple[str, str]] = []
-    run(monkeypatch, payload(transcript_path=str(path)), sent)
-    run(monkeypatch, payload(transcript_path=str(path), hook_event_name="PostToolUse"), sent)
-    assert sent == [("claude-code:s1", "Once only.")]
-
-
-def test_post_tool_use_takes_the_same_path_as_stop(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = transcript(tmp_path, "Between tools.")
-    sent: list[tuple[str, str]] = []
-    run(monkeypatch, payload(transcript_path=str(path), hook_event_name="PostToolUse"), sent)
-    assert sent == [("claude-code:s1", "Between tools.")]
-
-
 def test_a_notification_speaks_on_the_notify_channel(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     sent: list[tuple[str, str]] = []
@@ -116,13 +89,92 @@ def test_a_prompt_hushes_both_channels(tmp_path: Path, monkeypatch) -> None:  # 
     assert sent == [("claude-code:s1", "<hush>"), ("claude-code:s1:notify", "<hush>")]
 
 
-def test_nothing_new_writes_no_state(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_post_tool_use_no_longer_speaks(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The follower sees the message land before the tool after it finishes.
+
+    So a hook here would only say the same thing later -- at the cost of a
+    Python start-up inside the user's turn, once per tool call. An install
+    still carrying the old manifest fires this; it has to be a no-op, not a
+    second voice.
+    """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = transcript(tmp_path)
+    path = transcript(tmp_path, "Hello there.")
     sent: list[tuple[str, str]] = []
-    assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
+    body = payload(transcript_path=str(path), hook_event_name="PostToolUse")
+    assert run(monkeypatch, body, sent) == 0
     assert sent == []
-    assert load("s1") is None
+
+
+def test_stop_no_longer_speaks(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The same for the end of a turn, which the follower reached first."""
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    path = transcript(tmp_path, "Hello there.")
+    sent: list[tuple[str, str]] = []
+    assert run(monkeypatch, payload(transcript_path=str(path), hook_event_name="Stop"), sent) == 0
+    assert sent == []
+
+
+def test_a_prompt_registers_the_session(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """This is the only place the follower learns a session exists.
+
+    Nothing else in the system knows a transcript's path, so a prompt that
+    hushed without registering would leave a live session unspoken for as
+    long as it ran.
+    """
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    sent: list[tuple[str, str]] = []
+    assert run(monkeypatch, payload(transcript_path="/tmp/t.jsonl", cwd="/home/me/p"), sent) == 0
+    found = registry.live()
+    assert [r.session_id for r in found] == ["s1"]
+    assert found[0].transcript == Path("/tmp/t.jsonl")
+    assert found[0].cwd == "/home/me/p"
+
+
+def test_the_session_is_registered_before_the_hushes_go_out(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Order, because the hushes are the part that can go slowly.
+
+    Each one pays its full timeout against a daemon that is listening but
+    wedged, and Claude Code kills the hook at the manifest's budget. A
+    registration written after them is one that never gets written on the
+    turn that needed it most -- the first, where the session is still
+    unknown. The local file write cannot block on a socket, so it goes first.
+    """
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    seen: list[list[str]] = []
+
+    def recording_hush(source: str, **kw: object) -> str | None:
+        seen.append([r.session_id for r in registry.live()])
+        return None
+
+    monkeypatch.setattr(hook, "hush", recording_hush)
+    hook._dispatch(
+        {
+            "session_id": "s1",
+            "hook_event_name": "UserPromptSubmit",
+            "transcript_path": str(tmp_path / "t.jsonl"),
+            "cwd": "/p",
+        }
+    )
+    assert seen == [["s1"], ["s1"]]
+
+
+def test_a_prompt_without_a_transcript_path_still_hushes(  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Registering is the new work; stopping the speech is the old promise.
+
+    A payload with no transcript path registers nothing -- there is nothing
+    to follow -- but the user pressing enter still means silence.
+    """
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    sent: list[tuple[str, str]] = []
+    assert run(monkeypatch, payload(transcript_path=""), sent) == 0
+    assert sent == [("claude-code:s1", "<hush>"), ("claude-code:s1:notify", "<hush>")]
+    assert registry.live() == []
 
 
 def test_garbage_on_stdin_exits_zero(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
@@ -143,199 +195,15 @@ def test_an_unknown_event_exits_zero_and_does_nothing(tmp_path: Path, monkeypatc
 
 def test_an_exploding_send_still_exits_zero(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = transcript(tmp_path, "Boom.")
 
     def explode(source: str, text: str, **kw: object) -> str | None:
         raise RuntimeError("the daemon caught fire")
 
-    monkeypatch.setattr("sys.stdin", io.StringIO(payload(transcript_path=str(path))))
+    body = payload(hook_event_name="Notification", message="Permission needed.")
+    monkeypatch.setattr("sys.stdin", io.StringIO(body))
     monkeypatch.setattr(hook, "enqueue", explode)
     assert hook.main([]) == 0
     assert "caught fire" in (state_dir() / "hook.log").read_text(encoding="utf-8")
-
-
-def record(uuid: str, kind: str, text: str = "", sidechain: bool = False) -> str:
-    body: dict[str, object] = {"type": kind, "uuid": uuid, "isSidechain": sidechain}
-    if kind == "assistant":
-        body["message"] = {"role": "assistant", "content": [{"type": "text", "text": text}]}
-    return json.dumps(body)
-
-
-def append(path: Path, *lines: str) -> None:
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write("".join(line + "\n" for line in lines))
-
-
-def test_repeated_hooks_drain_a_growing_transcript_exactly_once(  # type: ignore[no-untyped-def]
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Fire the hook over and over while the transcript grows underneath it.
-
-    The layer below this one shipped a defect that no single call could
-    show: parse returned nothing and consumed nothing, so the offset never
-    moved and the session fell silent for good. The same shape is available
-    here — a watermark that fails to advance, or one that rewinds — and only
-    successive calls can rule it out. Three firings per turn stand in for the
-    Stop that lands on top of a PostToolUse.
-    """
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = tmp_path / "t.jsonl"
-    path.write_text("", encoding="utf-8")
-    sent: list[tuple[str, str]] = []
-    offsets: list[int] = []
-
-    for turn in range(6):
-        append(path, record(f"u{turn}", "user"), record(f"a{turn}", "assistant", f"Turn {turn}."))
-        for _ in range(3):
-            assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-        mark = load("s1")
-        assert mark is not None, f"turn {turn} left no watermark at all"
-        offsets.append(mark.offset)
-
-    assert [text for _, text in sent] == [f"Turn {turn}." for turn in range(6)]
-    assert offsets == sorted(offsets), f"the watermark went backwards: {offsets}"
-    # Every complete line consumed: nothing is left behind unread while the
-    # hook reports there is nothing to say.
-    assert offsets[-1] == path.stat().st_size
-
-    # And it terminates: further firings against an unchanged file add nothing.
-    before = len(sent)
-    for _ in range(5):
-        run(monkeypatch, payload(transcript_path=str(path)), sent)
-    assert len(sent) == before
-
-
-def test_a_half_written_line_is_left_for_the_next_hook(  # type: ignore[no-untyped-def]
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Claude Code appends while we read, so a trailing partial line is normal.
-
-    It must not be consumed (its text would be lost) and it must not wedge
-    the offset (everything after it would be). Both are only visible across
-    the two calls.
-    """
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = tmp_path / "t.jsonl"
-    path.write_text("", encoding="utf-8")
-    sent: list[tuple[str, str]] = []
-
-    append(path, record("u0", "user"), record("a0", "assistant", "Complete."))
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(record("a1", "assistant", "Half writ"))  # no newline yet
-    assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    assert [text for _, text in sent] == ["Complete."]
-    mark = load("s1")
-    assert mark is not None and mark.offset < path.stat().st_size
-
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write("\n")
-    assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    assert [text for _, text in sent] == ["Complete.", "Half writ"]
-    mark = load("s1")
-    assert mark is not None and mark.offset == path.stat().st_size
-
-
-def test_a_corrupt_line_does_not_stop_the_drain(  # type: ignore[no-untyped-def]
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """One unreadable line must cost one line, not the rest of the session."""
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = tmp_path / "t.jsonl"
-    path.write_text("", encoding="utf-8")
-    sent: list[tuple[str, str]] = []
-
-    append(path, record("u0", "user"), record("a0", "assistant", "Before."))
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write('{"type": "assist\rtant", not json at all\n')
-    append(path, record("a2", "assistant", "After."))
-
-    for _ in range(3):
-        assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    assert [text for _, text in sent] == ["Before.\n\nAfter."]
-    mark = load("s1")
-    assert mark is not None and mark.offset == path.stat().st_size
-
-
-def test_sub_agent_records_are_silent_but_still_advance_the_watermark(  # type: ignore[no-untyped-def]
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """The sidechain case: nothing to say, yet state must still be written.
-
-    `new_text` hands back an empty string with a real watermark here. A
-    caller that took "no text" for "nothing happened" and skipped the save
-    would rescan every sub-agent record on every hook for the rest of the
-    session — growing work, and the drain would never terminate.
-    """
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = tmp_path / "t.jsonl"
-    path.write_text("", encoding="utf-8")
-    sent: list[tuple[str, str]] = []
-
-    append(path, record("u0", "user"))
-    for index in range(4):
-        append(path, record(f"s{index}", "assistant", f"Sub-agent {index}.", sidechain=True))
-
-    assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    # The blank string `new_text` returned does reach `enqueue`, which drops
-    # it without opening a connection -- that guard lives in `send` and is
-    # tested there. What must never happen is a sub-agent's words going out.
-    assert [text for _, text in sent if text.strip()] == []
-    assert "Sub-agent" not in "".join(text for _, text in sent)
-    mark = load("s1")
-    assert mark is not None, "a sidechain-only turn wrote no watermark"
-    assert mark.offset == path.stat().st_size
-
-    append(path, record("a1", "assistant", "The main agent speaks."))
-    assert run(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    # Only the new line. The sidechain block was consumed, not re-walked.
-    assert [(source, text) for source, text in sent if text.strip()] == [
-        ("claude-code:s1", "The main agent speaks.")
-    ]
-
-
-def test_two_concurrent_hooks_do_not_both_speak_the_same_text(  # type: ignore[no-untyped-def]
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Claude Code fires PostToolUse concurrently for parallel tool calls.
-
-    Nothing below this module enforces the lock, so this is where it is
-    checked: the second hook must wait out the first's save rather than read
-    the watermark it is about to replace.
-    """
-    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = transcript(tmp_path, "Exactly once.")
-    sent: list[tuple[str, str]] = []
-    guard = threading.Lock()
-    holding = threading.Event()
-
-    def slow_enqueue(source: str, text: str, **kw: object) -> str | None:
-        first = not holding.is_set()
-        holding.set()
-        if first:
-            # Still inside the lock, and long enough that an unlocked second
-            # hook would certainly read the watermark before this one saves.
-            time.sleep(0.4)
-        with guard:
-            sent.append((source, text))
-        return None
-
-    monkeypatch.setattr(hook, "enqueue", slow_enqueue)
-    body = json.loads(payload(transcript_path=str(path)))
-
-    first = threading.Thread(target=hook._dispatch, args=(body,))
-    first.start()
-    assert holding.wait(timeout=5.0), "the first hook never reached its enqueue"
-    second = threading.Thread(target=hook._dispatch, args=(body,))
-    second.start()
-    first.join(timeout=10.0)
-    second.join(timeout=10.0)
-    assert not first.is_alive() and not second.is_alive()
-    assert sent == [("claude-code:s1", "Exactly once.")]
 
 
 def test_no_event_ever_writes_to_stdout(  # type: ignore[no-untyped-def]
@@ -345,9 +213,10 @@ def test_no_event_ever_writes_to_stdout(  # type: ignore[no-untyped-def]
 ) -> None:
     """UserPromptSubmit stdout is injected into the model's context.
 
-    The others surface in the transcript. So every branch, including the
-    ones that fail, is checked rather than only the two the happy path
-    covers.
+    The others surface in the transcript. So every branch is checked, the
+    ones that fail and the two events we no longer act on -- an install
+    carrying the old manifest still fires those, and a print on that path
+    would reach the model as if the user had typed it.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     path = transcript(tmp_path, "Something to say.")
@@ -533,65 +402,32 @@ def _run_failing(  # type: ignore[no-untyped-def]
     return hook.main([])
 
 
-def test_a_failed_enqueue_is_logged_and_still_advances_the_watermark(  # type: ignore[no-untyped-def]
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_a_failed_notification_is_logged(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """The daemon-not-running case, which is the ordinary one.
 
-    Two properties, both argued for in prose and neither previously pinned:
-
-    The reason is logged. It is the only diagnostic a user gets, and the
-    README sends them to this file; dropping it turns "speakd is not running"
-    into silence with no explanation.
-
-    The watermark advances anyway. Holding it back until an enqueue succeeds
-    sounds safer and is not: the backlog accumulates for as long as the
-    daemon is down, and the moment it starts, the whole session plays at
-    once. Losing speech nobody could have heard is the right trade, and the
-    reason is in the log.
+    The reason is the only diagnostic a user gets, and the README sends them
+    to this file; dropping it turns "speakd is not running" into silence with
+    no explanation at all.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = tmp_path / "t.jsonl"
-    path.write_text("", encoding="utf-8")
     sent: list[tuple[str, str]] = []
-
-    append(path, record("u0", "user"), record("a0", "assistant", "Into the void."))
-    assert _run_failing(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    assert sent == [("claude-code:s1", "Into the void.")]
-
-    written = (state_dir() / "hook.log").read_text(encoding="utf-8")
-    assert "no daemon" in written, "a failed enqueue left no diagnostic at all"
-
-    mark = load("s1")
-    assert mark is not None, "a failed enqueue left the watermark parked"
-    assert mark.offset == path.stat().st_size
-
-    # And now the point of it: three more turns pass while the daemon is
-    # still down, and when it comes back only what is new is spoken -- not
-    # four turns of backlog at once.
-    for turn in range(3):
-        append(
-            path, record(f"u{turn + 1}", "user"), record(f"a{turn + 1}", "assistant", f"T{turn}.")
-        )
-        assert _run_failing(monkeypatch, payload(transcript_path=str(path)), sent) == 0
-    assert [text for _, text in sent] == ["Into the void.", "T0.", "T1.", "T2."]
-
-    recovered: list[tuple[str, str]] = []
-    append(path, record("u9", "user"), record("a9", "assistant", "The daemon is back."))
-    assert run(monkeypatch, payload(transcript_path=str(path)), recovered) == 0
-    assert recovered == [("claude-code:s1", "The daemon is back.")]
+    body = payload(hook_event_name="Notification", message="Permission needed.")
+    assert _run_failing(monkeypatch, body, sent) == 0
+    assert sent == [("claude-code:s1:notify", "Permission needed.")]
+    assert "no daemon" in (state_dir() / "hook.log").read_text(encoding="utf-8")
 
 
 def test_the_log_is_capped_rather_than_growing_without_end(  # type: ignore[no-untyped-def]
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """With the daemon off, every PostToolUse writes a line, forever.
+    """With the daemon off, something writes a line to this file forever.
 
-    Measured at 1.8 MB per twenty thousand hooks and nothing ever trimmed it.
-    A cap, not rotation: one file, and the newest failures are the ones
-    someone tailing it actually needs.
+    It used to be every PostToolUse hook, measured at 1.8 MB per twenty
+    thousand of them and nothing ever trimmed it. It is now the follower,
+    which polls ten times a second and so gets there faster. A cap, not
+    rotation: one file, and the newest failures are the ones someone tailing
+    it actually needs.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     log = state_dir() / "hook.log"

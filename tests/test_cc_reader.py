@@ -29,6 +29,18 @@ def user(uuid: str) -> str:
     )
 
 
+def tool_result(uuid: str) -> str:
+    """A tool result, which Claude Code writes as a record of type "user"."""
+    return json.dumps(
+        {
+            "type": "user",
+            "uuid": uuid,
+            "isSidechain": False,
+            "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
+        }
+    )
+
+
 def write(path: Path, *lines: str) -> None:
     # newline="" so the fixture is not newline-translated on write: these
     # tests assert byte offsets, and a writer that turned "\n" into os.linesep
@@ -36,17 +48,46 @@ def write(path: Path, *lines: str) -> None:
     path.write_text("".join(line + "\n" for line in lines), encoding="utf-8", newline="")
 
 
-def test_without_a_watermark_only_the_current_turn_is_spoken(tmp_path: Path) -> None:
+def test_without_a_watermark_everything_readable_is_spoken(tmp_path: Path) -> None:
+    """No watermark means "start here", not "guess where this turn began".
+
+    The guess was a backward scan for the last record of type "user", and it
+    was wrong for the reason test_a_tool_result_is_not_the_turn_boundary
+    gives. A caller that must not hear a session's history writes its own
+    watermark at end of file first; the follower does exactly that the moment
+    a session registers, so nothing reaches here expecting to be guessed for.
+    """
     transcript = tmp_path / "t.jsonl"
     write(
         transcript,
-        assistant("a1", "Ancient history."),
+        assistant("a1", "Earlier."),
         user("u1"),
         assistant("a2", "The current answer."),
     )
     text, mark = new_text(transcript, None)
-    assert text == "The current answer."
+    assert text == "Earlier.\n\nThe current answer."
     assert mark is not None and mark.uuid == "a2"
+
+
+def test_a_tool_result_is_not_the_turn_boundary(tmp_path: Path) -> None:
+    """Tool results are records of type "user".
+
+    So scanning back for the last one dropped every prose block before it --
+    on any turn that used a tool, most of what was said. After a `/clear` or
+    a resume, when there is no watermark to resume from, that was the whole
+    answer bar its last paragraph.
+    """
+    transcript = tmp_path / "t.jsonl"
+    write(
+        transcript,
+        user("u0"),
+        assistant("a1", "First."),
+        tool_result("u1"),
+        assistant("a2", "Second."),
+    )
+    text, _ = new_text(transcript, None)
+    assert "First." in text
+    assert "Second." in text
 
 
 def test_a_watermark_resumes_where_it_stopped(tmp_path: Path) -> None:
@@ -110,24 +151,6 @@ def test_a_missing_transcript_is_not_an_error(tmp_path: Path) -> None:
     text, mark = new_text(tmp_path / "absent.jsonl", None)
     assert text == ""
     assert mark is None
-
-
-def test_only_what_follows_the_LAST_user_record_is_spoken(tmp_path: Path) -> None:
-    """Added beyond the brief: with a single user record in the fixture, a
-    `_from_start` that searched forward from the top would pass. The rule is
-    the *last* user record, and getting it wrong reads earlier turns aloud.
-    """
-    transcript = tmp_path / "t.jsonl"
-    write(
-        transcript,
-        assistant("a1", "Ancient history."),
-        user("u1"),
-        assistant("a2", "An earlier answer."),
-        user("u2"),
-        assistant("a3", "The current answer."),
-    )
-    text, _ = new_text(transcript, None)
-    assert text == "The current answer."
 
 
 def test_a_resumed_read_counts_its_offset_from_where_it_resumed(tmp_path: Path) -> None:

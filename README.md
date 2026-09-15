@@ -11,14 +11,16 @@ can follow along.
 ## Design
 
 One daemon owns the model, the queue, the plugin host and the API. Everything else
-is a client: editor plugins, agent hooks, document readers.
+is a client: editor plugins, agent followers, document readers. The daemon spawns
+and restarts the clients that have to outlive a single command — the Claude Code
+follower is one — so there is still only one service to start and stop.
 
 ```
-hooks/CLI ──enqueue──▶ speakd ──▶ transforms ──▶ segmenter ──▶ engine ──▶ player
-                         │                                       │
-                         └────── event bus ◀── span-to-time map ◀─┘
-                                    │
-                         out-of-proc subscribers (PDF highlighter, …)
+follower/CLI ──enqueue──▶ speakd ──▶ transforms ──▶ segmenter ──▶ engine ──▶ player
+                            │                                       │
+                            └────── event bus ◀── span-to-time map ◀─┘
+                                       │
+                            out-of-proc subscribers (PDF highlighter, …)
 ```
 
 **The span-to-time map** is the core data structure. Every synthesised segment
@@ -47,8 +49,9 @@ The daemon works. It speaks over a Unix socket, streams position events as it
 goes, and can be interrupted mid-word.
 
 Built and merged: the speaking pipeline, the plugin host and built-in
-transforms, the streaming player, the daemon, and the transcript reader for the
-Claude Code client. The client's hooks and the desktop shell are in progress.
+transforms, the streaming player, the daemon, and the Claude Code client — its
+two hooks, its transcript reader, and the follower that speaks a session as it
+is written. The desktop shell is in progress.
 
 ## Running it at login
 
@@ -87,7 +90,10 @@ uv run speakctl say "No daemon needed."                # speak locally, in-proce
 ```
 
 `enqueue` returns as soon as the daemon accepts the text, not when it stops
-speaking — which is what lets an agent hook call it and get out of the way.
+speaking — which is what lets a caller on an agent's critical path get out of the
+way. The Claude Code client no longer has such a caller: its hooks only hush and
+register, and the prose is enqueued by the follower, which runs outside anyone's
+turn and speaks a message the moment it reaches the transcript.
 
 The event stream is the same one the GUI reads:
 
@@ -122,7 +128,7 @@ matters:
 | Time to first audio, 417-char passage | 20.2s batched -> **10.9s** streamed | real device |
 | Audio after a hush | 1.816s -> **0.256s** | substitute rig |
 | `speakctl enqueue` return | **0.27s**, five sentences still queued | real device |
-| Hook latency, against a 3s budget | **0.22s** | real device, no daemon |
+| Claude Code hook, against a 3s budget | 0.25s per tool call -> **0.09s** twice a turn | real device |
 
 The hush figures are a sound *contrast* — both arms ran the identical script —
 but the absolute numbers were taken with a sleeping fake sink and want
@@ -133,10 +139,12 @@ not evidence.
 ## Clients
 
 **Claude Code** — [`clients/claude-code/`](clients/claude-code/) is a loadable
-plugin that speaks a session's responses as they arrive. Four hooks, one entry
-point; it exits 0 on every path and writes nothing to stdout, so a daemon that
-is not running costs silence and nothing else. See its
-[README](clients/claude-code/README.md) for the install.
+plugin that speaks a session's responses as they land on disk. The speaking is
+done by a follower process the daemon keeps alive, which tails the transcript;
+two hooks remain, both once per turn, to stop the speech when a new prompt
+arrives and to read the permission prompts aloud. Every hook path exits 0 and
+writes nothing to stdout, so a daemon that is not running costs silence and
+nothing else. See its [README](clients/claude-code/README.md) for the install.
 
 ## Development
 
