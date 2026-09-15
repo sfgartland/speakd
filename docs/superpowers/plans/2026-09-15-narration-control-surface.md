@@ -822,12 +822,10 @@ and the method:
 In `_enqueue`, extend the drop guard from Task 3 so an unloaded engine drops too, with `reason="disabled"`:
 
 ```python
-        loaded = getattr(self.engine, "loaded", True)
-        if not loaded:
-            self._publish(
-                "declined", request.source_id, {"text": text, "kind": kind, "reason": "disabled"}
-            )
-            return Response(ok=True, data={"spoken": False, "reason": "disabled"})
+loaded = getattr(self.engine, "loaded", True)
+if not loaded:
+    self._publish("declined", request.source_id, {"text": text, "kind": kind, "reason": "disabled"})
+    return Response(ok=True, data={"spoken": False, "reason": "disabled"})
 ```
 
 In the `STATUS` branch add:
@@ -842,22 +840,20 @@ In the `STATUS` branch add:
 `__main__.py`: replace the eager construction at lines 157-172 with a lazy one that reads the flag first:
 
 ```python
-    from speakd import state
-    from speakd.synth.kokoro_engine import KokoroEngine
-    from speakd.synth.lazy import LazyEngine
+from speakd import state
+from speakd.synth.kokoro_engine import KokoroEngine
+from speakd.synth.lazy import LazyEngine
 
-    # The class attribute, not an instance: the player needs the rate to open
-    # the sink, and asking an instance for it would mean loading the model
-    # this whole path exists to avoid loading.
-    engine = LazyEngine(
-        KokoroEngine, name=KokoroEngine.name, sample_rate=KokoroEngine.sample_rate
-    )
-    if not state.load().disabled:
-        # On a thread, so the socket appears at once rather than thirty
-        # seconds later. The README already tells users the socket appearing
-        # is the readiness signal; this is the first release where that is
-        # true.
-        threading.Thread(target=engine.load, name="speakd-engine-load", daemon=True).start()
+# The class attribute, not an instance: the player needs the rate to open
+# the sink, and asking an instance for it would mean loading the model
+# this whole path exists to avoid loading.
+engine = LazyEngine(KokoroEngine, name=KokoroEngine.name, sample_rate=KokoroEngine.sample_rate)
+if not state.load().disabled:
+    # On a thread, so the socket appears at once rather than thirty
+    # seconds later. The README already tells users the socket appearing
+    # is the readiness signal; this is the first release where that is
+    # true.
+    threading.Thread(target=engine.load, name="speakd-engine-load", daemon=True).start()
 ```
 
 The `ModuleNotFoundError` guard that used to wrap `KokoroEngine()` moves inside the factory: wrap `engine.load` in a function that catches it and writes the same message to stderr, since the constructor no longer runs here.

@@ -424,7 +424,8 @@ untouched:
 ```python
 def _profile_for(name: str) -> ProfileView:
     # Until the plugin host is wired in, every profile speaks plainly.
-    def prepare(pieces): return list(pieces), []
+    def prepare(pieces):
+        return list(pieces), []
 ```
 
 and neither `__main__.py` nor `daemon.py` so much as mentions `PluginHost`,

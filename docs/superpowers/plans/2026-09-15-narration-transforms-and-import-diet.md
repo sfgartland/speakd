@@ -431,9 +431,7 @@ def test_a_block_quote_is_announced_and_closed() -> None:
 
 
 def test_consecutive_quote_lines_are_one_quotation() -> None:
-    assert blocks("> One line.\n> And another.") == [
-        "Quote, One line. And another. End quote."
-    ]
+    assert blocks("> One line.\n> And another.") == ["Quote, One line. And another. End quote."]
 
 
 def test_prose_after_a_quote_is_its_own_block() -> None:
@@ -489,20 +487,19 @@ In `_blocks`, add two accumulators beside `prose`:
 and two flushes beside `flush()`:
 
 ```python
-    def flush_quote() -> None:
-        nonlocal quote
-        if quote:
-            said = " ".join(quote)
-            blocks.append(
-                _Block(f"{QUOTE_PREFIX} {said} {QUOTE_SUFFIX}", quote_start, quote_end)
-            )
-            quote = []
+def flush_quote() -> None:
+    nonlocal quote
+    if quote:
+        said = " ".join(quote)
+        blocks.append(_Block(f"{QUOTE_PREFIX} {said} {QUOTE_SUFFIX}", quote_start, quote_end))
+        quote = []
 
-    def flush_table() -> None:
-        nonlocal in_table
-        if in_table:
-            blocks.append(_Block(TABLE_MARKER, table_start, table_end))
-            in_table = False
+
+def flush_table() -> None:
+    nonlocal in_table
+    if in_table:
+        blocks.append(_Block(TABLE_MARKER, table_start, table_end))
+        in_table = False
 ```
 
 Rename the existing `flush()` to `flush_prose()` and define one `flush_all()` that calls all three, then replace every existing bare `flush()` call site with `flush_all()`. This matters: a heading directly after a quote must close the quote, not just the prose.
@@ -685,19 +682,19 @@ def _apply(text: str) -> str:
 Add to `_WORDS`, after the existing `CLI` entry. Pronounceable acronyms get a phonetic spelling, as `SQL` and `TOML` already do; the rest are spelled out:
 
 ```python
-    (re.compile(r"\bGUI\b"), "gooey"),
-    (re.compile(r"\bHTML\b"), "H T M L"),
-    (re.compile(r"\bTTS\b"), "T T S"),
-    (re.compile(r"\bPDF\b"), "P D F"),
-    (re.compile(r"\bXDG\b"), "X D G"),
-    (re.compile(r"\bRTF\b"), "R T F"),
-    (re.compile(r"\bOCR\b"), "O C R"),
-    (re.compile(r"\bCSV\b"), "C S V"),
-    (re.compile(r"\bSSH\b"), "S S H"),
-    (re.compile(r"\bCPU\b"), "C P U"),
-    (re.compile(r"\bGPU\b"), "G P U"),
-    (re.compile(r"\bIDE\b"), "I D E"),
-    (re.compile(r"\bCI\b"), "C I"),
+((re.compile(r"\bGUI\b"), "gooey"),)
+((re.compile(r"\bHTML\b"), "H T M L"),)
+((re.compile(r"\bTTS\b"), "T T S"),)
+((re.compile(r"\bPDF\b"), "P D F"),)
+((re.compile(r"\bXDG\b"), "X D G"),)
+((re.compile(r"\bRTF\b"), "R T F"),)
+((re.compile(r"\bOCR\b"), "O C R"),)
+((re.compile(r"\bCSV\b"), "C S V"),)
+((re.compile(r"\bSSH\b"), "S S H"),)
+((re.compile(r"\bCPU\b"), "C P U"),)
+((re.compile(r"\bGPU\b"), "G P U"),)
+((re.compile(r"\bIDE\b"), "I D E"),)
+((re.compile(r"\bCI\b"), "C I"),)
 ```
 
 Record the ordering constraint in the module docstring: `_PATH` must run before `_FILENAME`, and `_EM_DASH` before `_LITERAL` so that `...` and `->` cannot fragment a dash that has not been seen yet.

@@ -326,14 +326,17 @@ from speakd.clients.claude_code.follow import Follower
 
 
 def assistant(uuid: str, text: str) -> bytes:
-    return json.dumps(
-        {
-            "type": "assistant",
-            "uuid": uuid,
-            "isSidechain": False,
-            "message": {"content": [{"type": "text", "text": text}]},
-        }
-    ).encode() + b"\n"
+    return (
+        json.dumps(
+            {
+                "type": "assistant",
+                "uuid": uuid,
+                "isSidechain": False,
+                "message": {"content": [{"type": "text", "text": text}]},
+            }
+        ).encode()
+        + b"\n"
+    )
 
 
 class Spy:
