@@ -365,7 +365,7 @@ both retain freed memory. The implementation must **measure RSS before and
 after** and record the real delta. If it turns out to be small, that is a
 finding to report, not a number to quietly restate from this document.
 
-## §8 — The GUI speaks pasted text
+## §7 — The GUI speaks pasted text
 
 A box in the window: paste text, press a key, hear it. Asked for on 2026-09-15.
 
@@ -399,7 +399,7 @@ own, and `hush` reaches it like anything else.
 Text is capped at 8 KiB. Beyond that the box refuses and says so, rather than
 handing the segmenter a novel.
 
-## §7 — Testing
+## §8 — Testing
 
 - **Transforms** are pure functions: unit tests per rule, plus one that a
   multi-paragraph input yields multiple Pieces with correct spans.
@@ -443,7 +443,7 @@ not depend on §3 at all.
 §4 follower ─────────▶ (independent of §3 and §6)
 ```
 
-§8 depends only on the GUI existing on `main`, which it now does: the Tauri
+§7 depends only on the GUI existing on `main`, which it now does: the Tauri
 shell was merged on 2026-09-15 (`3dc68ad`), having sat eight commits ahead and
 a hundred and seven behind without touching anything outside `clients/gui`.
 
@@ -454,4 +454,4 @@ That makes four plans rather than one:
 | A | §1, §2 | the hook stops loading numpy; speech gets its pauses back |
 | B | §5, §3, §6 | labels, mute and disable, in the daemon and `speakctl` |
 | C | §4 | the follower, and hooks that shrink from four events to two |
-| D | §8, GUI half of §3 and §6 | the window gets its toggles and its paste box |
+| D | §7, GUI half of §3 and §6 | the window gets its toggles and its paste box |
