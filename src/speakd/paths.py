@@ -30,3 +30,28 @@ def default_profiles_path() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "speakd" / "profiles.toml"
+
+
+def client_state_dir(name: str) -> Path:
+    """The directory holding one client's state files.
+
+    `SPEAKD_STATE_DIR` exists so tests never touch the real one, and is
+    honoured first. Resolved on every call rather than cached: the test suite
+    sets it per test, and a cached value would pin whichever test ran first.
+
+    Shared by every client, so that the two of them cannot drift on where
+    state lives or on which environment variable overrides it.
+    """
+    override = os.environ.get("SPEAKD_STATE_DIR")
+    if override:
+        return Path(override) / name
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
+    return base / "speakd" / name
+
+
+def default_notifications_path() -> Path:
+    """Where the notification filter rules live."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "speakd" / "notifications.toml"

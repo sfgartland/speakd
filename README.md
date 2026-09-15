@@ -223,6 +223,38 @@ arrives and to read the permission prompts aloud. Every hook path exits 0 and
 writes nothing to stdout, so a daemon that is not running costs silence and
 nothing else. See its [README](clients/claude-code/README.md) for the install.
 
+**Desktop notifications** — a second follower reads chosen notifications
+aloud: email, and WhatsApp through Chrome. It listens to the session bus with
+`busctl --user monitor`, so it needs systemd and no Python dependency at all.
+
+Rules live in `~/.config/speakd/notifications.toml`, are tried in order, and
+the first match decides. Anything matching no rule is **not** spoken — it is an
+allow list, so a new chatty app cannot start talking on its own.
+
+```bash
+speakctl notify init        # write a starter rules file
+speakctl notify recent      # what arrived, and which rule decided it
+speakctl notify tap         # watch them arrive live, speaking nothing
+speakctl notify test "Google Chrome" "Mamma" "still on for tomorrow?"
+```
+
+`recent` and `tap` are not conveniences. What an app calls itself in a
+notification is not something you can look up — Chrome puts the sender in the
+summary and the message in the body, but the app name it stamps on a WhatsApp
+notification has to be observed. Run `speakctl notify tap`, send yourself a
+message, and write the rule from what you see.
+
+Each app gets its own channel (`notify:<app>`), so the per-channel mute and the
+window's skip button work on them unchanged: silence WhatsApp and keep Claude
+Code. They speak in a second voice, `am_michael`, so a notification is
+recognisable as one without looking at the screen, and queue at priority 10 —
+above Claude Code, which orders the queue without ever cutting off a sentence
+already being spoken.
+
+`max_per_minute` (20 by default) is the safety valve. A group chat waking up
+produces forty notifications in a minute, and a queue of forty is not something
+anyone sits through.
+
 ## Development
 
 ```bash

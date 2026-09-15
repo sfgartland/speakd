@@ -20,6 +20,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from speakd.paths import client_state_dir
+
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
@@ -35,14 +37,11 @@ class Watermark:
 def state_dir() -> Path:
     """The directory holding one state file per session.
 
-    `SPEAKD_STATE_DIR` exists so tests never touch the real one.
+    Through `paths.client_state_dir` since the notification client arrived, so
+    that the two clients cannot disagree about where state lives or about
+    which environment variable overrides it for tests.
     """
-    override = os.environ.get("SPEAKD_STATE_DIR")
-    if override:
-        return Path(override) / "claude-code"
-    xdg = os.environ.get("XDG_STATE_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
-    return base / "speakd" / "claude-code"
+    return client_state_dir("claude-code")
 
 
 def _slug(session_id: str) -> str:

@@ -25,12 +25,14 @@ from pathlib import Path
 from types import FrameType
 
 from speakd.clients.claude_code import registry
-from speakd.clients.claude_code.hook import _log
 from speakd.clients.claude_code.reader import new_text
-from speakd.clients.claude_code.send import send as send_request
 from speakd.clients.claude_code.transcript import ai_title, parse
-from speakd.clients.claude_code.watermark import Watermark, load, save
+from speakd.clients.claude_code.watermark import Watermark, load, save, state_dir
+from speakd.clients.log import logger_for
+from speakd.clients.send import send as send_request
 from speakd.protocol import Request, Verb
+
+_log = logger_for(state_dir, "hook.log")
 
 DEFAULT_POLL_SECONDS = 0.1
 

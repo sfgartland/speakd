@@ -33,3 +33,7 @@ def _isolated_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # which inherit this. Without it every such test spawns a follower that
     # outlives its daemon's socket and tails the developer's own transcripts.
     monkeypatch.setenv("SPEAKD_NO_FOLLOWER", "1")
+    # And the notification connector with it, for the sharper version of the
+    # same reason: an escaped one does not merely tail a transcript, it reads
+    # the developer's own email and messages out loud.
+    monkeypatch.setenv("SPEAKD_NO_NOTIFY", "1")

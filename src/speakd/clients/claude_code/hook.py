@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from collections.abc import Sequence
 from pathlib import Path
 
 from speakd.clients.claude_code import registry
-from speakd.clients.claude_code.send import enqueue, hush
 from speakd.clients.claude_code.watermark import state_dir
+from speakd.clients.log import logger_for
+from speakd.clients.send import enqueue, hush
 
 # Two hushes go out on the UserPromptSubmit path, one per channel, and Claude
 # Code gives that event the shorter window of the two (3s in the manifest
@@ -34,40 +34,7 @@ from speakd.clients.claude_code.watermark import state_dir
 HUSH_TIMEOUT = 1.0
 
 
-# Past this, the log is emptied and started again. The follower writes to this
-# same file and polls ten times a second, so with the daemon off a session
-# with anything to say now writes a line per poll -- far faster than the hooks
-# ever did, and they alone reached 1.8 MB per twenty thousand entries, measured.
-# An unbounded file grows for as long as someone forgets to start speakd. Not
-# rotation: one file, one cap, and the newest failures are the ones a person
-# tailing it needs. A quarter of a megabyte is some 2,500 lines, far more
-# history than any diagnosis of this uses.
-LOG_CAP_BYTES = 256 * 1024
-
-
-def _log(message: str) -> None:
-    """Append one line to the hook log, or give up quietly.
-
-    Giving up quietly is deliberate: if the log is unwritable there is
-    nowhere left to report to, and failing the turn to announce it is the
-    worse trade.
-    """
-    try:
-        directory = state_dir()
-        directory.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-        log = directory / "hook.log"
-        try:
-            overgrown = log.stat().st_size > LOG_CAP_BYTES
-        except OSError:
-            overgrown = False
-        mode = "w" if overgrown else "a"
-        with log.open(mode, encoding="utf-8") as handle:
-            if overgrown:
-                handle.write(f"{stamp} (earlier entries dropped: the log passed its size cap)\n")
-            handle.write(f"{stamp} {message}\n")
-    except Exception:
-        pass
+_log = logger_for(state_dir, "hook.log")
 
 
 def _channels(session_id: str) -> tuple[str, str]:

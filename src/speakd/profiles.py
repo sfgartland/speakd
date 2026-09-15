@@ -26,10 +26,34 @@ class Profile:
 
 DEFAULT_PROFILE = Profile(name="default", transforms=("markdown", "pronunciation"))
 
+# A second voice, so that a notification is recognisable as one without
+# looking at the screen -- which is the whole point of having it read out.
+# `am_michael` rather than a fourth name: it is one of the three voices the
+# model ships in this install, so the profile works offline on the day it is
+# added.
+#
+# No `markdown` in the chain. A notification is not a markdown document, and
+# that transform's block splitting, table markers and quote markers are all
+# answers to a question a one-line message never asks.
+NOTIFICATION_PROFILE = Profile(
+    name="notification",
+    transforms=("pronunciation",),
+    voice="am_michael",
+    speed=1.05,
+)
+
 
 def load_profiles(path: Path) -> dict[str, Profile]:
-    """Read profiles from TOML, always including the default."""
-    profiles: dict[str, Profile] = {"default": DEFAULT_PROFILE}
+    """Read profiles from TOML, always including the built-in ones.
+
+    Built in, not merely shipped: a `[profile.notification]` table in the
+    file replaces this one entirely, so the voice and speed are a user's to
+    change without having to know what the default chain was.
+    """
+    profiles: dict[str, Profile] = {
+        "default": DEFAULT_PROFILE,
+        "notification": NOTIFICATION_PROFILE,
+    }
     if not path.is_file():
         return profiles
     with path.open("rb") as handle:

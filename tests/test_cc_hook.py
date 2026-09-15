@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from speakd.clients import send as send_module
 from speakd.clients.claude_code import hook, registry
-from speakd.clients.claude_code import send as send_module
 from speakd.clients.claude_code.watermark import state_dir
+from speakd.clients.log import LOG_CAP_BYTES
 
 PLUGIN = Path(__file__).resolve().parent.parent / "clients" / "claude-code"
 # Read from the manifest rather than restated, so the two cannot drift.
@@ -434,7 +435,7 @@ def test_the_log_is_capped_rather_than_growing_without_end(  # type: ignore[no-u
     for index in range(4000):
         hook._log(f"line {index} " + "x" * 120)
     size = log.stat().st_size
-    assert size <= hook.LOG_CAP_BYTES * 2, f"the log reached {size} bytes"
+    assert size <= LOG_CAP_BYTES * 2, f"the log reached {size} bytes"
 
     written = log.read_text(encoding="utf-8")
     assert "line 3999" in written, "the cap threw away the newest entry, not the oldest"

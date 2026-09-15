@@ -7,7 +7,13 @@ import pytest
 from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginHost
 from speakd.plugins.registry import ServiceRegistry
-from speakd.profiles import DEFAULT_PROFILE, Profile, load_profiles, resolve_chain
+from speakd.profiles import (
+    DEFAULT_PROFILE,
+    NOTIFICATION_PROFILE,
+    Profile,
+    load_profiles,
+    resolve_chain,
+)
 
 
 def test_default_profile_speaks_markdown_and_pronunciation() -> None:
@@ -36,9 +42,28 @@ interrupt_on = ["error", "done"]
     assert profiles["monitor"].interrupt_on == ("error", "done")
 
 
-def test_load_profiles_on_a_missing_file_yields_only_the_default(tmp_path: Path) -> None:
+def test_load_profiles_on_a_missing_file_yields_the_built_in_profiles(tmp_path: Path) -> None:
     profiles = load_profiles(tmp_path / "absent.toml")
-    assert profiles == {"default": DEFAULT_PROFILE}
+    assert profiles == {"default": DEFAULT_PROFILE, "notification": NOTIFICATION_PROFILE}
+
+
+def test_the_notification_profile_does_not_run_the_markdown_transform() -> None:
+    """A notification is not a markdown document; block splitting is wrong for one."""
+    assert "markdown" not in NOTIFICATION_PROFILE.transforms
+    assert "pronunciation" in NOTIFICATION_PROFILE.transforms
+
+
+def test_the_notification_profile_speaks_in_a_different_voice_from_the_default() -> None:
+    """Knowing it is a notification without looking is the point of the profile."""
+    assert NOTIFICATION_PROFILE.voice != DEFAULT_PROFILE.voice
+
+
+def test_a_user_can_replace_the_built_in_notification_profile(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.notification]\ntransforms = []\nvoice = "af_bella"\n')
+    profiles = load_profiles(path)
+    assert profiles["notification"].voice == "af_bella"
+    assert profiles["notification"].transforms == ()
 
 
 def test_load_profiles_rejects_a_non_positive_speed(tmp_path: Path) -> None:

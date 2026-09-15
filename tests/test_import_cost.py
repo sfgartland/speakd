@@ -28,11 +28,11 @@ def _modules_after_importing(module: str) -> set[str]:
 
 
 def test_the_hooks_send_path_does_not_import_numpy() -> None:
-    loaded = _modules_after_importing("speakd.clients.claude_code.send")
+    loaded = _modules_after_importing("speakd.clients.send")
     assert "numpy" not in loaded
 
 
 def test_the_hooks_send_path_does_not_import_the_pipeline() -> None:
-    loaded = _modules_after_importing("speakd.clients.claude_code.send")
+    loaded = _modules_after_importing("speakd.clients.send")
     assert "speakd.pipeline" not in loaded
     assert "speakd.profiles" not in loaded

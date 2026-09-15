@@ -8,12 +8,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from speakd.clients.notifications import history, rules
+from speakd.clients.notifications.starter import STARTER_TOML
 from speakd.model import Piece, Role, Span
-from speakd.paths import default_profiles_path, default_socket_path
+from speakd.paths import default_notifications_path, default_profiles_path, default_socket_path
 from speakd.pipeline import speak
 from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginHost
@@ -156,6 +160,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("subscribe", parents=[common], help="stream events as JSON lines")
     sub.add_parser("status", parents=[common], help="print the daemon's channels as JSON")
+
+    notify = sub.add_parser("notify", help="the desktop notification connector")
+    notify_sub = notify.add_subparsers(dest="notify_command")
+    recent = notify_sub.add_parser("recent", help="what arrived, and what was decided about it")
+    # Untyped and checked in the handler, like `priority` above: argparse's
+    # `type=int` exits the process where every other failure here returns a code.
+    recent.add_argument("--limit", metavar="N", default="20", help="how many to show")
+    recent.add_argument("--clear", action="store_true", help="forget everything recorded so far")
+    notify_sub.add_parser(
+        "tap",
+        help="watch notifications arrive and say what would happen, speaking nothing",
+    )
+    init = notify_sub.add_parser("init", help="write a starter rules file")
+    init.add_argument("--force", action="store_true", help="overwrite an existing file")
+    test = notify_sub.add_parser("test", help="ask the rules what they would do with one")
+    test.add_argument("app")
+    test.add_argument("summary", nargs="?", default="")
+    test.add_argument("body", nargs="?", default="")
+    test.add_argument("--urgency", default="normal", help="low, normal or critical")
     return parser
 
 
@@ -535,6 +558,156 @@ def _subscribe(args: argparse.Namespace) -> int:
     return 0
 
 
+_URGENCIES = {"low": 0, "normal": 1, "critical": 2}
+
+
+def _notify(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if args.notify_command == "recent":
+        return _notify_recent(args)
+    if args.notify_command == "tap":
+        return _notify_tap()
+    if args.notify_command == "init":
+        return _notify_init(args)
+    if args.notify_command == "test":
+        return _notify_test(args)
+    parser.print_usage(sys.stderr)
+    return 2
+
+
+def _load_rules_for_cli() -> rules.Ruleset | None:
+    """The rules as the connector would see them, or a message and None."""
+    path = default_notifications_path()
+    try:
+        return rules.load_rules(path)
+    except ValueError as exc:
+        sys.stderr.write(f"speakctl: {path}: {exc}\n")
+        return None
+
+
+def _describe(entry: history.Entry) -> str:
+    stamp = time.strftime("%H:%M:%S", time.localtime(entry.when))
+    outcome = "spoken " if entry.spoken else "skipped"
+    note = entry.rule or entry.reason or "no rule matched"
+    said = " ".join(f"{entry.summary} {entry.body}".split())
+    return f"{stamp}  {outcome}  {entry.app:<18.18}  {note:<22.22}  {said[:60]}"
+
+
+def _notify_recent(args: argparse.Namespace) -> int:
+    if args.clear:
+        history.clear()
+        sys.stdout.write("forgotten\n")
+        return 0
+    try:
+        limit = int(args.limit)
+    except ValueError:
+        sys.stderr.write(f"speakctl: --limit must be an integer, got {args.limit!r}\n")
+        return 2
+    entries = history.recent(limit=limit)
+    if not entries:
+        # The likeliest reason by far, and the one nobody guesses: the
+        # connector has never run, so nothing has ever been recorded.
+        sys.stdout.write(
+            "nothing recorded yet -- is the daemon running with the notification "
+            "connector enabled?\n"
+        )
+        return 0
+    for entry in entries:
+        sys.stdout.write(_describe(entry) + "\n")
+    return 0
+
+
+def _notify_tap() -> int:
+    """Watch the bus and report, speaking nothing.
+
+    Speaking nothing is the point: this is what you run while you send
+    yourself a message from another device, to find out what the app that
+    sent it calls itself before writing a rule about it.
+    """
+    from speakd.clients.notifications.monitor import Monitor, busctl_owner, stream
+
+    ruleset = _load_rules_for_cli()
+    if ruleset is None:
+        return 2
+    stop = threading.Event()
+    sys.stdout.write("watching for notifications; nothing here is spoken. Ctrl-C to stop.\n")
+    sys.stdout.flush()
+    try:
+        for note in stream(Monitor(owner=busctl_owner), stop):
+            verdict = rules.decide(note, ruleset)
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "app": note.app,
+                        "summary": note.summary,
+                        "body": note.body,
+                        "urgency": note.urgency,
+                        "desktop_entry": note.desktop_entry,
+                        "would_speak": verdict.speak,
+                        "rule": verdict.rule,
+                        "reason": verdict.reason,
+                        "text": verdict.text,
+                    }
+                )
+                + "\n"
+            )
+            # Flushed per notification: this is watched live, and a tap that
+            # shows nothing until its buffer fills is a tap that looks broken.
+            sys.stdout.flush()
+    except FileNotFoundError:
+        sys.stderr.write("speakctl: busctl is not installed; notifications cannot be read\n")
+        return 1
+    except KeyboardInterrupt:
+        stop.set()
+    return 0
+
+
+def _notify_init(args: argparse.Namespace) -> int:
+    path = default_notifications_path()
+    if path.exists() and not args.force:
+        sys.stderr.write(f"speakctl: {path} already exists; pass --force to overwrite it\n")
+        return 1
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(STARTER_TOML, encoding="utf-8")
+    except OSError as exc:
+        sys.stderr.write(f"speakctl: could not write {path}: {exc}\n")
+        return 1
+    sys.stdout.write(f"{path}\n")
+    return 0
+
+
+def _notify_test(args: argparse.Namespace) -> int:
+    """Answer what the rules would do, without waiting for a real message."""
+    from speakd.clients.notifications.monitor import Notification
+
+    urgency = _URGENCIES.get(args.urgency)
+    if urgency is None:
+        wanted = ", ".join(sorted(_URGENCIES))
+        sys.stderr.write(f"speakctl: --urgency must be one of {wanted}, got {args.urgency!r}\n")
+        return 2
+    ruleset = _load_rules_for_cli()
+    if ruleset is None:
+        return 2
+    note = Notification(app=args.app, summary=args.summary, body=args.body, urgency=urgency)
+    verdict = rules.decide(note, ruleset)
+    sys.stdout.write(
+        json.dumps(
+            {
+                "speak": verdict.speak,
+                "rule": verdict.rule,
+                "reason": verdict.reason,
+                "channel": verdict.channel,
+                "label": verdict.label,
+                "profile": verdict.profile,
+                "text": verdict.text,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -568,6 +741,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _status(args)
     if args.command == "subscribe":
         return _subscribe(args)
+    if args.command == "notify":
+        return _notify(args, parser)
     parser.print_usage(sys.stderr)
     return 2
 

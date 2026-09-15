@@ -10,7 +10,7 @@ import pytest
 
 from speakd import transport
 from speakd.channels import ChannelTable
-from speakd.clients.claude_code.send import enqueue, hush, send
+from speakd.clients.send import enqueue, hush, send
 from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece

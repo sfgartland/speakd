@@ -136,6 +136,38 @@ def _close_player(player: Player) -> None:
         sys.stderr.write(f"speakd: could not release the audio device: {exc!r}\n")
 
 
+# One per client connector: the environment variable that suppresses it, and
+# the module to run. Data rather than a branch each, because the next client
+# should be a line here and nothing else.
+CONNECTORS: tuple[tuple[str, str], ...] = (
+    ("SPEAKD_NO_FOLLOWER", "speakd.clients.claude_code.follow"),
+    ("SPEAKD_NO_NOTIFY", "speakd.clients.notifications.follow"),
+)
+
+
+def _start_children() -> list[Supervisor]:
+    """Start the client connectors under supervision.
+
+    Called after the socket exists, never before: a child's first act is to
+    connect to it, and one that starts into a closed socket spends its backoff
+    on an absence we created.
+
+    Each is suppressible on its own. The only callers of those variables are
+    the test suite -- which must never spawn a child that outlives its
+    daemon's socket and starts tailing the developer's real transcripts or
+    reading their real notifications aloud -- and someone debugging one
+    connector by hand.
+    """
+    started: list[Supervisor] = []
+    for variable, module in CONNECTORS:
+        if os.environ.get(variable):
+            continue
+        child = Supervisor([sys.executable, "-m", module])
+        child.start()
+        started.append(child)
+    return started
+
+
 def serve(daemon: Daemon, socket_path: Path) -> int:
     """Serve `daemon` on `socket_path` until a signal says to stop."""
     stop = threading.Event()
@@ -175,22 +207,13 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
         return 1
 
     server.start()
-    # After the socket, never before: the follower's first act is to connect
-    # to it, and a child that starts into a closed socket spends its backoff
-    # on an absence we created.
-    #
-    # Suppressed by SPEAKD_NO_FOLLOWER=1, whose only callers are the test
-    # suite and someone debugging the follower by hand.
-    follower: Supervisor | None = None
-    if not os.environ.get("SPEAKD_NO_FOLLOWER"):
-        follower = Supervisor([sys.executable, "-m", "speakd.clients.claude_code.follow"])
-        follower.start()
+    children = _start_children()
 
     stop.wait()
-    # Before the daemon goes quiet, so the follower cannot enqueue into a
-    # daemon that is shutting down and have it discarded as unspoken.
-    if follower is not None:
-        follower.stop()
+    # Before the daemon goes quiet, so a client cannot enqueue into a daemon
+    # that is shutting down and have it discarded as unspoken.
+    for child in children:
+        child.stop()
     # Silenced first, so Ctrl-C goes quiet at once. The two calls below keep
     # their order: server.stop()'s shutdown() is what frees a speech worker
     # wedged writing to a subscriber that stopped reading, and putting
