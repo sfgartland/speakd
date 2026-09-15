@@ -116,6 +116,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # the other to anyone calling `main`.
     priority.add_argument("priority", metavar="INTEGER", help="higher is heard first")
 
+    label = sub.add_parser("label", parents=[common], help="name a channel for display")
+    # Emptiness is checked in `_label`, not by an argparse `type=` callable,
+    # for the reason the two above give: argparse raises SystemExit, and this
+    # subcommand has to fail in the same shape as its neighbours.
+    label.add_argument("label", help="what to show for this channel")
+
     # Transport, in the same shape as the verbs above: --source, --socket,
     # and one line back when nothing answers.
     sub.add_parser("pause", parents=[common], help="suspend playback where it is")
@@ -426,6 +432,19 @@ def _priority(args: argparse.Namespace) -> int:
     return 0 if response.ok else _refused(response)
 
 
+def _label(args: argparse.Namespace) -> int:
+    if not args.label.strip():
+        print("speakctl: a label must not be empty", file=sys.stderr)
+        return _UNREACHABLE
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_LABEL, source_id=args.source, payload={"label": args.label}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
 def _status(args: argparse.Namespace) -> int:
     response = _call(args.socket, Request(verb=Verb.STATUS, source_id=args.source))
     if response is None:
@@ -479,6 +498,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _role(args)
     if args.command == "priority":
         return _priority(args)
+    if args.command == "label":
+        return _label(args)
     if args.command == "status":
         return _status(args)
     if args.command == "subscribe":

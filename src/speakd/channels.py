@@ -83,6 +83,9 @@ class ChannelTable:
     def set_priority(self, source_id: str, priority: int) -> None:
         self.open(source_id, priority=priority)
 
+    def set_label(self, source_id: str, label: str) -> None:
+        self.open(source_id, label=label)
+
     def all(self) -> list[Channel]:
         with self._lock:
             channels = list(self._channels.values())

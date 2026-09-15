@@ -21,6 +21,7 @@ class Verb(str, Enum):
     SEEK = "seek"
     SET_ROLE = "set_role"
     SET_PRIORITY = "set_priority"
+    SET_LABEL = "set_label"
     SUBSCRIBE = "subscribe"
     STATUS = "status"
 

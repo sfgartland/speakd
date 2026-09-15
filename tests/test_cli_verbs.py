@@ -273,6 +273,37 @@ def test_priority_sets_the_channel_priority(running) -> None:  # type: ignore[no
     assert channel is not None and channel.priority == 7
 
 
+def test_label_names_the_channel(running) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, _player = running
+    assert main(["label", "PhD session", "--source", "s", "--socket", str(address)]) == 0
+    channel = daemon.channels.get("s")
+    assert channel is not None and channel.label == "PhD session"
+
+
+def test_a_label_reaches_status_where_a_gui_would_read_it(running, capsys) -> None:  # type: ignore[no-untyped-def]
+    """The whole point of the verb: a listing of names, not of UUIDs."""
+    address, _daemon, _player = running
+    assert main(["label", "PhD session", "--source", "s", "--socket", str(address)]) == 0
+    assert main(["status", "--socket", str(address)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert any(c["source_id"] == "s" and c["label"] == "PhD session" for c in payload["channels"])
+
+
+def test_a_blank_label_fails_the_same_way_as_a_bad_role(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """Checked in the client, for the reason `role` and `priority` are.
+
+    The socket named here does not exist: were the check left to the daemon,
+    this would print "no daemon" rather than what was wrong with the
+    argument, and argparse would have exited the process instead of
+    returning a code to whoever called `main`.
+    """
+    missing = tmp_path / "absent.sock"
+    assert main(["label", "   ", "--source", "s", "--socket", str(missing)]) == 2
+    err = capsys.readouterr().err
+    assert "label" in err
+    assert "no daemon" not in err
+
+
 def test_status_prints_the_channels_as_json(running, capsys) -> None:  # type: ignore[no-untyped-def]
     address, _daemon, _player = running
     main(["priority", "3", "--source", "a", "--socket", str(address)])

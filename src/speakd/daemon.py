@@ -428,6 +428,15 @@ class Daemon:
                 return Response(ok=False, error="priority must be an integer")
             self.channels.set_priority(request.source_id, raw_priority)
             return Response(ok=True)
+        if request.verb is Verb.SET_LABEL:
+            label = request.payload.get("label")
+            # A blank label is what an unnamed channel already carries, so
+            # storing one would answer `ok` to a request that leaves the
+            # listing showing the source_id it was sent to replace.
+            if not isinstance(label, str) or not label.strip():
+                return Response(ok=False, error="set_label needs a non-empty label")
+            self.channels.set_label(request.source_id, label)
+            return Response(ok=True, data={"label": label})
         return Response(ok=False, error=f"{request.verb.value} is not handled here")
 
     def _enqueue(self, request: Request) -> Response:
