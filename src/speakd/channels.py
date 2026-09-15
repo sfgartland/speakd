@@ -23,6 +23,7 @@ class Channel:
     priority: int = 0
     profile: str = "default"
     label: str = ""
+    muted: bool = False
 
 
 class ChannelTable:
@@ -52,6 +53,7 @@ class ChannelTable:
         priority: int | None = None,
         profile: str | None = None,
         label: str | None = None,
+        muted: bool | None = None,
     ) -> Channel:
         """Create the channel, or update the one already there."""
         with self._lock:
@@ -67,6 +69,8 @@ class ChannelTable:
                 channel.profile = profile
             if label is not None:
                 channel.label = label
+            if muted is not None:
+                channel.muted = muted
             return channel
 
     def get(self, source_id: str) -> Channel | None:
@@ -85,6 +89,9 @@ class ChannelTable:
 
     def set_label(self, source_id: str, label: str) -> None:
         self.open(source_id, label=label)
+
+    def set_muted(self, source_id: str, muted: bool) -> None:
+        self.open(source_id, muted=muted)
 
     def all(self) -> list[Channel]:
         with self._lock:

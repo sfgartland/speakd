@@ -122,6 +122,31 @@ def _build_parser() -> argparse.ArgumentParser:
     # subcommand has to fail in the same shape as its neighbours.
     label.add_argument("label", help="what to show for this channel")
 
+    # The off switches are daemon-wide unless told otherwise, which is the
+    # one place `--source cli` would be wrong: `speakctl mute` means stop
+    # talking, not stop talking to the shell that just asked. Its own parent
+    # rather than a per-subcommand override, so the four cannot drift apart.
+    wide = argparse.ArgumentParser(add_help=False)
+    wide.add_argument(
+        "--source",
+        default="",
+        help="the channel this applies to (default: the whole daemon)",
+    )
+    wide.add_argument(
+        "--socket",
+        type=Path,
+        default=default_socket_path(),
+        help="where the daemon listens (default: %(default)s)",
+    )
+
+    # Two levels of off, and the difference is three gigabytes: mute keeps
+    # the model loaded and starts speaking again the instant it is cleared,
+    # disable gives the memory back and takes tens of seconds to come round.
+    sub.add_parser("mute", parents=[wide], help="stop speaking, keeping the model loaded")
+    sub.add_parser("unmute", parents=[wide], help="speak again")
+    sub.add_parser("disable", parents=[wide], help="unload the model; nothing is spoken")
+    sub.add_parser("enable", parents=[wide], help="load the model again")
+
     # Transport, in the same shape as the verbs above: --source, --socket,
     # and one line back when nothing answers.
     sub.add_parser("pause", parents=[common], help="suspend playback where it is")
@@ -432,6 +457,42 @@ def _priority(args: argparse.Namespace) -> int:
     return 0 if response.ok else _refused(response)
 
 
+def _mute(args: argparse.Namespace, muted: bool) -> int:
+    """mute and unmute. Silent on success, like every other switch here."""
+    response = _call(
+        args.socket,
+        Request(verb=Verb.MUTE, source_id=args.source, payload={"muted": muted}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
+def _set_engine(args: argparse.Namespace, loaded: bool) -> int:
+    """enable and disable.
+
+    `enable` returns while the model is still loading -- tens of seconds of
+    it -- so it says so. An off switch may be silent because it took effect
+    before the command returned; an on switch that stays quiet for half a
+    minute reads as one that did nothing.
+    """
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_ENGINE, source_id=args.source, payload={"loaded": loaded}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    if not response.ok:
+        return _refused(response)
+    if response.data.get("loading") is True:
+        print(
+            "speakctl: loading the model; speech starts when it is ready "
+            "(watch for the `engine` event on `speakctl subscribe`)",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def _label(args: argparse.Namespace) -> int:
     if not args.label.strip():
         print("speakctl: a label must not be empty", file=sys.stderr)
@@ -500,6 +561,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _priority(args)
     if args.command == "label":
         return _label(args)
+    if args.command == "mute":
+        return _mute(args, True)
+    if args.command == "unmute":
+        return _mute(args, False)
+    if args.command == "disable":
+        return _set_engine(args, False)
+    if args.command == "enable":
+        return _set_engine(args, True)
     if args.command == "status":
         return _status(args)
     if args.command == "subscribe":

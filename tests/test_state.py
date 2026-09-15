@@ -1,6 +1,7 @@
 """Tests for the flags that outlive a daemon."""
 
 import json
+import pathlib
 
 from speakd.state import DaemonState, load, save, state_path
 
@@ -37,3 +38,14 @@ def test_unknown_keys_are_ignored(monkeypatch, tmp_path) -> None:  # type: ignor
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"muted": True, "from_a_later_version": 1}))
     assert load() == DaemonState(muted=True, disabled=False)
+
+
+def test_the_suite_never_reads_the_developers_real_state() -> None:
+    """The isolation in conftest is load-bearing, so it gets an assertion.
+
+    Without it, every file that builds a `Daemon` without ever naming
+    `speakd.state` -- and there are five -- reads the machine's real mute
+    flag. One genuine `speakctl mute` would then make unrelated suites fail
+    for a reason nowhere in their own source.
+    """
+    assert pathlib.Path.home() not in state_path().parents

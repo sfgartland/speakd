@@ -154,15 +154,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    from speakd import state
     from speakd.synth.kokoro_engine import KokoroEngine
+    from speakd.synth.lazy import LazyEngine
 
-    try:
-        engine = KokoroEngine()
-    except ModuleNotFoundError:
-        # Constructing the engine is what imports kokoro; without the extra
-        # this would otherwise arrive as an uncaught traceback.
-        sys.stderr.write("speakd: the kokoro extra is not installed (uv sync --extra kokoro)\n")
-        return 2
+    # The class attributes, not an instance: `build_player` below needs the
+    # rate to open its sink, and asking an instance for it would mean loading
+    # the model this whole path exists to be able to not load.
+    engine = LazyEngine(KokoroEngine, name=KokoroEngine.name, sample_rate=KokoroEngine.sample_rate)
+
+    def load() -> None:
+        try:
+            engine.load()
+        except ModuleNotFoundError:
+            # Constructing KokoroEngine is what imports kokoro, and that no
+            # longer happens on the main thread, so without this the missing
+            # extra would arrive as a traceback on a thread nobody is
+            # watching. The daemon stays up and says nothing: `status` shows
+            # the engine unloaded, and `speakctl enable` retries once the
+            # extra is installed.
+            sys.stderr.write("speakd: the kokoro extra is not installed (uv sync --extra kokoro)\n")
+
+    if not state.load().disabled:
+        # On a thread, so the socket appears at once rather than thirty
+        # seconds later. The README already tells users that the socket
+        # appearing is the readiness signal; this is the first release in
+        # which that is true.
+        threading.Thread(target=load, name="speakd-engine-load", daemon=True).start()
 
     daemon = Daemon(
         engine,

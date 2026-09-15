@@ -312,6 +312,75 @@ def test_status_prints_the_channels_as_json(running, capsys) -> None:  # type: i
     assert any(c["source_id"] == "a" and c["priority"] == 3 for c in payload["channels"])
 
 
+def test_mute_and_unmute_reach_the_daemon(running) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, _player = running
+    assert main(["mute", "--socket", str(address)]) == 0
+    assert daemon.muted is True
+    assert main(["unmute", "--socket", str(address)]) == 0
+    assert daemon.muted is False
+
+
+def test_mute_without_a_source_means_the_whole_daemon(running) -> None:  # type: ignore[no-untyped-def]
+    """`speakctl mute` means stop talking, not stop talking to this shell.
+
+    Every other verb here defaults `--source` to `cli`, which for a mute
+    would silence a channel nothing speaks on and leave the room as loud as
+    it was -- and leave a phantom `cli` channel behind to show for it.
+    """
+    address, daemon, _player = running
+    assert main(["mute", "--socket", str(address)]) == 0
+    assert daemon.muted is True
+    assert daemon.channels.get("cli") is None
+
+
+def test_mute_can_name_one_channel(running) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, _player = running
+    assert main(["mute", "--source", "s", "--socket", str(address)]) == 0
+    channel = daemon.channels.get("s")
+    assert channel is not None and channel.muted is True
+    assert daemon.muted is False, "a channel mute silenced the whole daemon"
+
+
+def test_status_prints_the_two_off_switches(running, capsys) -> None:  # type: ignore[no-untyped-def]
+    """What a control surface reads to draw them."""
+    address, _daemon, _player = running
+    assert main(["status", "--socket", str(address)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["muted"] is False
+    assert payload["engine"] == {"loaded": True, "loading": False}
+
+
+def test_disable_on_a_daemon_whose_engine_cannot_be_unloaded_names_it(running, capsys) -> None:  # type: ignore[no-untyped-def]
+    """The same answer `pause` gives a player that cannot pause."""
+    address, _daemon, _player = running
+    assert main(["disable", "--socket", str(address)]) != 0
+    err = capsys.readouterr().err
+    assert "FakeEngine" in err
+    assert "Traceback" not in err
+
+
+def test_enable_and_disable_drive_a_lazy_engine(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """End to end over the socket, on the engine the shipping daemon now runs."""
+    from speakd.synth.lazy import LazyEngine
+
+    engine = LazyEngine(FakeEngine, sample_rate=24000)
+    daemon = Daemon(engine, RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable())
+    daemon.start()
+    server = SocketServer(tmp_path / "speakd.sock", daemon.handle, daemon.bus)
+    server.start()
+    try:
+        assert main(["enable", "--socket", str(server.address)]) == 0
+        assert _until(lambda: engine.loaded), "enable never loaded the model"
+        # An on switch that stays quiet for half a minute reads as one that
+        # did nothing, so it says what it is doing.
+        assert "loading" in capsys.readouterr().err
+        assert main(["disable", "--socket", str(server.address)]) == 0
+        assert not engine.loaded
+    finally:
+        server.stop()
+        daemon.stop()
+
+
 def test_status_does_not_open_a_channel_for_itself(running, capsys) -> None:  # type: ignore[no-untyped-def]
     """Asking what the channels are must not add one."""
     address, daemon, _player = running

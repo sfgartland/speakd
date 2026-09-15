@@ -22,6 +22,8 @@ class Verb(str, Enum):
     SET_ROLE = "set_role"
     SET_PRIORITY = "set_priority"
     SET_LABEL = "set_label"
+    MUTE = "mute"
+    SET_ENGINE = "set_engine"
     SUBSCRIBE = "subscribe"
     STATUS = "status"
 
