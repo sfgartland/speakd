@@ -149,3 +149,51 @@ def test_a_citation_range_survives_the_rest_of_the_table() -> None:
     assert say("See §12, e.g. pp. 34-38, ca. 1787.") == (
         "See §12, for example pp. 34 to 38, ca. 1787."
     )
+
+
+# --- paths, calls, dashes -------------------------------------------------
+
+
+def test_an_empty_call_loses_its_parentheses() -> None:
+    assert say("Call speakable() first.") == "Call speakable first."
+
+
+def test_a_path_is_read_as_separated_names() -> None:
+    assert say("~/.claude/settings.json") == "dot claude, settings dot jason"
+
+
+def test_a_leading_dot_slash_goes_too() -> None:
+    assert say("./src/speakd") == "src, speakd"
+
+
+def test_a_url_is_left_alone() -> None:
+    # Speaking "https, , example dot com" is worse than speaking the URL.
+    assert "https://example.com/x" in say("See https://example.com/x now.")
+
+
+def test_an_em_dash_becomes_a_comma() -> None:
+    assert say("One thing — and another.") == "One thing, and another."
+
+
+def test_gui_is_pronounced() -> None:
+    assert say("the GUI") == "the gooey"
+
+
+def test_the_new_acronyms_are_spelled_out() -> None:
+    assert say("PDF") == "P D F"
+    assert say("CPU") == "C P U"
+
+
+def test_a_url_survives_the_filename_rule_too() -> None:
+    # The path rule declines this URL on its own, so the domain would still
+    # reach the filename rule as "example dot com" if the exemption lived
+    # inside the path rule rather than above every rule.
+    assert say("Fetch https://example.com/a/b.json now.") == (
+        "Fetch https://example.com/a/b.json now."
+    )
+
+
+def test_prose_around_a_url_is_still_rewritten() -> None:
+    assert say("The API at https://example.com/x — see settings.json.") == (
+        "The A P I at https://example.com/x, see settings dot jason."
+    )

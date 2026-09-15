@@ -37,6 +37,14 @@ something. Added today it buys nothing.
 Citation keys are likewise absent by design, not oversight: reading
 "@Stiegler-1994" as an author and a year is domain knowledge, and the design
 doc assigns it to the separately installable vault pack.
+
+Two orderings in `_rewrite` are load-bearing and will not survive being
+rearranged for tidiness. The em dash is taken before the literal table,
+because that table rewrites "..." and "->" and either could otherwise carve a
+dash out of a run of punctuation this rule has not seen yet. And the path rule
+runs before the filename rule, because the filename rule would otherwise
+rewrite the extension inside a path and leave its "dot" sitting beside the
+comma the path rule puts there.
 """
 
 from __future__ import annotations
@@ -70,6 +78,33 @@ _LITERAL: tuple[tuple[str, str], ...] = (
 
 _FILENAME = re.compile(r"([A-Za-z0-9_-]{2,})\.([a-z]{1,10})")
 _CHAINED = re.compile(r"(dot [A-Za-z0-9_-]+)\.([A-Za-z]{1,10})")
+
+# "speakable()" reaches the engine with its parentheses intact and is spoken
+# as such. Only the empty pair: a call with arguments in prose is rare, and
+# stripping its brackets would weld the arguments onto the name.
+_EMPTY_CALL = re.compile(r"(?<=\w)\(\)")
+
+# A path is a run of name-and-slash with no spaces. Read literally the engine
+# says "slash" between every segment; as commas it reads as the list of names
+# it is. A leading "~/" or "./" carries no information a listener wants, and a
+# hidden name keeps its dot as a word -- "dot claude" is how one is said aloud,
+# and a bare dot would read as a sentence boundary mid-segment, which is the
+# same damage the filename rule exists to undo.
+_PATH = re.compile(r"(?<![\w:/])(?:~/|\./)?(?:[\w.@+-]+/)+[\w.@+-]+")
+
+# A URL is exempt from every rule in this module, which is why the exemption
+# sits above them all rather than inside the path rule: three of them bite a
+# URL independently. The path rule takes its host and directories, the
+# filename rule takes the dot out of "example.com" even when the path rule has
+# already declined the whole token, and the range rule is free to rewrite
+# digits in a query string. A URL read back as separated names is not
+# something a listener can type, so none of that is a trade worth making.
+_URL = re.compile(r"(\w+://\S+)")
+
+# An em dash between clauses is a prosodic break the engine does not take on
+# its own. The surrounding whitespace goes with it, or the comma arrives with
+# a space in front of it.
+_EM_DASH = re.compile(r"\s*—\s*")
 
 # A numeric range — "pp. 34-38" — is the one number pattern the engine gets
 # wrong on its own. It fuses the two halves into a single run with no
@@ -128,6 +163,18 @@ def _spoken_range(match: re.Match[str]) -> str:
     return f"{left} to {right}"
 
 
+def _spoken_path(match: re.Match[str]) -> str:
+    """Read a path as the list of names it is."""
+    token = match.group(0)
+    for prefix in ("~/", "./"):
+        if token.startswith(prefix):
+            token = token[len(prefix) :]
+            break
+    if token.startswith("."):
+        token = "dot " + token[1:]
+    return token.replace("/", ", ")
+
+
 # Longer forms first: JSONL before JSON, HTTPS before HTTP.
 #
 # \b on both ends because these are whole words, not substrings: without it
@@ -145,6 +192,19 @@ _WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bAPIs\b"), "A P I s"),
     (re.compile(r"\bAPI\b"), "A P I"),
     (re.compile(r"\bCLI\b"), "C L I"),
+    (re.compile(r"\bGUI\b"), "gooey"),
+    (re.compile(r"\bHTML\b"), "H T M L"),
+    (re.compile(r"\bTTS\b"), "T T S"),
+    (re.compile(r"\bPDF\b"), "P D F"),
+    (re.compile(r"\bXDG\b"), "X D G"),
+    (re.compile(r"\bRTF\b"), "R T F"),
+    (re.compile(r"\bOCR\b"), "O C R"),
+    (re.compile(r"\bCSV\b"), "C S V"),
+    (re.compile(r"\bSSH\b"), "S S H"),
+    (re.compile(r"\bCPU\b"), "C P U"),
+    (re.compile(r"\bGPU\b"), "G P U"),
+    (re.compile(r"\bIDE\b"), "I D E"),
+    (re.compile(r"\bCI\b"), "C I"),
     (re.compile(r"\bSQL\b", re.I), "sequel"),
     (re.compile(r"\bURLs\b"), "U R L s"),
     (re.compile(r"\bURL\b"), "U R L"),
@@ -156,17 +216,36 @@ _WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-def _apply(text: str) -> str:
+def _rewrite(text: str) -> str:
     # Ranges first: the literal table rewrites "->" and "..." and there is no
     # reason to let either reach a range before this rule has seen it.
     text = _NUMERIC_RANGE.sub(_spoken_range, text)
+    # Ahead of that table for the same reason: it is free to carve a piece out
+    # of a run of punctuation before this rule has seen the dash in it.
+    text = _EM_DASH.sub(", ", text)
+    text = _EMPTY_CALL.sub("", text)
     for needle, replacement in _LITERAL:
         text = text.replace(needle, replacement)
+    # Before _FILENAME, which would otherwise rewrite the extension inside a
+    # path and leave a "dot" for this rule's comma to land beside.
+    text = _PATH.sub(_spoken_path, text)
     text = _FILENAME.sub(r"\1 dot \2", text)
     text = _CHAINED.sub(r"\1 dot \2", text)
     for pattern, replacement in _WORDS:
         text = pattern.sub(replacement, text)
-    return " ".join(text.split())
+    return text
+
+
+def _apply(text: str) -> str:
+    # Splitting on a capturing pattern hands the delimiters back too, so the
+    # odd-numbered parts are the URLs and go through untouched. Whitespace is
+    # normalised once, at the end: the literal table pads its replacements and
+    # relies on that collapse, and the parts have to be rejoined verbatim or
+    # the spaces that bound a URL vanish with it.
+    rewritten = "".join(
+        part if index % 2 else _rewrite(part) for index, part in enumerate(_URL.split(text))
+    )
+    return " ".join(rewritten.split())
 
 
 def pronunciation(pieces: Sequence[Piece]) -> list[Piece]:
