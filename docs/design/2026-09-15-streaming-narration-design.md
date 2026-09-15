@@ -399,6 +399,45 @@ own, and `hush` reaches it like anything else.
 Text is capped at 8 KiB. Beyond that the box refuses and says so, rather than
 handing the segmenter a novel.
 
+## §9 — The daemon does not run transforms at all
+
+Found on 2026-09-15, while checking that §2's work was audible. It was not.
+
+`__main__._profile_for` hands the daemon a `prepare` that returns its input
+untouched:
+
+```python
+def _profile_for(name: str) -> ProfileView:
+    # Until the plugin host is wired in, every profile speaks plainly.
+    def prepare(pieces): return list(pieces), []
+```
+
+and neither `__main__.py` nor `daemon.py` so much as mentions `PluginHost`,
+`register_builtins`, `resolve_chain` or `apply_chain`. `cli.py` wires all four,
+which is why `speakctl say` sounded correct throughout and hid this.
+
+So every route through the daemon — which is every route Claude Code uses —
+speaks **raw markdown**: asterisks, backticks, pipes and all. This is almost
+certainly the "issues in the formatting" the owner reported, and it means §2
+delivered nothing audible on its own.
+
+### What to do
+
+`__main__` builds a `PluginHost(ServiceRegistry())`, calls `register_builtins`,
+loads `profiles.toml` from the XDG path, and gives `ProfileView.prepare` a
+closure over `resolve_chain` + `apply_chain` — the same four calls `cli.py`
+already makes at lines 235-245. The host is built **once** at startup, not per
+utterance: it is on the path to first audio.
+
+A missing `profiles.toml` is not an error; `load_profiles` already returns the
+default profile, and the default profile already names `markdown` and
+`pronunciation`.
+
+**Corollary worth stating:** the daemon has been reporting `missing_transforms`
+nowhere, because it resolves no chain to have anything missing from. Once the
+chain is real, a profile naming a transform nobody provides must surface on the
+bus, as `speakctl say` already surfaces it on stderr.
+
 ## §8 — Testing
 
 - **Transforms** are pure functions: unit tests per rule, plus one that a
