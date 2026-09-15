@@ -156,6 +156,21 @@ def test_cancel_is_accepted(running) -> None:  # type: ignore[no-untyped-def]
     assert main(["cancel", "--source", "s", "--socket", str(address)]) == 0
 
 
+def test_hush_and_cancel_default_to_the_whole_daemon() -> None:
+    """The parser's own default, because the default is the thing that changed.
+
+    A live daemon cannot show this up: it would answer `ok` to a hush that
+    silenced a channel called "cli" and left the room talking. `enqueue` keeps
+    that default, where speaking as this shell is exactly right.
+    """
+    from speakd.cli import _build_parser
+
+    parser = _build_parser()
+    assert parser.parse_args(["hush"]).source == ""
+    assert parser.parse_args(["cancel"]).source == ""
+    assert parser.parse_args(["enqueue", "Hello."]).source == "cli"
+
+
 def test_the_daemon_entry_point_builds_a_pausable_player() -> None:
     """A daemon whose player cannot pause makes the GUI's controls dead."""
     from speakd.__main__ import build_player
@@ -510,6 +525,36 @@ def test_cancel_does_not_report_a_discard_it_did_not_make(blocking, capsys) -> N
 
     assert main(["cancel", "--source", "s", "--socket", str(address)]) == 0
     assert "discarded" not in capsys.readouterr().err
+
+
+def test_a_bare_hush_still_means_the_whole_daemon(blocking, capsys) -> None:  # type: ignore[no-untyped-def]
+    """`--source` narrows hush now, so its default must not be this shell's channel.
+
+    `speakctl hush` typed by hand means stop talking. A default of "cli" would
+    send it to a channel nobody speaks on: exit code 0, nothing printed, and
+    the room still talking.
+    """
+    address, _daemon, player = blocking
+    assert main(["enqueue", "First.", "--source", "s", "--socket", str(address)]) == 0
+    assert _until(player.started.is_set), "the worker never reached the player"
+    assert main(["enqueue", "Second.", "--source", "s", "--socket", str(address)]) == 0
+    capsys.readouterr()
+
+    assert main(["hush", "--socket", str(address)]) == 0
+    assert "discarded 1" in capsys.readouterr().err
+
+
+def test_hush_can_name_one_channel(blocking, capsys) -> None:  # type: ignore[no-untyped-def]
+    """`--source` reaches the daemon as the scope, leaving every other channel alone."""
+    address, _daemon, player = blocking
+    assert main(["enqueue", "First.", "--source", "s", "--socket", str(address)]) == 0
+    assert _until(player.started.is_set), "the worker never reached the player"
+    assert main(["enqueue", "Second.", "--source", "s", "--socket", str(address)]) == 0
+    assert main(["enqueue", "Third.", "--source", "t", "--socket", str(address)]) == 0
+    capsys.readouterr()
+
+    assert main(["hush", "--source", "s", "--socket", str(address)]) == 0
+    assert "discarded 1" in capsys.readouterr().err
 
 
 def test_enqueue_says_when_the_rules_refused_to_speak(running, capsys) -> None:  # type: ignore[no-untyped-def]

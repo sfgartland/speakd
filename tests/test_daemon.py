@@ -147,7 +147,10 @@ def test_speaking_publishes_lifecycle_and_position_events(daemon) -> None:  # ty
     d.handle(enqueue("s", "One. Two."))
     assert d.wait_idle(timeout=5.0)
     kinds = [e.kind for e in seen]
-    assert kinds[0] == "started"
+    # `queued` comes first and on the accepting thread: an utterance is now
+    # announced when it is taken, not when it reaches the front of the queue.
+    assert kinds[0] == "queued"
+    assert kinds[1] == "started"
     assert kinds[-1] == "finished"
     assert "position" in kinds
     positions = [e for e in seen if e.kind == "position"]
@@ -930,6 +933,107 @@ def test_a_hush_discards_the_queue_behind_the_utterance_it_cancels() -> None:
     assert len(player.played) == 2
 
 
+def test_a_hush_that_names_a_channel_leaves_the_other_channels_alone() -> None:
+    """Sessions are separate, so silencing one must not empty another's queue.
+
+    The Claude Code hook has sent one hush per channel on every prompt since
+    it was written, and `send.hush` has documented itself as stopping that
+    source the whole time. Under the daemon-wide meaning these verbs used to
+    have, the first of that pair also threw away whatever a second session
+    was waiting to hear.
+    """
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["started"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("a", "Holding."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(enqueue("a", "Noisy one.")).ok is True
+        assert d.handle(enqueue("b", "Wanted one.")).ok is True
+        response = d.handle(Request(verb=Verb.HUSH, source_id="a", payload={}))
+        assert response.ok is True
+        assert response.data["discarded"] == 1
+        assert response.data["scope"] == "channel"
+        release.set()
+        assert d.wait_idle(timeout=5.0), "the queue never drained"
+    finally:
+        release.set()
+        d.stop()
+    spoken = [event.data["text"] for event in seen]
+    assert "Wanted one." in spoken, "a channel hush ate another channel's queue"
+    assert "Noisy one." not in spoken, "the hushed channel spoke anyway"
+
+
+def test_a_hush_with_no_source_still_stops_every_channel() -> None:
+    """Empty means everything, exactly as it did before the verbs took a scope."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["started"])
+    d = Daemon(FakeEngine(), player, profile_for, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("a", "Holding."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(enqueue("a", "One.")).ok is True
+        assert d.handle(enqueue("b", "Two.")).ok is True
+        response = d.handle(Request(verb=Verb.HUSH, source_id="", payload={}))
+        assert response.ok is True
+        assert response.data["discarded"] == 2
+        assert response.data["scope"] == "all"
+        release.set()
+        assert d.wait_idle(timeout=5.0), "the discarded jobs were never released"
+    finally:
+        release.set()
+        d.stop()
+    assert [event.data["text"] for event in seen] == ["Holding."], "a hush left speech behind"
+
+
+def test_a_hush_for_one_channel_does_not_cut_off_another_mid_sentence() -> None:
+    """The voice in the room belongs to someone. Only its own hush stops it."""
+    reached = threading.Event()
+    release = threading.Event()
+    player = HoldingPlayer(reached, release)
+    d = Daemon(FakeEngine(), player, profile_for, bus=EventBus(), channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(enqueue("a", "One. Two. Three."))
+        assert reached.wait(timeout=5.0), "the worker never started playing"
+        assert d.handle(Request(verb=Verb.HUSH, source_id="b", payload={})).ok is True
+        release.set()
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        release.set()
+        d.stop()
+    assert len(player.played) == 3, "a hush meant for another channel cut this one short"
+
+
+def test_cancel_reports_its_scope_as_well() -> None:
+    """Read off the response rather than inferred from the request that was sent.
+
+    A client that assumed which of the two it had asked for is how the scope
+    came to be reported at all.
+    """
+    d = Daemon(
+        FakeEngine(), RecordingPlayer(), profile_for, bus=EventBus(), channels=ChannelTable()
+    )
+    d.start()
+    try:
+        named = d.handle(Request(verb=Verb.CANCEL, source_id="s", payload={}))
+        assert named.data["scope"] == "channel"
+        everything = d.handle(Request(verb=Verb.CANCEL, source_id="", payload={}))
+        assert everything.data["scope"] == "all"
+    finally:
+        d.stop()
+
+
 def test_a_hush_does_not_eat_a_stop_that_is_already_under_way() -> None:
     """A sentinel met while draining goes back: stop() is waiting on it."""
     reached = threading.Event()
@@ -1297,7 +1401,11 @@ def test_hush_sets_the_cancel_event_under_the_lock_that_guards_it() -> None:
         watcher = LockWatchingEvent(d._idle)
         with d._idle:
             d._cancel = watcher
-        assert d.handle(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+        # No source, because a hush now reaches only the channel it names and
+        # nothing here is speaking on one: a named hush would find `_speaking`
+        # empty, set no Event, and measure nothing. The locking under test is
+        # the same either way.
+        assert d.handle(Request(verb=Verb.HUSH, source_id="", payload={})).ok is True
         # Read before the teardown can touch it. `_cancel` is still this
         # Event -- nothing has been spoken, so `_speak` never replaced it --
         # so the `d.stop()` below sets the very same object, under the lock,

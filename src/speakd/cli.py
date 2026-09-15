@@ -85,6 +85,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="where the daemon listens (default: %(default)s)",
     )
 
+    # Verbs that mean the whole daemon unless a channel is named, which is the
+    # one place `--source cli` would be wrong: `speakctl hush` means stop
+    # talking, not stop talking to the shell that just asked. Since hush and
+    # cancel started honouring their source, that default would have silenced
+    # a channel nobody speaks on and left the room talking -- exit code 0,
+    # nothing printed. Its own parent rather than a per-subcommand override,
+    # so the six cannot drift apart.
+    wide = argparse.ArgumentParser(add_help=False)
+    wide.add_argument(
+        "--source",
+        default="",
+        help="the channel this applies to (default: the whole daemon)",
+    )
+    wide.add_argument(
+        "--socket",
+        type=Path,
+        default=default_socket_path(),
+        help="where the daemon listens (default: %(default)s)",
+    )
+
     enqueue = sub.add_parser("enqueue", parents=[common], help="speak text through the daemon")
     enqueue.add_argument("text")
     enqueue.add_argument("--kind", default="response", help="what sort of utterance this is")
@@ -93,12 +113,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # These two are not synonyms, and the difference costs a queue.
     sub.add_parser(
         "hush",
-        parents=[common],
+        parents=[wide],
         help="stop talking: cancel what is being said and clear the queue",
     )
     sub.add_parser(
         "cancel",
-        parents=[common],
+        parents=[wide],
         help="skip this one: cancel what is being said, the queue continues",
     )
 
@@ -120,23 +140,6 @@ def _build_parser() -> argparse.ArgumentParser:
     # for the reason the two above give: argparse raises SystemExit, and this
     # subcommand has to fail in the same shape as its neighbours.
     label.add_argument("label", help="what to show for this channel")
-
-    # The off switches are daemon-wide unless told otherwise, which is the
-    # one place `--source cli` would be wrong: `speakctl mute` means stop
-    # talking, not stop talking to the shell that just asked. Its own parent
-    # rather than a per-subcommand override, so the four cannot drift apart.
-    wide = argparse.ArgumentParser(add_help=False)
-    wide.add_argument(
-        "--source",
-        default="",
-        help="the channel this applies to (default: the whole daemon)",
-    )
-    wide.add_argument(
-        "--socket",
-        type=Path,
-        default=default_socket_path(),
-        help="where the daemon listens (default: %(default)s)",
-    )
 
     # Two levels of off, and the difference is three gigabytes: mute keeps
     # the model loaded and starts speaking again the instant it is cleared,

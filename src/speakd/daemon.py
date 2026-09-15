@@ -72,6 +72,22 @@ _DISCARDED_HUSHED = "discarded unspoken: a hush cleared the queue before this wa
 
 _DISCARDED_MUTED = "discarded unspoken: a mute cleared the queue before this was spoken"
 
+# How much of a queued utterance a client is shown. Enough to recognise the
+# sentence that is coming; short enough that a status response listing a deep
+# queue stays a control message rather than a copy of everything waiting to be
+# said -- a paragraph the daemon is about to speak is bounded by nothing.
+QUEUE_PREVIEW_CHARS = 200
+
+
+def _preview(text: str) -> str:
+    """The head of an utterance, for a client showing what is coming.
+
+    Sliced with nothing appended. An ellipsis would be text the utterance does
+    not contain, and the obvious use for this -- matching a preview against
+    what was enqueued -- would then have to strip it first.
+    """
+    return text[:QUEUE_PREVIEW_CHARS]
+
 
 @runtime_checkable
 class Loadable(Protocol):
@@ -513,16 +529,28 @@ class Daemon:
             # talking, so the queue goes with it. Each reports what it did, so
             # a client can tell them apart from the response alone.
             #
-            # Neither is narrowed to the source that sent it. `hush` has
-            # always meant stop talking, not stop talking to me, and a client
-            # that has been reading it that way would be silently changed by
-            # scoping it now — which is why mute, where the scope is the
-            # point, asks for the same stop through the same helper rather
-            # than teaching this verb a new meaning.
+            # Both are scoped by the source that sent them: empty stops the
+            # whole daemon, a named one reaches that channel and no other.
+            # That is a deliberate break — these verbs used to ignore their
+            # source_id and stop everything, whatever was asked for — taken
+            # because the callers were already written as though the narrow
+            # meaning were the real one. `send.hush` has documented itself as
+            # "stop `source` talking" the whole time, and the Claude Code hook
+            # sends one hush per channel on every prompt: under the old
+            # meaning the first of that pair silenced a second session that
+            # had said nothing and was owed nothing. Mute reaches the same
+            # helper with the same argument, so the two switches now narrow
+            # the same way rather than one of them meaning something else.
+            #
+            # The scope is in the response, derived here from what the daemon
+            # actually did rather than left for the caller to infer from the
+            # request it sent. A client that assumed the two matched is what
+            # this answer exists to catch.
+            scope = "channel" if request.source_id else "all"
             discarded = self._stop_speaking(
-                "", drain=request.verb is Verb.HUSH, reason=_DISCARDED_HUSHED
+                request.source_id, drain=request.verb is Verb.HUSH, reason=_DISCARDED_HUSHED
             )
-            return Response(ok=True, data={"discarded": discarded})
+            return Response(ok=True, data={"discarded": discarded, "scope": scope})
         if request.verb is Verb.STATUS:
             # Read-only, deliberately: asking what the channels are must not
             # open one for the asker. `speakctl status` would otherwise leave
@@ -540,6 +568,14 @@ class Daemon:
                             "muted": c.muted,
                         }
                         for c in self.channels.all()
+                    ],
+                    # What is waiting, as well as who is connected. A client
+                    # learned of an utterance when it started and not before,
+                    # so a queue thirty deep and an empty one read the same
+                    # until the speech came out of it.
+                    "queue": [
+                        {"source_id": job.source_id, "text": _preview(job.text)}
+                        for job in self._pending_jobs()
                     ],
                     # Both levels, separately. A GUI that had only the union
                     # could not draw the two switches it is being asked to
@@ -671,6 +707,17 @@ class Daemon:
             self._pending += 1
             self._accepted += 1
             self._jobs.put(job)
+            # Read inside the same lock as the put, so the number announced is
+            # the queue this job actually joined rather than one a concurrent
+            # drain has since emptied.
+            waiting = len(self._pending_jobs())
+        # Announced only once the job is really on the queue, and outside the
+        # lock: `EventBus.publish` runs its subscribers on this thread, and one
+        # that turned round and asked the daemon anything would deadlock on a
+        # lock that does not re-enter. A client watching the stream could not
+        # otherwise see an utterance until it began speaking, which for a deep
+        # queue is minutes after it was accepted.
+        self._publish("queued", request.source_id, {"text": _preview(text), "pending": waiting})
         return Response(ok=True, data={"spoken": True})
 
     def _run(self) -> None:
@@ -740,6 +787,35 @@ class Daemon:
                 self._publish("error", job.source_id, {"message": f"speech failed: {exc!r}"})
             finally:
                 self._finish_one()
+
+    def _pending_jobs(self) -> list[_Job]:
+        """What is waiting its turn, next first. Not what is being spoken.
+
+        Read off `queue.Queue`'s own deque under `queue.Queue`'s own mutex.
+        That deque is the very thing the Queue guards, so a snapshot taken
+        under that lock cannot tear: no put or get can be half-done while this
+        runs.
+
+        A list of pending jobs kept alongside the queue would be a second
+        source of truth for one fact, and the two would disagree the first
+        time a path updated one and not the other -- `_drain_queued` puts
+        filtered jobs back, `_empty_queue` takes everything, `stop()` deposits
+        a sentinel. It is the argument `clients/claude_code/registry` makes
+        for writing the file the hook already writes rather than adding a
+        registration verb, and it holds harder here, where the two would be
+        touched by four paths instead of one. There is no drift to fix
+        because there is nothing to drift from.
+
+        Taken after `_idle` wherever both are held, which is the order
+        `_enqueue`'s own `put` already establishes. Nothing takes `_idle`
+        while holding this one.
+
+        The `None`s are stop signals for the worker, not speech anyone asked
+        for, so they are not part of what is waiting to be said.
+        """
+        with self._jobs.mutex:
+            items = list(self._jobs.queue)
+        return [item for item in items if item is not None]
 
     def _empty_queue(self) -> tuple[list[_Job], int]:
         """Take everything off the queue: the jobs, and how many stop signals."""
