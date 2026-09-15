@@ -80,8 +80,9 @@ export SPEAKD_HOME=/path/to/speakd
 ```bash
 uv run speakd &                                        # start the daemon
 uv run speakctl enqueue "Hello." --source mine         # speak; returns at once
-uv run speakctl hush   --source mine                   # stop talking, drop the queue
-uv run speakctl cancel --source mine                   # skip this one, queue continues
+uv run speakctl hush                                   # stop everything, drop the queues
+uv run speakctl hush   --source mine                   # stop one channel; the rest speak on
+uv run speakctl cancel --source mine                   # skip this one, that queue continues
 uv run speakctl pause  --source mine
 uv run speakctl resume --source mine
 uv run speakctl mute                                   # silence everything, at once
@@ -90,7 +91,7 @@ uv run speakctl mute   --source mine                   # silence one channel onl
 uv run speakctl disable                                # unload the model (see below)
 uv run speakctl enable                                 # load it again, tens of seconds
 uv run speakctl subscribe                              # live events, JSON lines
-uv run speakctl status                                 # channels, mute and engine state
+uv run speakctl status                                 # channels, queue, mute, engine
 uv run speakctl say "No daemon needed."                # speak locally, in-process
 ```
 
@@ -123,6 +124,22 @@ allocator and CPython's arenas keep the address space. If you want the memory
 genuinely back, disable and then restart the daemon — because the flag persists,
 it comes back up in 32 MB and never builds the model at all.
 
+**`hush` and `cancel` are scoped by the source you name.** With no `--source`
+they stop the whole daemon, as they always did; with one they reach that channel
+and no other, so silencing a session that has run on leaves the rest talking and
+the next channel's queued speech starts straight away. This changed on
+2026-09-15 — the verbs used to ignore the source entirely — and it fixes as much
+as it adds: the Claude Code hook sends one hush per channel on every prompt, so
+under the old meaning typing a prompt in one session silenced a second session
+that had said nothing. The response reports the scope the daemon actually
+applied, rather than leaving a caller to assume it matched the request.
+
+**`status` reports what is waiting**, in play order, next first — the utterance
+being spoken is not in it, having already left the queue. An accepted job also
+announces itself on the bus as `queued` with the depth it joined, so a monitor
+learns about speech when it is accepted rather than minutes later when it
+starts. Both carry the first 200 characters of the text, not the whole of it.
+
 Global mute and per-channel mute are separate flags, not one setting written twice:
 a channel stays silent under a global mute whatever its own flag says, and clearing
 the global one gives each channel back what it had.
@@ -130,6 +147,7 @@ the global one gives each channel back what it had.
 The event stream is the same one the GUI reads:
 
 ```json
+{"event": "queued",   "source_id": "mine", "data": {"text": "One. Two.", "pending": 2}}
 {"event": "started",  "source_id": "mine", "data": {"text": "One. Two."}}
 {"event": "position", "source_id": "mine", "data": {"text": "One.", "span_start": 0,
                                                     "audio_offset": 0.0, "played_at": 89731.96}}
