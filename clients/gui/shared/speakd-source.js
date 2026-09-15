@@ -49,9 +49,21 @@
  *                   it from an absence of `position` events, which is also
  *                   what a finished utterance sounds like.
  *
+ *       "queued"    data: { text, pending }
+ *                   A job was accepted and is waiting its turn. `text` is the
+ *                   preview the daemon truncates to QUEUE_PREVIEW_CHARS, not
+ *                   the whole utterance; the event's `source_id` names the
+ *                   channel it will speak on. `pending` is the daemon's count
+ *                   of work accepted and unspoken, which a client should read
+ *                   as a floor rather than an equality — the wire does not
+ *                   settle whether the utterance being spoken right now is in
+ *                   it.
+ *
  *       "discarded" data: { count, reason, sources }
- *                   A hush cleared the queue. One event for the whole drain,
- *                   carrying how many utterances went and whose they were.
+ *                   A hush, a mute or an unload cleared queued speech. One
+ *                   event for the whole drain, carrying how many utterances
+ *                   went and whose they were. None is published when nothing
+ *                   was dropped: `discarded: 0` is not news.
  *
  *       "declined"  data: { text, kind, reason }
  *       "error"     data: { message }
@@ -91,9 +103,22 @@
  *     (docs/plans/2026-09-13-streaming-player.md); `SimulatedSource` honours
  *     it locally, owning no real audio device to be blocked on.
  *
- *     `source` is for `mute` alone, the one forwarded verb the daemon routes
- *     by `source_id`: omitted or "" is the global switch, a channel id is
- *     that channel. Every other verb ignores it.
+ *     `source` is for the three verbs the daemon routes by `source_id` —
+ *     `mute`, `hush` and `cancel`. "" is everything, a channel id is that
+ *     channel alone, and the two answer in the response's `scope`: "global" or
+ *     "channel" for mute, "all" or "channel" for the other two. Every other
+ *     verb ignores it.
+ *
+ *     Omitted is a *third* answer and not a synonym for "": the shell then
+ *     supplies its own control id, which is the literal "gui" — the paste
+ *     box's channel. A caller that means "everything" has to say so with an
+ *     empty string, and has to check the `scope` it gets back, or a window-wide
+ *     stop silently becomes a stop of the window's own typing.
+ *
+ *     `status` also reports what is waiting, under `queue`: entries of
+ *     { source_id, text } in play order, next first, NOT including whatever is
+ *     being spoken. It is the only way to learn a queue that filled before this
+ *     client was listening.
  *
  *   say(text) -> Promise<{ ok: true, data } | { ok: false, error }>
  *     Speak text a person typed into the window, on a channel of the
@@ -138,6 +163,18 @@ export const SAY_MAX_BYTES = 8192;
 /** The channel `SimulatedSource`'s fixture text speaks on. */
 const FIXTURE_SOURCE = "sim:phd-articulation";
 
+/**
+ * How much of a queued utterance the daemon puts on the wire, in `status`'s
+ * `queue` and in the `queued` event. A preview, deliberately: the list exists
+ * so someone can tell which utterance is which, and a monitor that shipped
+ * whole paragraphs of every waiting job would be a transcript.
+ */
+const QUEUE_PREVIEW_CHARS = 200;
+
+/** The reasons a drain carries, verbatim from src/speakd/daemon.py. */
+const DISCARDED_HUSHED = "discarded unspoken: a hush cleared the queue before this was spoken";
+const DISCARDED_MUTED = "discarded unspoken: a mute cleared the queue before this was spoken";
+
 // ---------------------------------------------------------------------------
 // SimulatedSource
 // ---------------------------------------------------------------------------
@@ -181,7 +218,21 @@ export class SimulatedSource {
     this._hushed = false;
     this._drift = 0.18;
     this._rtf = 0.75;
-    this._queue = 2;
+    // Accepted and not yet begun, in play order — the list `status` reports
+    // under `queue`, and the one the metrics row counts. Seeded with two, so
+    // that a browser tab shows the "up next" list doing something before
+    // anybody types into the paste box.
+    this._pending = SimulatedSource._seedPending();
+    // Which channel is sounding, so that a hush, a mute or a skip aimed at one
+    // channel can tell whether it covers what is playing. The fixture holds it
+    // until something else takes over.
+    this._speaking = FIXTURE_SOURCE;
+    // An utterance with no segment timeline behind it — pasted text, and
+    // anything promoted off the queue — and the timer standing in for the
+    // speaking of it. `_utterance` outlives the timer across a pause, which is
+    // what lets one be taken up again rather than lost.
+    this._utterance = null; // { source_id, text, remaining, startedAt }
+    this._utteranceTimer = null;
 
     // The channels `status` reports. Three, because one channel makes a
     // channel list look like a title bar with extra steps, and the point of
@@ -207,6 +258,27 @@ export class SimulatedSource {
     this._listeners = new Set();
     this._raf = null;
     this._last = 0;
+  }
+
+  /**
+   * The fixture's waiting speech, as two other sessions would have left it:
+   * one per background channel, so the list is visibly a queue across channels
+   * and not one session's backlog. Rebuilt rather than kept, because the
+   * replay path restores it after a hush has drained it.
+   */
+  static _seedPending() {
+    return [
+      {
+        source_id: "sim:resem-paper",
+        text:
+          "Berger's objection lands on the first sense of organic unity only — the one where " +
+          "reason supplies the whole — and section three concedes it there rather than arguing.",
+      },
+      {
+        source_id: "sim:kronikk",
+        text: "Kronikken er nede i 6 400 tegn. Avsnittet om lenkeråte er strøket.",
+      },
+    ];
   }
 
   subscribe(handler) {
@@ -267,7 +339,7 @@ export class SimulatedSource {
   }
 
   _metricsEvent() {
-    return { kind: "metrics", data: { rtf: this._rtf, drift: this._drift, queue: this._queue } };
+    return { kind: "metrics", data: { rtf: this._rtf, drift: this._drift, queue: this._pending.length } };
   }
 
   send(verb, payload = {}, source = "") {
@@ -277,11 +349,11 @@ export class SimulatedSource {
       case "resume":
         return this._doResume();
       case "hush":
-        return this._doHush();
+        return this._doHush(source);
       case "seek":
         return this._doSeek(payload);
       case "cancel":
-        return this._doHush();
+        return this._doCancel(source);
       case "mute":
         return this._doMute(payload, source);
       case "set_engine":
@@ -334,12 +406,20 @@ export class SimulatedSource {
       this._emit({ kind: "declined", source_id: SAY_SOURCE, data: { text: trimmed, kind: "response", reason: "disabled" } });
       return Promise.resolve({ ok: true, data: { spoken: false, reason: "disabled" } });
     }
-    this._silence();
-    this._hushed = false;
-    this._emit({ kind: "started", source_id: SAY_SOURCE, data: { text: trimmed } });
-    // A real utterance ends; leaving the simulation's pip breathing forever
-    // would be the one way this differs visibly from the daemon.
-    setTimeout(() => this._emit({ kind: "finished", source_id: SAY_SOURCE, data: { cancelled: false, aborted: false } }), 1800);
+    // Accepted, and said to be accepted, before a word of it is spoken: that
+    // is what `queued` is for, and a client watching only `started` would
+    // never see a job that is waiting. Announced with a `pending` that counts
+    // this one, then spoken at once — nothing is holding the worker up — so
+    // the window sees the push-then-pop a real acceptance-then-start produces.
+    this._emit({
+      kind: "queued",
+      source_id: SAY_SOURCE,
+      data: { text: trimmed.slice(0, QUEUE_PREVIEW_CHARS), pending: this._pending.length + 1 },
+    });
+    // Pasted text interrupts what is sounding; it does not drain the queue.
+    // Keeping those two apart is the whole reason `_silence()` was split.
+    this._stopPlayback("");
+    this._speak(SAY_SOURCE, trimmed);
     return Promise.resolve({ ok: true, data: { spoken: true } });
   }
 
@@ -349,6 +429,12 @@ export class SimulatedSource {
       channels: this._channels.map((c) => ({ ...c, muted: !!this._channelMuted.get(c.source_id) })),
       muted: this._muted,
       engine: { loaded: this._engineLoaded, loading: this._engineLoading },
+      // In play order, next first, and not including what is being spoken —
+      // the caller can see that on the "now" line and does not need it twice.
+      queue: this._pending.map((job) => ({
+        source_id: job.source_id,
+        text: job.text.slice(0, QUEUE_PREVIEW_CHARS),
+      })),
     };
   }
 
@@ -360,9 +446,15 @@ export class SimulatedSource {
     const scope = source ? "channel" : "global";
     if (source) this._channelMuted.set(source, wanted);
     else this._muted = wanted;
-    // An off switch that lets the current paragraph finish is not an off
-    // switch: muting stops what is playing, if what is playing is covered.
-    if (wanted && (!source || source === FIXTURE_SOURCE || source === SAY_SOURCE)) this._silence();
+    if (wanted) {
+      // An off switch that lets the current paragraph finish is not an off
+      // switch: muting stops what is playing where it covers it, and drops
+      // what that channel had queued — a mute that held speech back would
+      // release a backlog the moment it was lifted.
+      const stopped = this._stopPlayback(source);
+      this._drain(source, DISCARDED_MUTED);
+      if (stopped) this._promoteNext();
+    }
     this._emit({ kind: "mute", source_id: source || "", data: { muted: wanted, scope } });
     return Promise.resolve({ ok: true, data: { muted: wanted, scope } });
   }
@@ -375,8 +467,10 @@ export class SimulatedSource {
     if (!wanted) {
       // Disabling hushes first and then unloads — the order the daemon uses,
       // since dropping the model out from under a playing utterance is not
-      // something the engine is asked to survive.
-      this._silence();
+      // something the engine is asked to survive. Queued speech goes with it:
+      // there is nothing left to speak it with.
+      this._stopPlayback("");
+      this._drain("", "discarded unspoken: the model was unloaded before this was spoken");
       this._engineLoading = false;
       this._engineLoaded = false;
       this._emit({ kind: "engine", source_id: "", data: { state: "unloaded" } });
@@ -402,12 +496,45 @@ export class SimulatedSource {
     this._playing = false;
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
-    this._emit(this._positionEvent());
+    if (this._suspendUtterance()) {
+      // Nothing with a segment clock is sounding, so there is no position to
+      // report the pause through. `transport` is the event that exists for
+      // exactly this, and it carries the channel actually holding the floor —
+      // a fixture position here would put the fixture's text back on the "now"
+      // line and move the live dot onto a channel that is not speaking.
+      this._emit({ kind: "transport", source_id: this._speaking, data: { paused: true } });
+    } else {
+      this._emit(this._positionEvent());
+    }
     return Promise.resolve({ ok: true, data: {} });
+  }
+
+  /**
+   * Give the fixture the floor back, taking it from any timer-driven
+   * utterance holding it — pasted text, or something promoted off the queue.
+   *
+   * Both callers below resume *the fixture*, and leaving `_speaking` pointing
+   * at whatever spoke last is not a cosmetic slip: it is what a subsequent
+   * channel-scoped hush is matched against, so a stale name means a skip aimed
+   * at the speaking channel misses, and one aimed at a silent channel stops
+   * the speech.
+   */
+  _takeFloor() {
+    this._clearUtterance();
+    this._speaking = FIXTURE_SOURCE;
   }
 
   _doResume() {
     if (this._playing) return Promise.resolve({ ok: true, data: {} });
+    // Suspended mid-utterance on a channel that has no segment clock: take
+    // that up again rather than pulling the floor back to the fixture, which
+    // would silently drop speech a person only asked to pause.
+    if (this._utterance) {
+      this._runUtterance();
+      this._emit({ kind: "transport", source_id: this._speaking, data: { paused: false } });
+      return Promise.resolve({ ok: true, data: {} });
+    }
+    this._takeFloor();
     if (this._hushed) {
       // Nothing to resume — replay the fixture from the top. Real speech
       // has no equivalent: a hush is a cancel, and this window cannot
@@ -416,7 +543,18 @@ export class SimulatedSource {
       this._index = 0;
       this._within = 0;
       this._drift = 0;
-      this._queue = 2;
+      // The replay restores the fixture's queue along with its speech, and
+      // says so through the same `queued` events a daemon would. Refilling the
+      // window's list by the path it will really be fed by is the only way a
+      // browser check exercises that path at all.
+      this._pending = SimulatedSource._seedPending();
+      this._pending.forEach((job, i) =>
+        this._emit({
+          kind: "queued",
+          source_id: job.source_id,
+          data: { text: job.text.slice(0, QUEUE_PREVIEW_CHARS), pending: i + 1 },
+        }),
+      );
       this._emit({ kind: "started", source_id: FIXTURE_SOURCE, data: {} });
     }
     this._playing = true;
@@ -428,34 +566,174 @@ export class SimulatedSource {
   }
 
   /**
-   * Stop what is playing and drop the queue. Hush does this and says why;
-   * so do mute and disable, which stop speech without an error to report.
+   * Stop what is sounding, if the scope covers it, and say so.
+   *
+   * The old `_silence()` did this *and* emptied the queue, which was harmless
+   * while the only caller was a hush. It is not harmless now: `say()` has to
+   * interrupt without draining and a channel-scoped hush has to drain one
+   * channel without touching the rest, so stopping and draining are two
+   * operations here exactly as they are two in the daemon.
+   *
+   * Returns whether anything was actually stopped, which is what tells a
+   * caller the worker is now free to take up the next queued utterance.
    */
-  _silence() {
+  _stopPlayback(source_id) {
+    if (source_id && source_id !== this._speaking) return false;
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = null;
+    this._clearUtterance();
     this._playing = false;
     this._hushed = true;
-    this._queue = 0;
-    this._emit({ kind: "finished", data: { cancelled: true, aborted: false } });
+    this._emit({
+      kind: "finished",
+      source_id: this._speaking,
+      data: { cancelled: true, aborted: false },
+    });
+    return true;
   }
 
-  _doHush() {
-    this._silence();
+  /**
+   * Drop queued speech and report it, scoped exactly as the daemon scopes it:
+   * an empty `source_id` takes everything, a named one takes that channel
+   * alone. No event when nothing went — `discarded: 0` is not news, which is
+   * the rule `_drain_queued` in src/speakd/daemon.py follows.
+   */
+  _drain(source_id, reason) {
+    const kept = [];
+    const dropped = [];
+    for (const job of this._pending) {
+      (source_id && job.source_id !== source_id ? kept : dropped).push(job);
+    }
+    this._pending = kept;
+    if (dropped.length) {
+      this._emit({
+        kind: "discarded",
+        source_id: "",
+        data: {
+          count: dropped.length,
+          reason,
+          sources: [...new Set(dropped.map((job) => job.source_id))].sort(),
+        },
+      });
+    }
+    return dropped.length;
+  }
+
+  /**
+   * Speak one utterance that has no segment timeline behind it — pasted text
+   * and anything promoted off the queue. It ends on its own because a real one
+   * does, and a simulation leaving the pip breathing forever would be the one
+   * place this visibly parts company with the daemon.
+   *
+   * It pauses, resumes and stops like anything else here: a timer that ran on
+   * under a paused window would be the simulation contradicting the daemon
+   * about the plainest thing either does, and this window's whole reason for
+   * having a simulation is that the two must not diverge.
+   */
+  _speak(source_id, text) {
+    this._speaking = source_id;
+    this._hushed = false;
+    this._utterance = { source_id, text, remaining: 1800, startedAt: 0 };
+    this._emit({ kind: "started", source_id, data: { text } });
+    this._emit(this._metricsEvent());
+    this._runUtterance();
+  }
+
+  /** Start, or take up again, the timer standing in for `_utterance`. */
+  _runUtterance() {
+    const job = this._utterance;
+    if (!job || this._utteranceTimer) return;
+    job.startedAt = performance.now();
+    this._utteranceTimer = setTimeout(() => {
+      this._utteranceTimer = null;
+      this._utterance = null;
+      this._emit({ kind: "finished", source_id: job.source_id, data: { cancelled: false, aborted: false } });
+      this._promoteNext();
+    }, job.remaining);
+  }
+
+  /**
+   * Hold the timer where it is, keeping what is left of the utterance — the
+   * pause path. A `pause` that let pasted or promoted speech run to the end
+   * while the window drew itself paused would be the simulation disagreeing
+   * with the daemon about the plainest thing either of them does.
+   */
+  _suspendUtterance() {
+    if (!this._utteranceTimer || !this._utterance) return false;
+    clearTimeout(this._utteranceTimer);
+    this._utteranceTimer = null;
+    this._utterance.remaining = Math.max(0, this._utterance.remaining - (performance.now() - this._utterance.startedAt));
+    return true;
+  }
+
+  /** Drop it altogether, running or suspended — the stop path. */
+  _clearUtterance() {
+    if (this._utteranceTimer) clearTimeout(this._utteranceTimer);
+    this._utteranceTimer = null;
+    this._utterance = null;
+  }
+
+  /**
+   * Take up the next queued utterance, which is the whole point of the skip
+   * button: stop one channel and the one behind it starts straight after.
+   * Simulating that is not decoration — a simulation where the queue only ever
+   * shrank by hand could not show the feature working at all.
+   */
+  _promoteNext() {
+    const next = this._pending.shift();
+    if (!next) {
+      this._emit(this._metricsEvent()); // the queue metric emptied out
+      return;
+    }
+    this._speak(next.source_id, next.text);
+  }
+
+  /**
+   * Stop talking. Scoped by the channel the verb arrives on, as the daemon
+   * scopes it: an empty `source_id` stops everything, a named one stops that
+   * channel and drops what it had queued, leaving the next channel's speech to
+   * start immediately. The `scope` in the response is what a caller reads to
+   * know which of the two happened — never `discarded`, which is zero both for
+   * a global hush over an empty queue and for a hush that never left the
+   * caller's own channel.
+   */
+  _doHush(source = "") {
+    const scope = source ? "channel" : "all";
+    const stopped = this._stopPlayback(source);
+    const discarded = this._drain(source, DISCARDED_HUSHED);
     // Reproduces today's coupling of the error line to the hushed state —
     // see pinned.html's original `el("err").hidden = !hushed`. A real hush
     // does not inherently cause a plugin error; this is preserved only
     // because SimulatedSource's contract is to match today's behaviour
     // exactly, `<code>` markup and all (the controller trusts this string
-    // enough to render it as HTML — see pinned.html's script).
-    this._emit({
-      kind: "error",
-      data: {
-        message:
-          "Profile <code>philosophy</code> wants <code>citations</code> — no plugin provides it.",
-      },
-    });
-    return Promise.resolve({ ok: true, data: {} });
+    // enough to render it as HTML — see pinned.html's script). Kept to the
+    // window's own Hush button and no further: a per-channel skip inventing a
+    // plugin error would be the simulation saying what the daemon never says.
+    if (!source) {
+      this._emit({
+        kind: "error",
+        data: {
+          message:
+            "Profile <code>philosophy</code> wants <code>citations</code> — no plugin provides it.",
+        },
+      });
+    }
+    if (stopped) this._promoteNext();
+    return Promise.resolve({ ok: true, data: { discarded, scope } });
+  }
+
+  /**
+   * The same stop, without the drain. `cancel` skips one utterance and lets
+   * the queue run on — an agent superseding its own announcement — where
+   * `hush` means stop talking and takes the queue with it. The daemon's
+   * HUSH/CANCEL branch spells the distinction out; this window sends neither,
+   * but a simulation that collapsed them would be teaching the next caller the
+   * wrong thing.
+   */
+  _doCancel(source = "") {
+    const scope = source ? "channel" : "all";
+    if (this._stopPlayback(source)) this._promoteNext();
+    return Promise.resolve({ ok: true, data: { discarded: 0, scope } });
   }
 
   _doSeek(payload) {
@@ -464,6 +742,9 @@ export class SimulatedSource {
     this._index = i;
     this._within = 0;
     this._hushed = false;
+    // Seeking is seeking *the fixture*, so the fixture is what is sounding
+    // again — any pasted utterance that had taken the floor has just lost it.
+    this._takeFloor();
     this._emit(this._positionEvent());
     return Promise.resolve({ ok: true, data: {} });
   }
@@ -482,6 +763,7 @@ export class SimulatedSource {
       this._rtf = Math.min(1.12, Math.max(0.6, next.synth / seg.dur));
     }
 
+    let ended = false;
     if (this._within >= seg.dur) {
       this._within = 0;
       if (this._index < this._segments.length - 1) {
@@ -489,13 +771,19 @@ export class SimulatedSource {
       } else {
         this._playing = false;
         this._within = seg.dur;
-        this._queue = Math.max(0, this._queue - 1);
-        this._emit({ kind: "finished", data: { cancelled: false, aborted: false } });
+        ended = true;
       }
     }
     this._emit(this._positionEvent());
     this._emit(this._metricsEvent());
     if (this._playing) this._raf = requestAnimationFrame((t) => this._tick(t));
+    // After the last position of the utterance, not before it: promoting the
+    // next one emits a `started`, and a `started` followed by this tick's own
+    // `position` would put the finished utterance back on the "now" line.
+    if (ended) {
+      this._emit({ kind: "finished", source_id: FIXTURE_SOURCE, data: { cancelled: false, aborted: false } });
+      this._promoteNext();
+    }
   }
 }
 

@@ -311,6 +311,10 @@
   .more[open] > summary::before { content: "\25BE"; }
   .more > summary:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: -2px; }
   .more > summary .count { color: var(--muted); letter-spacing: .06em; }
+  /* Closed, the disclosure is the only thing on screen that can say speech is
+     waiting behind it. Amber rather than muted for exactly that reason: it is
+     the one summary word that means "there is something in here". */
+  .more > summary .upn { color: var(--lit); letter-spacing: .06em; }
 
   /* Bounded so that a daemon with a dozen channels cannot push the paste box
      off the bottom of a window whose height someone else chose. */
@@ -338,7 +342,52 @@
     background: var(--ink); border-color: var(--ink); color: var(--ground);
   }
   .chan-row button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+  /* Coloured like the Hush control, because that is what it is: a hush with
+     one channel's name on it. It carries no `aria-pressed` — mute is a state
+     you are in, skip is a thing that happens once — so it never takes the
+     filled treatment beside it. */
+  .chan-row button.skip { color: var(--lit); border-color: var(--lit-edge); }
   .chans .none { font-size: 10.5px; color: var(--faint); font-style: italic; padding: 3px 0; }
+
+  /* ── up next ──
+
+     Queued speech, in play order, next first. It lives inside the same
+     disclosure and under the same 190px cap as the channel list and the paste
+     box: what is *waiting* is worth a glance, not a permanent strip of a
+     window this narrow. Hidden outright when the queue is empty — a standing
+     "nothing queued" line is chrome spending height to say nothing, and the
+     metrics row above already reads "clear". */
+  .upnext { border-top: 1px solid var(--rule); margin-top: 7px; padding-top: 6px; }
+  /* `hidden` is the empty state, and a `display` on the rule above would
+     defeat it. */
+  .upnext[hidden] { display: none; }
+
+  .upnext-head {
+    font-family: "IBM Plex Mono", monospace; font-size: 8.5px;
+    text-transform: uppercase; letter-spacing: .1em; color: var(--faint);
+    padding-bottom: 2px;
+  }
+
+  .q-row { display: flex; gap: 6px; padding: 3px 0; min-width: 0; }
+  /* The position in the queue, not a count of anything: the list is ordered
+     and an ordered list that does not show its order reads as a heap. */
+  .qn {
+    font-family: "IBM Plex Mono", monospace; font-size: 9px; color: var(--faint);
+    flex: none; width: 9px; text-align: right; font-variant-numeric: tabular-nums;
+    padding-top: 2px;
+  }
+  .q-col { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+  .q-who {
+    font-size: 9.5px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Two lines of preview and no more. The daemon sends 200 characters; the
+     point here is recognising which utterance this is, not reading it. */
+  .q-text {
+    font-size: 11px; line-height: 1.35; color: var(--ink-soft);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 
   .say { display: flex; flex-direction: column; gap: 5px; padding-top: 8px; }
   .say textarea {
@@ -483,9 +532,13 @@
   </div>
 
   <details class="more" id="more">
-    <summary>channels <span class="count" id="chan-count"></span></summary>
+    <summary>channels <span class="count" id="chan-count"></span><span class="upn" id="up-badge"></span></summary>
     <div class="more-body">
       <div class="chans" id="chans"></div>
+      <div class="upnext" id="upnext" hidden>
+        <div class="upnext-head">up next</div>
+        <div class="upnext-list" id="upnext-list"></div>
+      </div>
       <div class="say">
         <textarea id="say" rows="3" placeholder="Paste text to speak it — Ctrl+Enter"></textarea>
         <div class="say-row">
@@ -550,6 +603,12 @@
   let statusKnown = false;
   // Which channel is currently speaking, for the dot in the channel list.
   let speakingSource = null;
+  // Utterances accepted and not yet begun, in play order, next first — what
+  // `status` reports under `queue` and what the `queued` event adds to. It
+  // does not include what is playing: that is the "now" line's job, and a
+  // window that listed it in both places would be counting twice the one
+  // thing it is actually certain about.
+  let upNext = []; // [{ source_id, text }]
 
   const ENGINE_LABEL = { ready: "Unload model", loading: "Loading model…", unloaded: "Load model" };
 
@@ -557,6 +616,35 @@
   function labelFor(source_id) {
     const channel = channels.find((c) => c.source_id === source_id);
     return (channel && channel.label) || source_id;
+  }
+
+  /** Collapse whitespace, so a truncated preview can be matched against full text. */
+  const flatten = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+
+  /**
+   * Drop the queue entry that an event says has left the queue.
+   *
+   * `text` is the whole utterance where the entry holds only the preview the
+   * daemon truncated it to, so the comparison is a prefix and not an equality,
+   * and a preview whose tail became an ellipsis still matches. When no preview
+   * matches — the text was reworded between being accepted and being spoken,
+   * or this window never saw the `queued` event that carried it — the first
+   * entry on that channel goes anyway: it has left the queue whatever its text
+   * turned out to be, and an entry outliving the speech it stands for is the
+   * one failure this list cannot afford.
+   */
+  function dropQueued(source_id, text) {
+    const full = text == null ? null : flatten(text);
+    const matches = (entry) => {
+      if (full === null) return true;
+      const head = flatten(entry.text).replace(/(?:…|\.\.\.)$/, "");
+      return head.length > 0 && full.startsWith(head);
+    };
+    let i = upNext.findIndex((entry) => entry.source_id === source_id && matches(entry));
+    if (i === -1) i = upNext.findIndex((entry) => entry.source_id === source_id);
+    if (i === -1) return;
+    upNext.splice(i, 1);
+    renderQueue();
   }
 
   /** Forget the previous utterance's timeline, ticks and all. */
@@ -730,9 +818,58 @@
       toggle.title = `Mute ${channel.label || channel.source_id} alone`;
       toggle.addEventListener("click", () => muteChannel(channel));
 
-      row.append(dot, name, toggle);
+      const skip = document.createElement("button");
+      skip.type = "button";
+      skip.className = "skip";
+      skip.textContent = "skip";
+      skip.title = `Stop ${channel.label || channel.source_id} and drop its queued speech`;
+      skip.addEventListener("click", () => skipChannel(channel));
+
+      // Skip before mute so the mute toggles stay in one column down the right
+      // edge: that button's pressed state is a filled block, and a filled block
+      // that moves left and right between rows reads as two different controls.
+      row.append(dot, name, skip, toggle);
       host.append(row);
     }
+  }
+
+  /**
+   * The "up next" list. Out of `render()` for the same reason the channel rows
+   * are: that runs once per position event, and this changes only when the
+   * queue does.
+   */
+  function renderQueue() {
+    el("up-badge").textContent = upNext.length ? ` · ${upNext.length} up next` : "";
+    el("upnext").hidden = upNext.length === 0;
+    const host = el("upnext-list");
+    host.textContent = "";
+    upNext.forEach((entry, i) => {
+      const row = document.createElement("div");
+      row.className = "q-row";
+
+      const n = document.createElement("span");
+      n.className = "qn";
+      n.textContent = String(i + 1);
+
+      const col = document.createElement("div");
+      col.className = "q-col";
+
+      const who = document.createElement("span");
+      who.className = "q-who";
+      // textContent for both, as in the channel rows: the label is what a
+      // session called itself and the preview is text an agent wrote, and this
+      // window runs with `window.__TAURI__` within reach.
+      who.textContent = labelFor(entry.source_id);
+      who.title = entry.source_id;
+
+      const text = document.createElement("span");
+      text.className = "q-text";
+      text.textContent = entry.text;
+
+      col.append(who, text);
+      row.append(n, col);
+      host.append(row);
+    });
   }
 
   /**
@@ -750,6 +887,13 @@
     }
     const data = res.data ?? {};
     channels = Array.isArray(data.channels) ? data.channels.map((c) => ({ ...c, muted: !!c.muted })) : [];
+    // The authoritative answer about the queue, and the only one that can
+    // repair a list the event stream has drifted away from. A daemon that
+    // sends no `queue` is one with nothing waiting, not one to keep the last
+    // reading for: every entry here is a claim about work still to come.
+    upNext = Array.isArray(data.queue)
+      ? data.queue.map((entry) => ({ source_id: entry.source_id ?? "", text: entry.text ?? "" }))
+      : [];
     globalMuted = !!data.muted;
     const engine = data.engine ?? {};
     engineState = engine.loading ? "loading" : engine.loaded ? "ready" : "unloaded";
@@ -758,6 +902,7 @@
     // that labels are readable it can show the name instead.
     if (speakingSource) el("chan").textContent = labelFor(speakingSource);
     renderChannels();
+    renderQueue();
     render();
   }
 
@@ -773,18 +918,47 @@
     }
   }
 
+  /**
+   * Stop one channel and drop what it had queued, so whatever is behind it
+   * starts straight away. A hush with a source on it: the verb scopes by the
+   * channel it is sent on, and the `source_id` is passed explicitly for the
+   * same reason the master mute passes an empty one — omitting it lets the
+   * shell substitute its own control id, which is the paste box's channel.
+   */
+  async function skipChannel(channel) {
+    const res = await source.send("hush", {}, channel.source_id);
+    if (!res.ok) { message = res.error; render(); return; }
+    const data = res.data ?? {};
+    // The scope is read, not assumed. A channel skip that came back "all"
+    // stopped every session in the daemon, and the honest symptom of that is
+    // an error line — not one row's button quietly silencing the rest.
+    if (data.scope !== "channel") {
+      message = `skip went to ${data.scope ?? "an unknown scope"}, not ${channel.label || channel.source_id}`;
+      render();
+      return;
+    }
+    // The daemon puts `discarded` on the bus for the drain and the handler
+    // below reads it; this is the same answer by the shorter road, so a window
+    // whose subscription has fallen behind still empties its own list.
+    const before = upNext.length;
+    upNext = upNext.filter((entry) => entry.source_id !== channel.source_id);
+    if (upNext.length !== before) renderQueue();
+  }
+
   function handleEvent(event) {
     const data = event.data ?? {};
-    // The wire names the channel every event belongs to — but `mute` and
-    // `engine` name the channel they are *about*, which is not the one being
-    // spoken. Retitling the bar from those would rename the window every time
-    // another session was muted from `speakctl`.
+    // The wire names the channel every event belongs to — but `mute`, `engine`
+    // and `queued` name the channel they are *about*, which is not the one
+    // being spoken. Retitling the bar from those would rename the window every
+    // time another session was muted from `speakctl`, or move the live dot onto
+    // a channel that has done nothing yet but join the queue.
     // Written only when it changed: a real `position` carries the channel on
     // every event, and this fires once per segment start.
     if (
       event.source_id &&
       event.kind !== "mute" &&
       event.kind !== "engine" &&
+      event.kind !== "queued" &&
       event.source_id !== speakingSource
     ) {
       speakingSource = event.source_id;
@@ -792,11 +966,27 @@
       renderChannels(); // the dot moves with it
     }
     switch (event.kind) {
+      case "queued":
+        // Accepted, not yet begun. The same unknown-channel question `started`
+        // asks: a row is not invented for it, the list is asked for.
+        if (event.source_id && !channels.some((c) => c.source_id === event.source_id)) refreshStatus();
+        upNext.push({ source_id: event.source_id || "", text: data.text ?? "" });
+        renderQueue();
+        // `pending` is the daemon's own count of work accepted and unspoken,
+        // read here as a floor rather than an equality: whether it counts the
+        // utterance being spoken right now is not something this window can
+        // settle from the wire, so only a gap wider than that ambiguity is
+        // taken as evidence that events were missed and the list needs
+        // rebuilding from `status`.
+        if (typeof data.pending === "number" && data.pending > upNext.length + 1) refreshStatus();
+        break;
       case "started":
         // A channel the window has not heard of: a new session opened, or
         // this is the first utterance since the link came back. Ask for the
         // list rather than inventing a row for it.
         if (event.source_id && !channels.some((c) => c.source_id === event.source_id)) refreshStatus();
+        // It is being spoken, so it is no longer waiting to be.
+        dropQueued(event.source_id, data.text ?? null);
         hushed = false;
         message = null;
         playing = true; // the daemon says nothing further; `started` means it began
@@ -837,6 +1027,12 @@
         break;
       case "discarded":
         message = `${data.count} queued ${data.count === 1 ? "utterance" : "utterances"} dropped`;
+        // The drain names whose utterances went. Without `sources` the drop
+        // was not scoped to anyone, which means everyone.
+        upNext = Array.isArray(data.sources)
+          ? upNext.filter((entry) => !data.sources.includes(entry.source_id))
+          : [];
+        renderQueue();
         break;
       case "mute":
         // Two flags, not one: a channel that is audible behind a global mute
@@ -864,8 +1060,12 @@
           statusKnown = false;
           engineState = null;
           // Every metric is a claim about now, and the last one received is a
-          // claim about a daemon that is no longer there.
+          // claim about a daemon that is no longer there. So is every queue
+          // entry: it says speech is about to happen, and nothing is about to
+          // happen through a link that is down.
           for (const key of Object.keys(metrics)) metrics[key] = null;
+          upNext = [];
+          renderQueue();
           renderChannels();
         }
         break;
@@ -874,8 +1074,18 @@
         break;
       case "declined":
         message = data.reason;
+        // Refused rather than spoken. Usually it never reached the queue at
+        // all, in which case this finds nothing and does nothing; when it was
+        // queued and then dropped, this is the event that says so.
+        dropQueued(event.source_id, data.text ?? null);
         break;
       case "finished":
+        // A `finished` whose `started` this window never saw — it opened
+        // mid-utterance, or the link returned between the two — would leave
+        // that utterance sitting in the queue list forever. This is the last
+        // moment it can go, so it goes here. Read before `utterance` is
+        // cleared below, which is the only thing that distinguishes the case.
+        if (utterance === null) dropQueued(event.source_id, null);
         playing = false;
         utterance = null;
         if (data.cancelled) hushed = true;
@@ -933,8 +1143,21 @@
     if (seg) seekTo(currentIndex + 1);
   });
   el("hush").addEventListener("click", async () => {
-    const res = await source.send("hush", {});
-    if (!res.ok) { message = res.error; render(); }
+    // An explicit empty `source_id`, exactly as the master mute sends one.
+    // `hush` scopes by the channel it arrives on: empty is everything, a name
+    // is that channel alone. Omitting the argument lets the shell fall back to
+    // its own control id — the literal "gui", which is also the paste box's
+    // channel — so this button would stop the paste box and nothing else while
+    // reading as though it had stopped the daemon.
+    const res = await source.send("hush", {}, "");
+    if (!res.ok) { message = res.error; render(); return; }
+    // Read, not assumed, and read from `scope` rather than from `discarded`:
+    // a drain of zero is what a global hush over an empty queue looks like and
+    // also what a hush that never left this window's own channel looks like.
+    if (res.data && res.data.scope !== "all") {
+      message = `hush went to ${res.data.scope ?? "an unknown scope"}, not the whole daemon`;
+      render();
+    }
   });
   el("mute").addEventListener("click", async () => {
     if (el("mute").disabled) return;
@@ -1035,6 +1258,7 @@
   // simulation's synchronous snapshot. Drawn once here so the window never
   // shows the markup's own placeholder values as though they were readings.
   renderSayCount();
+  renderQueue();
   render();
   // Once, and not awaited: the event stream carries changes, so a window
   // opened against a daemon that was muted an hour ago would otherwise show
