@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from speakd.cli import default_socket_path
+from speakd.paths import default_socket_path
 from speakd.protocol import Request, Verb
 
 # Claude Code gives a hook a bounded window (three to five seconds in the

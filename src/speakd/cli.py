@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from speakd.model import Piece, Role, Span
+from speakd.paths import default_socket_path
 from speakd.pipeline import speak
 from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginHost
@@ -26,12 +27,10 @@ from speakd.transforms.chain import apply_chain
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from speakd.transport import SocketClient
 
-
-def default_socket_path() -> Path:
-    """Where the daemon listens, following XDG with a sensible fallback."""
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(runtime) if runtime else Path(os.environ.get("TMPDIR", "/tmp"))
-    return base / "speakd" / "speakd.sock"
+# `default_socket_path` moved to `speakd.paths` so the Claude Code hook could
+# build a socket path without importing the synthesis pipeline. It is re-exported
+# because `speakctl`, `__main__` and the tests all learned to ask `cli` for it.
+__all__ = ["default_socket_path", "main"]
 
 
 def _build_parser() -> argparse.ArgumentParser:
