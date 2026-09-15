@@ -365,6 +365,40 @@ both retain freed memory. The implementation must **measure RSS before and
 after** and record the real delta. If it turns out to be small, that is a
 finding to report, not a number to quietly restate from this document.
 
+## §8 — The GUI speaks pasted text
+
+A box in the window: paste text, press a key, hear it. Asked for on 2026-09-15.
+
+### What this reverses, and what it does not
+
+`bridge.rs` keeps an allowlist of the verbs the shell forwards, and `enqueue` is
+deliberately not among them:
+
+> the window monitors speech, it never originates it … so `enqueue` is
+> deliberately absent and a bug in the frontend cannot make the monitor start
+> talking.
+
+This feature reverses **that** property, and it is worth being clear that it is
+a reversal rather than a gap.
+
+It does **not** reopen the milestone's "Settled: now-playing only", which is
+about the window not opening documents. There is still no file picker and no
+reader; a paste box is a line of text, not a corpus.
+
+### Keeping most of the safety property
+
+`enqueue` does not join `FORWARDED`. Instead the bridge gains one narrow
+command, `speakd_say(text: String)`, which enqueues on a fixed source and
+nothing else. A frontend bug then still cannot send arbitrary verbs or speak on
+another session's channel — it can only do the one thing the box exists to do.
+
+The source is a literal `"gui"`, not a caller-supplied id, so the pasted speech
+is an ordinary channel: it shows in the channel list, it can be muted on its
+own, and `hush` reaches it like anything else.
+
+Text is capped at 8 KiB. Beyond that the box refuses and says so, rather than
+handing the segmenter a novel.
+
 ## §7 — Testing
 
 - **Transforms** are pure functions: unit tests per rule, plus one that a
@@ -377,6 +411,9 @@ finding to report, not a number to quietly restate from this document.
 - **Follower**: a synthetic transcript grown under it, against a fake socket,
   asserting what it enqueues and that it never re-speaks across a restart.
 - **Labels**: an `ai-title` arriving late renames the channel.
+- **Paste to speak**: `speakd_say` reaches the daemon, `enqueue` sent directly
+  through `speakd_send` is still refused by the allowlist, and text over the cap
+  is refused in the frontend rather than sent.
 - **Lazy engine**: a fake engine records `load`/`unload`; enqueues while
   disabled synthesise nothing and do not trigger a load; enabling loads off the
   request thread; a daemon started from a persisted disabled flag never
@@ -406,5 +443,15 @@ not depend on §3 at all.
 §4 follower ─────────▶ (independent of §3 and §6)
 ```
 
-That makes two natural plans rather than one: **§1 + §2** as a self-contained
-improvement, and **§5 + §3 + §6 + §4** as the narration rework.
+§8 depends only on the GUI existing on `main`, which it now does: the Tauri
+shell was merged on 2026-09-15 (`3dc68ad`), having sat eight commits ahead and
+a hundred and seven behind without touching anything outside `clients/gui`.
+
+That makes four plans rather than one:
+
+| Plan | Sections | Deliverable |
+|---|---|---|
+| A | §1, §2 | the hook stops loading numpy; speech gets its pauses back |
+| B | §5, §3, §6 | labels, mute and disable, in the daemon and `speakctl` |
+| C | §4 | the follower, and hooks that shrink from four events to two |
+| D | §8, GUI half of §3 and §6 | the window gets its toggles and its paste box |
