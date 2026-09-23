@@ -1814,3 +1814,15 @@ def test_a_sentence_whose_playback_failed_is_still_announced() -> None:
     assert any("device unavailable" in str(event.data.get("message", "")) for event in errors)
     finished = [event for event in seen if event.kind == "finished"]
     assert finished and finished[0].data["aborted"] is True
+
+
+def test_started_announces_every_segment_and_positions_say_which(daemon) -> None:  # type: ignore[no-untyped-def]
+    d, _player, bus = daemon
+    seen: list[Event] = []
+    bus.subscribe(seen.append)
+    d.handle(enqueue("s", "One. Two. Six."))
+    assert d.wait_idle(timeout=5.0)
+    started = next(e for e in seen if e.kind == "started")
+    assert [s["text"] for s in started.data["segments"]] == ["One.", "Two.", "Six."]
+    assert [s["index"] for s in started.data["segments"]] == [0, 1, 2]
+    assert [e.data["index"] for e in seen if e.kind == "position"] == [0, 1, 2]

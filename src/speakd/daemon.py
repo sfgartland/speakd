@@ -11,6 +11,7 @@ fields and a function.
 
 from __future__ import annotations
 
+import math
 import queue
 import threading
 from collections.abc import Callable, Sequence
@@ -23,11 +24,13 @@ from speakd.channels import ChannelTable
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
 from speakd.model import Piece, Role, Segment, Span
-from speakd.pipeline import speak
+from speakd.pipeline import AudioCache, speak
 from speakd.player import Pausable, Player
 from speakd.protocol import Request, Response, Verb
 from speakd.scheduler import SpeechRequest, decide
+from speakd import segmenter
 from speakd.synth import Synthesizer
+from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
@@ -153,6 +156,10 @@ class Daemon:
         # Loaded rather than defaulted: after a reboot, surprising silence is
         # a smaller failure than surprising speech.
         self.muted = state.load().muted
+        # The listener's speed, read back for the same reason. Shared with
+        # the pipeline and the player, which read it as they go: a change
+        # reaches the sentence already playing, not only the next one.
+        self.tempo = Tempo(state.load().speed)
         # Whose utterance the worker is on, so that a channel-scoped silence
         # can tell whether the voice it would cut off is the one being muted.
         # Stale between jobs in exactly the way `_cancel` is, and harmlessly
@@ -505,6 +512,27 @@ class Daemon:
         self._publish("transport", "", {"paused": paused})
         return Response(ok=True, data={"paused": paused})
 
+    def _set_speed(self, raw: object) -> Response:
+        """Change the listener's speed, answering with the one applied.
+
+        Global, like pause: it is how fast *this person* wants to listen,
+        not a property of any one channel. Clamped rather than refused when
+        out of range, and the answer says so -- a client asking for 3 is told
+        1.6 instead of being left to guess what it got. Kept across restarts
+        like mute.
+        """
+        if (
+            not isinstance(raw, (int, float))
+            or isinstance(raw, bool)
+            or not math.isfinite(raw)
+            or raw <= 0
+        ):
+            return Response(ok=False, error="set_speed needs a positive number 'speed'")
+        applied = self.tempo.set(float(raw))
+        state.save(replace(state.load(), speed=applied))
+        self._publish("speed", "", {"speed": applied})
+        return Response(ok=True, data={"speed": applied})
+
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
 
@@ -583,10 +611,13 @@ class Daemon:
                     # looks identical to one that is muted itself.
                     "muted": self.muted,
                     "engine": self._engine_status(),
+                    "speed": self.tempo.value,
                 },
             )
         if request.verb in (Verb.PAUSE, Verb.RESUME):
             return self._set_paused(request.verb is Verb.PAUSE)
+        if request.verb is Verb.SET_SPEED:
+            return self._set_speed(request.payload.get("speed"))
         if request.verb is Verb.SEEK:
             return Response(ok=False, error=_SEEK_NOT_IMPLEMENTED)
         if request.verb is Verb.SET_ROLE:
@@ -948,7 +979,27 @@ class Daemon:
         pieces, errors = job.profile.prepare([Piece(span=Span(0, len(text)), spoken=text)])
         for message in errors:
             self._publish("error", job.source_id, {"message": message})
-        self._publish("started", job.source_id, {"text": text})
+        # Segmented here rather than inside `speak()`, so that `started` can
+        # name every sentence before the first is heard. A monitor showing the
+        # whole utterance needs them all up front, and a seek addresses them
+        # by the index given here.
+        units = segmenter.segment(pieces)
+        self._publish(
+            "started",
+            job.source_id,
+            {
+                "text": text,
+                "segments": [
+                    {
+                        "index": i,
+                        "text": unit.spoken,
+                        "span_start": unit.span.start,
+                        "span_end": unit.span.end,
+                    }
+                    for i, unit in enumerate(units)
+                ],
+            },
+        )
         if cancel.is_set():
             # Hushed during `prepare` or by a subscriber of `started` itself.
             # `speak()` would notice this too, but only after synthesising and
@@ -980,6 +1031,7 @@ class Daemon:
                     "span_end": segment.span.end,
                     "audio_offset": segment.audio_offset,
                     "played_at": segment.played_at,
+                    "index": segment.index,
                 },
             )
 
@@ -994,6 +1046,9 @@ class Daemon:
                 window=self._synthesis,
                 timeline=timeline,
                 on_playing=announce,
+                units=units,
+                cache=AudioCache(),
+                tempo=self.tempo,
             )
         except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
             # `started` is already out. A subscriber pairing the two would
