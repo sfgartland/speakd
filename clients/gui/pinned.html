@@ -162,12 +162,10 @@
   .winbtn[aria-pressed="true"] { color: var(--lit); }
   .winbtn.dismiss:hover { color: var(--bad); }
 
-  /* the speaking text — three lines of context, current one lit */
+  /* the speaking text — the whole utterance as it was written, the sentence
+     being heard lit, and the region scrolling to keep it in view */
   .text {
-    padding: 14px 14px 12px;
-    font-family: Newsreader, Georgia, serif;
-    font-weight: 300;
-    display: flex; flex-direction: column;
+    padding: 12px 14px 10px;
     flex: 1 1 auto;
     /* Drawn at this height in the mockup, where the page grows to fit it.
        Inside the shell it is relaxed to 0 so the window can be dragged
@@ -176,42 +174,53 @@
     overflow-y: auto;
   }
 
-  /* Centred with an auto margin rather than `justify-content: center`.
-     They look identical while the text fits; they differ exactly when it
-     does not, and centred overflow puts the top of the text above the
-     scroll container's origin, where no scrollbar can reach it. */
-  .text-inner { margin-block: auto; display: flex; flex-direction: column; gap: 6px; }
-
-  .line {
-    font-size: 13px; line-height: 1.45; color: var(--spent);
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden;
+  .doc { font-family: Newsreader, Georgia, serif; font-weight: 300; color: var(--ink); }
+  .doc .md > * { margin: 0 0 8px; }
+  .doc .md > *:last-child { margin-bottom: 0; }
+  .doc p, .doc li, .doc blockquote { font-size: 15px; line-height: 1.5; }
+  .doc h1, .doc h2, .doc h3, .doc h4, .doc h5, .doc h6 {
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 12.5px; font-weight: 600; letter-spacing: -.005em; line-height: 1.4;
+    margin-top: 12px;
   }
-
-  .line.now {
-    font-size: 16px; line-height: 1.42; color: var(--ink);
-    background: var(--lit-mark); box-shadow: 0 0 0 3px var(--lit-mark);
-    border-radius: 2px; -webkit-line-clamp: 3;
+  .doc .md > h1:first-child, .doc .md > h2:first-child, .doc .md > h3:first-child,
+  .doc .md > h4:first-child, .doc .md > h5:first-child, .doc .md > h6:first-child { margin-top: 0; }
+  .doc ul, .doc ol { padding-left: 18px; }
+  .doc li + li { margin-top: 3px; }
+  .doc strong { font-weight: 500; }
+  .doc blockquote { border-left: 2px solid var(--rule-strong); padding-left: 9px; color: var(--ink-soft); }
+  .doc blockquote p { margin: 0; }
+  .doc code { font-family: "IBM Plex Mono", monospace; font-size: .8em; }
+  .doc pre {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; line-height: 1.45;
+    background: var(--ground); border: 1px solid var(--rule); border-radius: 3px;
+    padding: 6px 8px; white-space: pre-wrap; word-break: break-word;
   }
+  .doc pre code { font-size: inherit; }
+  .doc .link { text-decoration: underline dotted var(--muted); text-underline-offset: 2px; }
+  .doc table { border-collapse: collapse; font-family: "IBM Plex Sans", system-ui, sans-serif; font-size: 11px; }
+  .doc td { border: 1px solid var(--rule); padding: 2px 5px; }
+  .doc hr { border: 0; border-top: 1px solid var(--rule); }
+  .doc p.idle { color: var(--faint); font-size: 13px; font-style: italic; }
 
-  .win[data-transport="paused"] .line.now {
+  /* Clicking a sentence goes to it. The pointer says so over text that can
+     be clicked, which is text belonging to an utterance still speaking. */
+  .win[data-seekable] .doc .md > *,
+  .win[data-seekable] .doc li { cursor: pointer; }
+
+  /* Already heard: out of the way, still readable. */
+  .doc .spent { color: var(--spent); }
+
+  .doc .lit {
+    background: var(--lit-mark); box-shadow: 0 0 0 2px var(--lit-mark);
+    border-radius: 2px; color: var(--ink);
+  }
+  .win[data-transport="paused"] .doc .lit {
     background: none; box-shadow: none;
     text-decoration: underline dashed var(--lit-edge);
-    text-decoration-thickness: 2px; text-underline-offset: 4px;
+    text-decoration-thickness: 2px; text-underline-offset: 3px;
   }
-
-  /* Nothing is being spoken, so the "now" line is holding a standing-in
-     phrase rather than speech. It must not wear the lit highlight, which
-     means "this is what you are hearing". */
-  .win[data-idle] .line.now {
-    background: none; box-shadow: none; text-decoration: none;
-    color: var(--faint); font-size: 13px; font-style: italic;
-  }
-
-  .win[data-transport="hushed"] .line { opacity: .45; }
-  .win[data-transport="hushed"] .line.now {
-    background: none; box-shadow: none; color: var(--spent);
-  }
+  .win[data-transport="hushed"] .doc .lit { background: none; box-shadow: none; }
 
   /* scrubber */
   /* 15px, not 5px: `box-sizing: border-box` counts the 10px of padding
@@ -240,6 +249,20 @@
   .ctls button.danger { color: var(--lit); border-color: var(--lit-edge); }
   .ctls button:disabled { opacity: .35; cursor: default; }
   .ctls button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+
+  /* Speed: one control in three parts, so it reads as one setting rather
+     than as two more transport buttons. The number is what the daemon says
+     it applied, not what was last asked for. */
+  .ctls .speed { display: flex; flex: 1.5 1 0; min-width: 0; }
+  .ctls .speed button { flex: 0 0 22px; padding: 5px 0; }
+  .ctls .speed button:first-child { border-radius: 3px 0 0 3px; }
+  .ctls .speed button:last-child { border-radius: 0 3px 3px 0; }
+  .ctls .speed output {
+    flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; font-variant-numeric: tabular-nums;
+    color: var(--ink-soft);
+    border-top: 1px solid var(--rule-strong); border-bottom: 1px solid var(--rule-strong);
+  }
 
   /* the two off switches — their own row, and not shaped like the transport
      buttons above, because neither of them resumes by itself. Mute is
@@ -514,20 +537,21 @@
     </button>
   </div>
 
-  <div class="text">
-    <div class="text-inner">
-      <div class="line" id="prev"></div>
-      <div class="line now" id="now"></div>
-      <div class="line" id="next"></div>
-    </div>
+  <div class="text" id="text">
+    <div class="doc" id="doc"><p class="idle">nothing speaking</p></div>
   </div>
 
   <div class="scrub" id="scrub"></div>
 
   <div class="ctls">
     <button class="primary" id="play">Play</button>
-    <button id="back">&larr;</button>
-    <button id="fwd">&rarr;</button>
+    <button id="back" title="Previous sentence (&larr;)">&larr;</button>
+    <button id="fwd" title="Next sentence (&rarr;)">&rarr;</button>
+    <div class="speed" role="group" aria-label="Speed">
+      <button id="slower" title="Slower (&minus;)">&minus;</button>
+      <output id="speed" aria-live="polite">&mdash;</output>
+      <button id="faster" title="Faster (+)">+</button>
+    </div>
     <button class="danger" id="hush">Hush</button>
   </div>
 
@@ -598,6 +622,7 @@
   // DOM writes this script always made, and turns button clicks into
   // source.send(verb, payload) calls.
   import { resolveSource, SAY_MAX_BYTES } from "./shared/speakd-source.js";
+  import { renderMarkdown, locate, flatText, wrapRange, unwrap, offsetAt } from "./shared/markdown.js";
 
   const el = (id) => document.getElementById(id);
   const win = el("win");
@@ -618,6 +643,27 @@
   // showing less than is known.
   let utterance = null;
   const metrics = { rtf: null, drift: null, mem_bytes: null, queue: null };
+
+  // The utterance on screen, as `started` described it. `blocks` are the
+  // rendered markdown's blocks with their source ranges; `ranges` says where
+  // each segment is on screen: index -> { block, start, end } in the block's
+  // flat text, or { block, whole: true } when its words could not be found
+  // there and the whole block stands in for it.
+  let blocks = [];
+  let segs = [];
+  const ranges = new Map();
+  let litSpans = [];
+  let litIndex = null;
+  // The listener's speed, as the daemon last reported it. Null until it has.
+  let speed = null;
+  const SPEED_MIN = 0.7;
+  const SPEED_MAX = 1.6;
+  // When the reader last scrolled the text themselves. Following the voice
+  // pauses for a few seconds after, rather than yanking the page back from
+  // under someone reading ahead.
+  let userScrolledAt = 0;
+  const FOLLOW_PAUSE_MS = 4000;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // What `status` last said. Read once at startup and again whenever the link
   // returns, because the event stream only reports *changes*: a window opened
@@ -684,6 +730,81 @@
   }
 
   /**
+   * Put the utterance on screen, and work out where each segment is in it.
+   *
+   * Done once, here, because `started` names every segment: the sentence a
+   * `position` announces is then a lookup rather than a search, and a click
+   * on the text can be turned back into a segment by the same table.
+   */
+  function buildDoc(text, list) {
+    litSpans = [];
+    litIndex = null;
+    ranges.clear();
+    const rendered = renderMarkdown(text);
+    blocks = rendered.blocks;
+    segs = list;
+    el("doc").replaceChildren(rendered.root);
+    el("text").scrollTop = 0;
+    // Where the last sentence found was, so the search goes forward through
+    // the document: a sentence that occurs twice is found in order rather
+    // than twice at the first.
+    let lastBlock = 0;
+    let lastEnd = 0;
+    for (const seg of segs) {
+      // A span can cover several rendered blocks — one span for a whole list
+      // is what the markdown transform gives when it reads the list as one
+      // block — so every overlapping block is a candidate, from the one the
+      // previous sentence was found in onwards.
+      const overlapping = [];
+      blocks.forEach((b, i) => {
+        if (b.start < seg.span_end && seg.span_start < b.end) overlapping.push(i);
+      });
+      if (!overlapping.length) continue;
+      const ahead = overlapping.filter((i) => i >= lastBlock);
+      let placed = false;
+      for (const i of ahead.length ? ahead : overlapping) {
+        const found = locate(blocks[i].el, seg.text, i === lastBlock ? lastEnd : 0);
+        if (!found) continue;
+        ranges.set(seg.index, { block: blocks[i], start: found.start, end: found.end });
+        lastBlock = i;
+        lastEnd = found.end;
+        placed = true;
+        break;
+      }
+      if (!placed) ranges.set(seg.index, { block: blocks[(ahead.length ? ahead : overlapping)[0]], whole: true });
+    }
+  }
+
+  /** Move the lit sentence to segment `index`, and follow it if the reader is. */
+  function highlight(index) {
+    if (index === litIndex) return;
+    unwrap(litSpans);
+    litSpans = [];
+    litIndex = index;
+    const range = ranges.get(index);
+    const seg = segs.find((s) => s.index === index);
+    for (const block of blocks) {
+      block.el.classList.toggle("spent", !!seg && block.end <= seg.span_start);
+    }
+    if (!range) return;
+    const el_ = range.block.el;
+    litSpans = range.whole
+      ? wrapRange(el_, 0, flatText(el_).length, "lit")
+      : wrapRange(el_, range.start, range.end, "lit");
+    if (litSpans.length && Date.now() - userScrolledAt > FOLLOW_PAUSE_MS) {
+      litSpans[0].scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+    }
+  }
+
+  /** Nothing is being spoken now: keep the text, drop the highlight. */
+  function settleDoc() {
+    unwrap(litSpans);
+    litSpans = [];
+    litIndex = null;
+    for (const block of blocks) block.el.classList.remove("spent");
+  }
+
+  /**
    * Daemon messages are arbitrary text — a synthesis error carries the repr
    * of whatever an agent asked to have spoken — and this window runs with
    * `window.__TAURI__` in reach, so none of it may become markup. Everything
@@ -732,18 +853,14 @@
   function render() {
     win.dataset.transport = hushed ? "hushed" : playing ? "playing" : "paused";
 
-    const prev = segments.get(currentIndex - 1);
-    const now = segments.get(currentIndex);
-    const next = segments.get(currentIndex + 1);
-    el("prev").textContent = prev ? prev.text : "";
-    // Before the first `position` there is no segment, only the utterance
-    // `started` named. Showing it is not a guess about position — it is all
-    // of what is being spoken, which is more than the window knows about
-    // which part of it.
-    el("now").textContent = now ? now.text : utterance ?? "nothing speaking";
-    if (now || utterance) delete win.dataset.idle;
+    // The text itself is drawn by `buildDoc()` and lit by `highlight()`,
+    // which run when the utterance or the sentence changes — not here, on
+    // every event.
+    if (utterance !== null) delete win.dataset.idle;
     else win.dataset.idle = "1";
-    el("next").textContent = next ? next.text : "";
+    const seekable = !hushed && utterance !== null && segs.length > 0;
+    if (seekable) win.dataset.seekable = "1";
+    else delete win.dataset.seekable;
 
     for (const [i, t] of tickEls) {
       const seg = segments.get(i);
@@ -775,9 +892,16 @@
     el("play").textContent = playing ? "Pause" : hushed ? (canReplay ? "Again" : "Play") : "Play";
     el("play").disabled = hushed && !canReplay;
     el("play").title = hushed && !canReplay ? "Nothing queued — waiting for another source to speak" : "";
-    el("back").disabled = hushed;
-    el("fwd").disabled = hushed;
+    el("back").disabled = !seekable;
+    el("fwd").disabled = !seekable;
     el("hush").disabled = hushed;
+
+    // Two decimals only when the speed is not on a tenth: 1.25× is a real
+    // answer the daemon can give (it steps in twentieths), 1.20× is noise.
+    el("speed").textContent =
+      speed == null ? "—" : (Math.abs(speed * 10 - Math.round(speed * 10)) < 1e-6 ? speed.toFixed(1) : speed.toFixed(2)) + "×";
+    el("slower").disabled = speed == null || speed <= SPEED_MIN + 1e-6;
+    el("faster").disabled = speed == null || speed >= SPEED_MAX - 1e-6;
 
     // The two off switches. Cheap attribute writes only: `render()` runs on
     // every position event, so anything that rebuilds DOM belongs in
@@ -923,6 +1047,7 @@
       ? data.queue.map((entry) => ({ source_id: entry.source_id ?? "", text: entry.text ?? "" }))
       : [];
     globalMuted = !!data.muted;
+    if (typeof data.speed === "number") speed = data.speed;
     const engine = data.engine ?? {};
     engineState = engine.loading ? "loading" : engine.loaded ? "ready" : "unloaded";
     statusKnown = true;
@@ -1018,12 +1143,13 @@
         hushed = false;
         message = null;
         playing = true; // the daemon says nothing further; `started` means it began
-        utterance = data.text ?? null;
+        utterance = data.text ?? "";
         // A new utterance is a new timeline. Without this the previous one's
         // segments stay in the map and its ticks in the scrubber, so a short
         // utterance after a long one is spoken under a trailing row of ticks
         // belonging to speech that is over.
         clearSegments();
+        buildDoc(utterance, Array.isArray(data.segments) ? data.segments : []);
         for (const seg of data.segments ?? []) {
           ensureSegment(seg.index, {
             text: seg.text,
@@ -1042,11 +1168,15 @@
           duration: data.duration ?? segments.get(data.index)?.duration ?? null,
           elapsed: data.elapsed ?? 0,
         });
+        highlight(data.index);
         if (typeof data.playing === "boolean") playing = data.playing;
         else if (playing === null) playing = true; // a real daemon does not say; a position event implies "yes"
         break;
       case "metrics":
         Object.assign(metrics, data);
+        break;
+      case "speed":
+        if (typeof data.speed === "number") speed = data.speed;
         break;
       case "transport":
         // Read rather than inferred: an absence of `position` events is also
@@ -1116,6 +1246,7 @@
         if (utterance === null) dropQueued(event.source_id, null);
         playing = false;
         utterance = null;
+        settleDoc();
         if (data.cancelled) hushed = true;
         break;
       default:
@@ -1125,11 +1256,27 @@
   }
 
   function seekTo(index) {
-    const seg = segments.get(index);
-    if (!seg) return;
-    source.send("seek", { offset: seg.span_start }).then((res) => {
-      if (!res.ok) { message = res.error; render(); }
-    });
+    seek({ index });
+  }
+
+  /**
+   * Ask the daemon to move, and let the `position` that follows move the
+   * highlight. Nothing is drawn from the request itself: the daemon clamps,
+   * and past the last sentence it ends the utterance instead.
+   */
+  async function seek(payload) {
+    const res = await source.send("seek", payload);
+    if (!res.ok) { message = res.error; render(); }
+  }
+
+  async function changeSpeed(step) {
+    if (speed == null) return;
+    const res = await source.send("set_speed", { speed: Math.round((speed + step) * 100) / 100 });
+    if (!res.ok) { message = res.error; render(); return; }
+    // The `speed` event says the same; this is the shorter road, for a
+    // window whose subscription has fallen behind.
+    if (typeof res.data?.speed === "number") speed = res.data.speed;
+    render();
   }
 
   // ---- Tauri bridge: no-ops entirely when this page is a plain browser tab ----
@@ -1166,13 +1313,72 @@
     const res = await source.send(playing ? "pause" : "resume", {});
     if (!res.ok) { message = res.error; render(); }
   });
-  el("back").addEventListener("click", () => {
-    const seg = segments.get(currentIndex - 1);
-    if (seg) seekTo(currentIndex - 1);
+  // Relative, not "currentIndex ± 1": a press that lands as the sentence
+  // changes would otherwise go from where the window last drew, which may be
+  // a sentence behind where the daemon is.
+  el("back").addEventListener("click", () => { if (!el("back").disabled) seek({ by: -1 }); });
+  el("fwd").addEventListener("click", () => { if (!el("fwd").disabled) seek({ by: 1 }); });
+  el("slower").addEventListener("click", () => { if (!el("slower").disabled) changeSpeed(-0.1); });
+  el("faster").addEventListener("click", () => { if (!el("faster").disabled) changeSpeed(0.1); });
+
+  // A click in the text goes to the sentence under it.
+  el("doc").addEventListener("click", (e) => {
+    if (!win.dataset.seekable) return;
+    // Selecting text to copy it is not a request to jump.
+    if (String(window.getSelection?.() ?? "").length) return;
+    let node = null;
+    let offset = 0;
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (r) { node = r.startContainer; offset = r.startOffset; }
+    } else if (document.caretPositionFromPoint) {
+      const r = document.caretPositionFromPoint(e.clientX, e.clientY);
+      if (r) { node = r.offsetNode; offset = r.offset; }
+    }
+    const block = blocks.find((b) => b.el.contains(node ?? e.target)) ?? blocks.find((b) => b.el.contains(e.target));
+    if (!block) return;
+    const at = node ? offsetAt(block.el, node, offset) : -1;
+    const inBlock = segs.filter((s) => ranges.get(s.index)?.block === block);
+    if (!inBlock.length) return;
+    const hit =
+      inBlock.find((s) => {
+        const r = ranges.get(s.index);
+        return !r.whole && at >= r.start && at < r.end;
+      }) ??
+      // Between two sentences, or in a block lit whole: the last sentence
+      // that starts before the click, else the block's first.
+      [...inBlock].reverse().find((s) => {
+        const r = ranges.get(s.index);
+        return !r.whole && at >= r.start;
+      }) ??
+      inBlock[0];
+    seekTo(hit.index);
   });
-  el("fwd").addEventListener("click", () => {
-    const seg = segments.get(currentIndex + 1);
-    if (seg) seekTo(currentIndex + 1);
+
+  // The reader taking the scroll: follow-along stands down for a moment.
+  for (const kind of ["wheel", "touchmove"]) {
+    el("text").addEventListener(kind, () => { userScrolledAt = Date.now(); }, { passive: true });
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) return;
+    // Space on a focused button is that button's own click; leave it.
+    if (e.key === " " && t instanceof HTMLButtonElement) return;
+    const action = {
+      ArrowLeft: "back",
+      ArrowRight: "fwd",
+      "-": "slower",
+      _: "slower",
+      "+": "faster",
+      "=": "faster",
+      " ": "play",
+    }[e.key];
+    if (e.key === "PageUp" || e.key === "PageDown") userScrolledAt = Date.now();
+    if (!action) return;
+    e.preventDefault();
+    el(action).click();
   });
   el("hush").addEventListener("click", async () => {
     // An explicit empty `source_id`, exactly as the master mute sends one.
