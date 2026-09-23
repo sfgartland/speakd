@@ -56,7 +56,7 @@ const LINK_CHANNEL: &str = "speakd://link";
 const SUBSCRIBE_LINE: &[u8] = b"{\"verb\":\"subscribe\",\"source_id\":\"\",\"payload\":{}}\n";
 
 /// Named on control requests that do not route by channel. Pause, resume,
-/// hush, cancel and seek are global, exactly as they are from `speakctl`, and
+/// hush, cancel, seek and set_speed are global, exactly as they are from `speakctl`, and
 /// the daemon ignores their `source_id` — so for those this is a label in a
 /// log, not a routing decision. `mute` is the exception and says so at
 /// `speakd_send`.
@@ -75,12 +75,12 @@ const CONTROL_SOURCE_ID: &str = "gui";
 /// engine state at startup — the event stream reports changes, but a window
 /// opened against an already-muted daemon has missed them.
 ///
-/// `seek` rides along with the four the buttons need even though the daemon
-/// answers it with "not implemented" today: the window already has the two
-/// arrow buttons, and the daemon's own refusal is a better thing to show in
-/// the error line than a refusal this file invented.
+/// `seek` moves within the utterance being spoken — the arrow buttons, and a
+/// click on a sentence — and `set_speed` is the listener's speed. Both are
+/// global like pause: they change what is being heard, not what any channel
+/// says, so neither can make the window originate speech.
 const FORWARDED: &[&str] = &[
-    "pause", "resume", "hush", "cancel", "seek", "mute", "set_engine", "status",
+    "pause", "resume", "hush", "cancel", "seek", "mute", "set_engine", "set_speed", "status",
 ];
 
 /// The one way the window originates speech.

@@ -9,26 +9,27 @@
  *     `handler` is called with `{ kind, data, source_id? }` events. `kind`
  *     names one of the event kinds `speakd.daemon.Daemon._publish` emits:
  *
- *       "started"   data: { text }
- *                   One utterance is about to be spoken, and `text` is the
- *                   whole of it. There is NO `segments` list here: the
- *                   daemon segments one unit ahead of playback
- *                   (src/speakd/pipeline.py's depth-one queue), so it cannot
- *                   know segment four's text while segment one is playing.
- *                   The UI discovers segments one at a time from `position`.
- *                   `SimulatedSource` alone adds a `segments` array, as a
- *                   convenience it can afford because it owns its fixture.
+ *       "started"   data: { text, segments }
+ *                   One utterance is about to be spoken. `text` is the whole
+ *                   of it, exactly as it was handed to the daemon — markdown
+ *                   and all — and `segments` is every sentence it will be
+ *                   spoken as, in order: { index, text, span_start, span_end }.
+ *                   The daemon segments before it speaks, so the window can
+ *                   show the whole utterance from the first word. A
+ *                   segment's `text` is what is *spoken*, after transforms,
+ *                   and its span points into `text`; under the markdown
+ *                   transform every sentence of a block carries the whole
+ *                   block's span. `SimulatedSource` adds each segment's
+ *                   `duration`, which it knows because it owns its fixture.
  *
  *       "position"  data: { text, span_start, span_end, audio_offset,
  *                            played_at, index, duration?, elapsed? }
- *                   One segment has *started*. The first five fields are
- *                   the daemon's, verbatim. `index` is added by whichever
- *                   source produced the event — the wire has no segment
- *                   number, so `ShellSource` counts positions since the last
- *                   `started` — so that the controller never has to infer
- *                   segment identity from spans. `duration` and `elapsed`
- *                   are `SimulatedSource`-only: a real `position` says that
- *                   a segment began, not how long it runs or how far in
+ *                   One segment has *started*. `index` is the segment's
+ *                   place in `started.segments`, numbered by the daemon —
+ *                   after a seek it is the only thing that says which
+ *                   sentence this is. `duration` and `elapsed` are
+ *                   `SimulatedSource`-only: a real `position` says that a
+ *                   segment began, not how long it runs or how far in
  *                   playback already is.
  *
  *       "metrics"   data: { rtf?, drift?, mem_bytes?, queue? }
@@ -86,6 +87,11 @@
  *                   why this is a separate switch from mute and why
  *                   "loading" is a state a window has to be able to show.
  *
+ *       "speed"     data: { speed }
+ *                   The listener's speed multiplier moved, here or in
+ *                   `speakctl speed`. 1.0 is the profile's own pace; the
+ *                   daemon clamps to 0.7–1.6 in steps of 0.05.
+ *
  *       "link"      data: { connected, detail }
  *                   Not a daemon event: `ShellSource` alone emits it, for
  *                   whether the shell currently holds a subscription at all.
@@ -95,13 +101,14 @@
  *
  *   send(verb, payload = {}, source) -> Promise<{ ok: true, data } | { ok: false, error }>
  *     `verb` is one of the control verbs in src/speakd/protocol.py. The
- *     shell forwards eight — pause, resume, hush, cancel, seek, mute,
- *     set_engine, status — and refuses the rest, `enqueue` above all: this
- *     window monitors speech and originates none except through `say()`
- *     below. `seek` is forwarded but the daemon answers it with "not
- *     implemented" until a seekable player lands
- *     (docs/plans/2026-09-13-streaming-player.md); `SimulatedSource` honours
- *     it locally, owning no real audio device to be blocked on.
+ *     shell forwards nine — pause, resume, hush, cancel, seek, mute,
+ *     set_engine, set_speed, status — and refuses the rest, `enqueue` above
+ *     all: this window monitors speech and originates none except through
+ *     `say()` below. `seek` takes `{ index }` or `{ by }` and moves within
+ *     the utterance being spoken; past the last sentence it ends it, and
+ *     answers `{ index: null, ended: true }`. `set_speed` takes `{ speed }`
+ *     and answers with the speed applied, which is not always the one asked
+ *     for.
  *
  *     `source` is for the three verbs the daemon routes by `source_id` —
  *     `mute`, `hush` and `cancel`. "" is everything, a channel id is that
@@ -115,7 +122,7 @@
  *     empty string, and has to check the `scope` it gets back, or a window-wide
  *     stop silently becomes a stop of the window's own typing.
  *
- *     `status` also reports what is waiting, under `queue`: entries of
+ *     `status` also reports the speed, under `speed`, and what is waiting, under `queue`: entries of
  *     { source_id, text } in play order, next first, NOT including whatever is
  *     being spoken. It is the only way to learn a queue that filled before this
  *     client was listening.
@@ -190,24 +197,53 @@ export class SimulatedSource {
   constructor() {
     this.capabilities = { replay: true };
 
-    this._segments = [
-      { text: "Kant gives the official definition at B25.", dur: 2.31, synth: 1.6 },
+    // Markdown, because that is what the daemon is mostly handed, and a
+    // simulation reading plain sentences could not show the renderer doing
+    // anything. Spans are block-level, as the real markdown transform's are:
+    // every sentence of a block carries the whole block's range, and the
+    // spoken text has lost its markup.
+    const blocks = [
+      { src: "## Transcendental, at B25", spoken: [["Transcendental, at B25.", 1.9]] },
       {
-        text:
-          "He calls transcendental all cognition occupied not so much with objects as " +
-          "with our mode of cognition of objects, insofar as this is to be possible a priori.",
-        dur: 8.42,
-        synth: 6.1,
+        src:
+          "Kant gives the official definition at **B25**. He calls transcendental all " +
+          "cognition occupied not so much with objects as with our *mode of cognition* of " +
+          "objects, insofar as this is to be possible a priori.",
+        spoken: [
+          ["Kant gives the official definition at B25.", 2.31],
+          [
+            "He calls transcendental all cognition occupied not so much with objects as with " +
+              "our mode of cognition of objects, insofar as this is to be possible a priori.",
+            8.42,
+          ],
+        ],
       },
-      { text: "The crucial thing is that the term is reflexive, or second order.", dur: 3.55, synth: 2.4 },
-      { text: "It does not name a special class of objects lying beyond the ordinary ones.", dur: 4.48, synth: 5.9 },
-      { text: "It names an inquiry that turns back on cognition itself.", dur: 3.02, synth: 2.1 },
+      {
+        src: "- The term is reflexive, or `second order`.\n- It does not name a special class of objects.",
+        spoken: [
+          ["The term is reflexive, or second order.", 3.2],
+          ["It does not name a special class of objects.", 3.0],
+        ],
+      },
+      {
+        src: "It names an inquiry that turns back on cognition itself.",
+        spoken: [["It names an inquiry that turns back on cognition itself.", 3.02]],
+      },
     ];
+    this._text = blocks.map((block) => block.src).join("\n\n");
+    this._segments = [];
     let cursor = 0;
-    for (const seg of this._segments) {
-      seg.span_start = cursor;
-      seg.span_end = cursor + seg.text.length;
-      cursor = seg.span_end + 1;
+    for (const block of blocks) {
+      for (const [text, dur] of block.spoken) {
+        this._segments.push({
+          text,
+          dur,
+          synth: dur * 0.72,
+          span_start: cursor,
+          span_end: cursor + block.src.length,
+        });
+      }
+      cursor += block.src.length + 2;
     }
 
     // Same starting point as today's inline script: open mid-utterance and
@@ -254,6 +290,9 @@ export class SimulatedSource {
     // something a person can see.
     this._engineLoaded = true;
     this._engineLoading = false;
+    // The listener's speed multiplier, as the daemon keeps it. The fixture's
+    // clock runs this much faster; its durations stay what they were made at.
+    this._speed = 1.0;
 
     this._listeners = new Set();
     this._raf = null;
@@ -301,19 +340,24 @@ export class SimulatedSource {
       // the window reads it from there to name the channel and to move the
       // dot in the channel list.
       source_id: FIXTURE_SOURCE,
-      data: {
-        segments: this._segments.map((seg, i) => ({
-          index: i,
-          text: seg.text,
-          span_start: seg.span_start,
-          span_end: seg.span_end,
-          audio_offset: null, // unknown ahead of playback for real segments; unused by the simulation
-          duration: seg.dur,
-        })),
-      },
+      data: this._startedData(),
     });
     handler(this._positionEvent());
     handler(this._metricsEvent());
+  }
+
+  /** What `started` carries for the fixture, shaped as the daemon's. */
+  _startedData() {
+    return {
+      text: this._text,
+      segments: this._segments.map((seg, i) => ({
+        index: i,
+        text: seg.text,
+        span_start: seg.span_start,
+        span_end: seg.span_end,
+        duration: seg.dur,
+      })),
+    };
   }
 
   _positionEvent() {
@@ -358,6 +402,8 @@ export class SimulatedSource {
         return this._doMute(payload, source);
       case "set_engine":
         return this._doSetEngine(payload);
+      case "set_speed":
+        return this._doSetSpeed(payload);
       case "status":
         return Promise.resolve({ ok: true, data: this._status() });
       case "enqueue":
@@ -429,6 +475,7 @@ export class SimulatedSource {
       channels: this._channels.map((c) => ({ ...c, muted: !!this._channelMuted.get(c.source_id) })),
       muted: this._muted,
       engine: { loaded: this._engineLoaded, loading: this._engineLoading },
+      speed: this._speed,
       // In play order, next first, and not including what is being spoken —
       // the caller can see that on the "now" line and does not need it twice.
       queue: this._pending.map((job) => ({
@@ -490,6 +537,18 @@ export class SimulatedSource {
       this._emit({ kind: "engine", source_id: "", data: { state: "ready" } });
     }, 1600);
     return Promise.resolve({ ok: true, data: { loading: true } });
+  }
+
+  _doSetSpeed(payload) {
+    const raw = payload.speed;
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+      return Promise.resolve({ ok: false, error: "set_speed needs a positive number 'speed'" });
+    }
+    // The daemon's clamp and step, so the window is told the same answers
+    // here as it will be by the real thing.
+    this._speed = Math.round(Math.min(1.6, Math.max(0.7, raw)) * 20) / 20;
+    this._emit({ kind: "speed", source_id: "", data: { speed: this._speed } });
+    return Promise.resolve({ ok: true, data: { speed: this._speed } });
   }
 
   _doPause() {
@@ -555,7 +614,7 @@ export class SimulatedSource {
           data: { text: job.text.slice(0, QUEUE_PREVIEW_CHARS), pending: i + 1 },
         }),
       );
-      this._emit({ kind: "started", source_id: FIXTURE_SOURCE, data: {} });
+      this._emit({ kind: "started", source_id: FIXTURE_SOURCE, data: this._startedData() });
     }
     this._playing = true;
     this._last = performance.now();
@@ -737,23 +796,33 @@ export class SimulatedSource {
   }
 
   _doSeek(payload) {
-    const i = this._segments.findIndex((seg) => seg.span_start === payload.offset);
-    if (i === -1) return Promise.resolve({ ok: false, error: "no segment at that offset" });
-    this._index = i;
+    const hasIndex = Number.isInteger(payload.index);
+    const hasBy = Number.isInteger(payload.by);
+    if (hasIndex === hasBy) {
+      return Promise.resolve({ ok: false, error: "seek needs one integer, 'index' or 'by'" });
+    }
+    // Only the fixture has sentences to move between. Pasted and promoted
+    // speech has no segment clock here, and a hushed fixture is not speaking
+    // — the daemon refuses both the same way.
+    if (this._utterance || this._hushed || this._speaking !== FIXTURE_SOURCE) {
+      return Promise.resolve({ ok: false, error: "nothing is speaking" });
+    }
+    const target = Math.max(0, hasIndex ? payload.index : this._index + payload.by);
+    if (target >= this._segments.length) {
+      this._doCancel("");
+      return Promise.resolve({ ok: true, data: { index: null, ended: true } });
+    }
+    this._index = target;
     this._within = 0;
-    this._hushed = false;
-    // Seeking is seeking *the fixture*, so the fixture is what is sounding
-    // again — any pasted utterance that had taken the floor has just lost it.
-    this._takeFloor();
     this._emit(this._positionEvent());
-    return Promise.resolve({ ok: true, data: {} });
+    return Promise.resolve({ ok: true, data: { index: target } });
   }
 
   _tick(now) {
     if (!this._playing) return;
     const dt = Math.min((now - this._last) / 1000, 0.25);
     this._last = now;
-    this._within += dt;
+    this._within += dt * this._speed;
 
     const seg = this._segments[this._index];
     const next = this._segments[this._index + 1];
@@ -905,6 +974,14 @@ export class ShellSource {
       return { kind, source_id, data };
     }
     if (kind === "position") {
+      // The daemon numbers segments itself now. Counting positions was a
+      // guess that a seek breaks: after going back, the count and the
+      // sentence being spoken part company for the rest of the utterance.
+      // The count below survives only for a daemon older than that.
+      if (typeof data.index === "number") {
+        this._sourceId = source_id;
+        return { kind, source_id, data };
+      }
       // A position for a channel this source has seen no `started` for: the
       // window was opened mid-utterance, or the daemon restarted under it.
       // Numbering from zero is the only honest guess available, and saying
