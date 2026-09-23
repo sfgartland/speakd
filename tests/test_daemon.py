@@ -214,16 +214,6 @@ def test_pausing_twice_announces_once(running_daemon) -> None:  # type: ignore[n
     assert len([event for event in seen if event.kind == "transport"]) == 1
 
 
-def test_seek_is_still_refused(running_daemon) -> None:  # type: ignore[no-untyped-def]
-    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
-    response = daemon.handle(Request(verb=Verb.SEEK, source_id="s"))
-    assert not response.ok
-    # The refusal has to name itself. The message it replaced promised seek
-    # "until the streaming player lands" -- which this daemon is now running.
-    assert "seek" in response.error
-    assert "streaming player" not in response.error
-
-
 def test_a_player_that_cannot_be_paused_is_reported_not_raised(running_daemon) -> None:  # type: ignore[no-untyped-def]
     """A refusing sink must not come back as a traceback on the control path."""
 

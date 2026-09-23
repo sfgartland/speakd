@@ -35,16 +35,6 @@ from speakd.timeline import Timeline
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
 
-# Named for the one verb still refused. The wording it replaces — "not
-# implemented until the streaming player lands" — became false the moment the
-# streaming player landed, and a refusal whose stated reason has already
-# happened sends a reader waiting for something that is already here.
-_SEEK_NOT_IMPLEMENTED = (
-    "seek is not implemented: the timeline can map an offset to a time, but "
-    "moving playback needs the audio for segments already played, which is "
-    "neither retained nor re-synthesised"
-)
-
 _NOT_RUNNING = "the daemon is not running: start() it before enqueuing speech"
 
 _METRICS_THREAD_NAME = "speakd-metrics"
@@ -138,6 +128,22 @@ class _Job:
     prefix: str
 
 
+@dataclass
+class _Current:
+    """The utterance in flight, as a seek needs to see it.
+
+    `index` is the segment last announced, so a relative seek is relative to
+    what a listener was shown rather than to how far ahead the producer has
+    got. `seek_to` is a request `_speak` picks up once `speak()` returns;
+    anything that stops speech clears it, so a hush racing a seek wins.
+    Guarded by the daemon's `_idle` lock.
+    """
+
+    units: tuple[Piece, ...]
+    index: int = 0
+    seek_to: int | None = None
+
+
 class Daemon:
     def __init__(
         self,
@@ -166,6 +172,8 @@ class Daemon:
         # so: the Event it stands beside has already been consumed, and
         # setting a consumed Event stops nothing.
         self._speaking = ""
+        # What a seek moves within; None between utterances.
+        self._current: _Current | None = None
         self._jobs: queue.Queue[_Job | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._running = False
@@ -398,6 +406,8 @@ class Daemon:
             sounding = not source_id or self._speaking == source_id
             if sounding:
                 self._cancel.set()
+                if self._current is not None:
+                    self._current.seek_to = None
         try:
             if sounding:
                 self.player.stop()
@@ -512,6 +522,36 @@ class Daemon:
         self._publish("transport", "", {"paused": paused})
         return Response(ok=True, data={"paused": paused})
 
+    def _seek(self, payload: dict[str, object]) -> Response:
+        """Move playback to another segment of the utterance being spoken.
+
+        By stopping this pass and re-entering `speak()` at that segment. The
+        audio of segments already made is in the utterance's cache, so going
+        back is immediate; anything further ahead is synthesised as it would
+        have been. Global, like pause: it moves whatever is being heard.
+
+        Past the last segment is not an error. It is what pressing "next" on
+        the last sentence means, and the answer is the one `cancel` gives:
+        this utterance is over and the queue runs on.
+        """
+        given = [key for key in ("index", "by") if key in payload]
+        value = payload.get(given[0]) if len(given) == 1 else None
+        if not isinstance(value, int) or isinstance(value, bool):
+            return Response(ok=False, error="seek needs one integer, 'index' or 'by'")
+        with self._idle:
+            current = self._current
+            if current is None:
+                return Response(ok=False, error="nothing is speaking")
+            target = max(0, value if given[0] == "index" else current.index + value)
+            ended = target >= len(current.units)
+            current.seek_to = None if ended else target
+            # Set under the lock for the reason `_stop_speaking` gives.
+            self._cancel.set()
+        self._stop_player()
+        if ended:
+            return Response(ok=True, data={"index": None, "ended": True})
+        return Response(ok=True, data={"index": target})
+
     def _set_speed(self, raw: object) -> Response:
         """Change the listener's speed, answering with the one applied.
 
@@ -619,7 +659,7 @@ class Daemon:
         if request.verb is Verb.SET_SPEED:
             return self._set_speed(request.payload.get("speed"))
         if request.verb is Verb.SEEK:
-            return Response(ok=False, error=_SEEK_NOT_IMPLEMENTED)
+            return self._seek(request.payload)
         if request.verb is Verb.SET_ROLE:
             raw = request.payload.get("role")
             try:
@@ -984,6 +1024,9 @@ class Daemon:
         # whole utterance needs them all up front, and a seek addresses them
         # by the index given here.
         units = segmenter.segment(pieces)
+        current = _Current(units=tuple(units))
+        with self._idle:
+            self._current = current
         self._publish(
             "started",
             job.source_id,
@@ -1022,6 +1065,8 @@ class Daemon:
             delivery was late, which is why nothing short of watching arrival
             times could show it.
             """
+            with self._idle:
+                current.index = segment.index
             self._publish(
                 "position",
                 job.source_id,
@@ -1035,36 +1080,66 @@ class Daemon:
                 },
             )
 
+        cache = AudioCache()
+        start = 0
         try:
-            result = speak(
-                pieces,
-                self.engine,
-                self.player,
-                voice=job.profile.voice,
-                speed=job.profile.speed,
-                cancel=cancel,
-                window=self._synthesis,
-                timeline=timeline,
-                on_playing=announce,
-                units=units,
-                cache=AudioCache(),
-                tempo=self.tempo,
-            )
-        except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
-            # `started` is already out. A subscriber pairing the two would
-            # wait for a `finished` that never came, so send both — including
-            # when the engine or the player raises outside `Exception`.
-            # `!r` because `str(SystemExit(3))` is just "3": a diagnostic
-            # that names neither the exception nor its type is no diagnostic.
-            self._publish("error", job.source_id, {"message": f"synthesis failed: {exc!r}"})
-            self._publish("finished", job.source_id, {"cancelled": False, "aborted": True})
-            return
-        # No position loop here any more: they went out as they were spoken.
-        # `speak()` has already waited for its own reporting thread to drain,
-        # so every position of this utterance is on the bus ahead of the
-        # `finished` below.
-        for message in result.errors:
-            self._publish("error", job.source_id, {"message": message})
+            while True:
+                try:
+                    result = speak(
+                        pieces,
+                        self.engine,
+                        self.player,
+                        voice=job.profile.voice,
+                        speed=job.profile.speed,
+                        cancel=cancel,
+                        window=self._synthesis,
+                        timeline=timeline,
+                        on_playing=announce,
+                        units=units,
+                        cache=cache,
+                        tempo=self.tempo,
+                        start_index=start,
+                    )
+                except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
+                    # `started` is already out. A subscriber pairing the two
+                    # would wait for a `finished` that never came, so send
+                    # both — including when the engine or the player raises
+                    # outside `Exception`. `!r` because `str(SystemExit(3))`
+                    # is just "3": a diagnostic that names neither the
+                    # exception nor its type is no diagnostic.
+                    self._publish(
+                        "error", job.source_id, {"message": f"synthesis failed: {exc!r}"}
+                    )
+                    self._publish(
+                        "finished", job.source_id, {"cancelled": False, "aborted": True}
+                    )
+                    return
+                # No position loop here any more: they went out as they were
+                # spoken. `speak()` has already waited for its own reporting
+                # thread to drain, so every position of this pass is on the
+                # bus ahead of whatever comes next.
+                for message in result.errors:
+                    self._publish("error", job.source_id, {"message": message})
+                with self._idle:
+                    target, current.seek_to = current.seek_to, None
+                    if target is None or not self._running:
+                        break
+                    # A seek: the same utterance again from `target`, with a
+                    # fresh Event and timeline, and no `finished`/`started`
+                    # pair around it -- the next `position` is the whole of
+                    # what a monitor needs to be told.
+                    cancel = threading.Event()
+                    timeline = Timeline()
+                    self._cancel = cancel
+                    self._timeline = timeline
+                clear = getattr(self.player, "clear_interrupt", None)
+                if callable(clear):
+                    clear()
+                start = target
+        finally:
+            with self._idle:
+                if self._current is current:
+                    self._current = None
         self._publish(
             "finished",
             job.source_id,
