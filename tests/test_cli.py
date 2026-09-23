@@ -364,3 +364,53 @@ def test_default_voice_and_speed_when_nothing_is_specified(monkeypatch) -> None:
     assert code == 0
     assert captured["voice"] == "af_heart"
     assert captured["speed"] == 1.1
+
+
+def _fake_call(monkeypatch, answer):  # type: ignore[no-untyped-def]
+    from speakd import cli
+
+    sent = []
+
+    def call(socket, request):  # type: ignore[no-untyped-def]
+        sent.append(request)
+        return answer
+
+    monkeypatch.setattr(cli, "_call", call)
+    return sent
+
+
+def test_speed_sends_set_speed_and_prints_what_was_applied(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"speed": 1.6}))
+    assert main(["speed", "3"]) == 0
+    assert sent[0].verb is Verb.SET_SPEED
+    assert sent[0].payload == {"speed": 3.0}
+    assert capsys.readouterr().out.strip() == "1.6"
+
+
+def test_speed_with_no_value_prints_the_current_one(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"speed": 1.2}))
+    assert main(["speed"]) == 0
+    assert sent[0].verb is Verb.STATUS
+    assert capsys.readouterr().out.strip() == "1.2"
+
+
+def test_speed_refuses_what_is_not_a_number(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response
+
+    sent = _fake_call(monkeypatch, Response(ok=True))
+    assert main(["speed", "fast"]) != 0
+    assert sent == []
+
+
+def test_seek_sends_by_or_index(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"index": 1}))
+    assert main(["seek", "--by", "-1"]) == 0
+    assert main(["seek", "--index", "3"]) == 0
+    assert [r.verb for r in sent] == [Verb.SEEK, Verb.SEEK]
+    assert [r.payload for r in sent] == [{"by": -1}, {"index": 3}]

@@ -158,6 +158,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("pause", parents=[common], help="suspend playback where it is")
     sub.add_parser("resume", parents=[common], help="take playback up again")
 
+    speed = sub.add_parser("speed", parents=[common], help="print or set the speaking speed")
+    # A string, checked in `_speed`, for the reason `priority` gives above.
+    speed.add_argument("value", nargs="?", help="a multiplier, 0.7 to 1.6; omit to print it")
+    seek = sub.add_parser("seek", parents=[common], help="move within what is being spoken")
+    where = seek.add_mutually_exclusive_group(required=True)
+    where.add_argument("--by", type=int, help="sentences forward (negative: back)")
+    where.add_argument("--index", type=int, help="the sentence to go to, counting from 0")
+
     sub.add_parser("subscribe", parents=[common], help="stream events as JSON lines")
     sub.add_parser("status", parents=[common], help="print the daemon's channels as JSON")
 
@@ -430,6 +438,38 @@ def _transport(args: argparse.Namespace, verb: Verb) -> int:
     refusal is printed rather than swallowed: a dead pause button that reports
     nothing is the failure this whole path exists to remove."""
     response = _call(args.socket, Request(verb=verb, source_id=args.source))
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
+def _speed(args: argparse.Namespace) -> int:
+    """Print the speed, or set it and print what the daemon applied.
+
+    Printed either way, because the daemon clamps: asking for 3 and being
+    told 1.6 is the answer, and a silent success would hide it.
+    """
+    if args.value is None:
+        request = Request(verb=Verb.STATUS, source_id=args.source)
+    else:
+        try:
+            value = float(args.value)
+        except ValueError:
+            print(f"speakctl: speed must be a number, got {args.value!r}", file=sys.stderr)
+            return _UNREACHABLE
+        request = Request(verb=Verb.SET_SPEED, source_id=args.source, payload={"speed": value})
+    response = _call(args.socket, request)
+    if response is None:
+        return _UNREACHABLE
+    if not response.ok:
+        return _refused(response)
+    print(response.data.get("speed"))
+    return 0
+
+
+def _seek(args: argparse.Namespace) -> int:
+    payload = {"by": args.by} if args.by is not None else {"index": args.index}
+    response = _call(args.socket, Request(verb=Verb.SEEK, source_id=args.source, payload=payload))
     if response is None:
         return _UNREACHABLE
     return 0 if response.ok else _refused(response)
@@ -723,6 +763,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _transport(args, Verb.PAUSE)
     if args.command == "resume":
         return _transport(args, Verb.RESUME)
+    if args.command == "speed":
+        return _speed(args)
+    if args.command == "seek":
+        return _seek(args)
     if args.command == "role":
         return _role(args)
     if args.command == "priority":
