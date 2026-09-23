@@ -14,7 +14,7 @@ from __future__ import annotations
 import queue
 import threading
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from traceback import format_exc
 from typing import Protocol, runtime_checkable
 
@@ -450,7 +450,7 @@ class Daemon:
                 error=f"{type(self.engine).__name__} cannot be loaded or unloaded",
             )
         engine: Loadable = self.engine
-        state.save(state.DaemonState(muted=state.load().muted, disabled=not wanted))
+        state.save(replace(state.load(), disabled=not wanted))
         if not wanted:
             # Silenced before the model goes: the utterance in flight is
             # holding audio synthesised from it, and letting that finish
@@ -628,7 +628,7 @@ class Daemon:
                 # no source, so it opens no channel, for the same reason
                 # STATUS does not.
                 self.muted = wanted
-                state.save(state.DaemonState(muted=wanted, disabled=state.load().disabled))
+                state.save(replace(state.load(), muted=wanted))
                 scope = "global"
             if wanted:
                 # An off switch that lets the current paragraph finish is not

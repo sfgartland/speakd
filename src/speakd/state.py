@@ -13,6 +13,7 @@ one that starts audible.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -22,6 +23,10 @@ from pathlib import Path
 class DaemonState:
     muted: bool = False
     disabled: bool = False
+    # The listener's multiplier on every profile's speed. Clamped where it is
+    # applied (`speakd.tempo`), not here: this module only has to refuse what
+    # is not a speed at all.
+    speed: float = 1.0
 
 
 def state_path() -> Path:
@@ -37,9 +42,19 @@ def load() -> DaemonState:
         return DaemonState()
     if not isinstance(body, dict):
         return DaemonState()
+    raw_speed = body.get("speed", 1.0)
+    speed = (
+        float(raw_speed)
+        if isinstance(raw_speed, (int, float))
+        and not isinstance(raw_speed, bool)
+        and math.isfinite(raw_speed)
+        and raw_speed > 0
+        else 1.0
+    )
     return DaemonState(
         muted=bool(body.get("muted", False)),
         disabled=bool(body.get("disabled", False)),
+        speed=speed,
     )
 
 

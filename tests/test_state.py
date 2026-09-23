@@ -49,3 +49,22 @@ def test_the_suite_never_reads_the_developers_real_state() -> None:
     for a reason nowhere in their own source.
     """
     assert pathlib.Path.home() not in state_path().parents
+
+
+def test_speed_round_trips_and_defaults() -> None:
+    from dataclasses import replace
+
+    from speakd import state
+
+    assert state.load().speed == 1.0
+    state.save(replace(state.load(), speed=1.3))
+    assert state.load().speed == 1.3
+    assert state.load().muted is False
+
+
+def test_a_nonsense_speed_reads_as_the_default() -> None:
+    from speakd import state
+
+    state.state_path().parent.mkdir(parents=True, exist_ok=True)
+    state.state_path().write_text('{"speed": "fast"}', encoding="utf-8")
+    assert state.load().speed == 1.0
