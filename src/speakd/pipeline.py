@@ -11,15 +11,16 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from speakd.metrics import SynthesisWindow
 from speakd.model import Piece, Segment
-from speakd.player import Player
+from speakd.player import Player, Stretchable
 from speakd.segmenter import DEFAULT_MAX_CHARS, segment
 from speakd.synth import Synthesizer
+from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
 
@@ -42,7 +43,48 @@ class SpeechResult:
     units: tuple[Piece, ...] = ()
 
 
-_Item = tuple[Piece, np.ndarray] | str | None
+_Item = tuple[Piece, int, np.ndarray, float] | str | None
+
+# How much made audio an utterance may keep for going back to: about ten
+# minutes of 24 kHz float32.
+_CACHE_BYTES = 64 * 1024 * 1024
+
+
+class AudioCache:
+    """Audio already made for this utterance, so going back costs nothing.
+
+    Without it every seek backwards re-synthesises, which at a real-time
+    factor of 0.75 is four seconds of silence before a five-second sentence.
+    Each entry keeps the speed multiplier it was made at, because the player
+    has to know how far to stretch it to the speed wanted now.
+
+    Bounded, because an utterance is bounded by nothing: over the cap, what
+    goes first is what is furthest from where playback is (`near`), which is
+    the least likely to be asked for again. Written by the producer thread
+    and read by the consumer's, hence the lock.
+    """
+
+    def __init__(self, max_bytes: int = _CACHE_BYTES) -> None:
+        self.max_bytes = max_bytes
+        self.near = 0
+        self._entries: dict[int, tuple[np.ndarray, float]] = {}
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, index: int) -> tuple[np.ndarray, float] | None:
+        with self._lock:
+            return self._entries.get(index)
+
+    def put(self, index: int, audio: np.ndarray, made_at: float) -> None:
+        with self._lock:
+            old = self._entries.pop(index, None)
+            if old is not None:
+                self._bytes -= old[0].nbytes
+            self._entries[index] = (audio, made_at)
+            self._bytes += audio.nbytes
+            while self._bytes > self.max_bytes and len(self._entries) > 1:
+                victim = max(self._entries, key=lambda i: abs(i - self.near))
+                self._bytes -= self._entries.pop(victim)[0].nbytes
 
 # How long `speak()` waits, once playback is over, for the reports it has
 # already handed over to reach the callback. Long enough that a subscriber
@@ -134,6 +176,9 @@ def speak(
     on_playing: Callable[[Segment], None] | None = None,
     start_index: int = 0,
     start_offset: float = 0.0,
+    units: Sequence[Piece] | None = None,
+    cache: AudioCache | None = None,
+    tempo: Tempo | None = None,
 ) -> SpeechResult:
     """Speak `pieces`, returning the timeline of what was actually played.
 
@@ -161,6 +206,17 @@ def speak(
     the utterance nothing but the bounded wait at the end. A segment whose
     `play()` then fails has already been announced; see `_Announcer` and the
     note at the call below for why that is the right way round.
+
+    `units` is a segmentation the caller already made, spoken as given
+    instead of segmenting `pieces` again. The daemon segments first so that
+    it can announce every sentence before the first is heard, and a seek has
+    to address the same units the announcement named.
+
+    `cache` supplies audio made on an earlier pass over the same units, and
+    keeps what this pass makes. `tempo` is the listener's speed multiplier:
+    new audio is synthesised at `speed * tempo.value`, and a `Stretchable`
+    player holds every segment to the tempo as it changes. Without a tempo,
+    `speed` is used as it is.
     """
     cancel = cancel or threading.Event()
     # Only when somebody is listening: a caller that passes no callback pays
@@ -169,22 +225,30 @@ def speak(
     # Internal teardown flag. Distinct from `cancel` so the caller's Event
     # stays untouched and `speak()` is a pure function of its arguments.
     stop = threading.Event()
-    units = segment(pieces, max_chars)
+    units = list(units) if units is not None else segment(pieces, max_chars)
     # Clamped, never sliced with a negative: see `start_index` above.
-    to_speak = units[max(0, start_index) :]
+    first = max(0, start_index)
+    to_speak = units[first:]
     work: queue.Queue[_Item] = queue.Queue(maxsize=1)
 
     def produce() -> None:
         try:
-            for unit in to_speak:
+            for index, unit in enumerate(to_speak, start=first):
                 if cancel.is_set() or stop.is_set():
                     break
+                cached = cache.get(index) if cache is not None else None
+                if cached is not None:
+                    work.put((unit, index, *cached))
+                    continue
+                made_at = tempo.value if tempo is not None else 1.0
                 started = time.monotonic()
                 try:
-                    audio = engine.synthesize(unit.spoken, voice, speed)
+                    audio = engine.synthesize(unit.spoken, voice, speed * made_at)
                 except Exception as exc:  # speech must not vanish on one bad segment
                     work.put(f"{unit.spoken[:40]!r}: {exc}")
                     continue
+                if cache is not None:
+                    cache.put(index, audio, made_at)
                 if window is not None:
                     # Recorded here rather than by the consumer below, so the
                     # real-time factor moves as soon as synthesis is done --
@@ -195,7 +259,7 @@ def speak(
                     # window's own lock is held for an append and no more, so
                     # this cannot stall the producer.
                     window.record(time.monotonic() - started, len(audio) / engine.sample_rate)
-                work.put((unit, audio))
+                work.put((unit, index, audio, made_at))
         finally:
             work.put(None)
 
@@ -220,7 +284,9 @@ def speak(
             if cancel.is_set():
                 player.stop()
                 break
-            unit, audio = item
+            unit, index, audio, made_at = item
+            if cache is not None:
+                cache.near = index
             duration = len(audio) / engine.sample_rate
             # Stamped here, not after play() returns: this is when playback
             # of the segment actually starts, which is what subscribers of
@@ -236,6 +302,7 @@ def speak(
                 audio_offset=offset,
                 duration=duration,
                 played_at=started,
+                index=index,
             )
             if announcer is not None:
                 # Here, and not after `play()` returns: `play()` blocks for
@@ -250,7 +317,16 @@ def speak(
                 # go unreported. The timeline below is unaffected.
                 announcer.announce(played)
             try:
-                player.play(audio, engine.sample_rate)
+                if tempo is not None and isinstance(player, Stretchable):
+                    # The duration that goes into the timeline is what was
+                    # played, which a stretch makes different from the
+                    # audio's own length; drift is measured against it.
+                    seconds = player.play_at(
+                        audio, engine.sample_rate, made_at=made_at, tempo=tempo
+                    )
+                    played = replace(played, duration=seconds)
+                else:
+                    player.play(audio, engine.sample_rate)
             except Exception as exc:
                 # A sink vanishing mid-utterance is routine for a daemon: a
                 # headset walking out of range, say. Recording the failure
@@ -264,7 +340,7 @@ def speak(
             # segment whose play() call failed is never added: the timeline
             # returned on the aborted path is exactly what was played.
             timeline.append(played)
-            offset += duration
+            offset += played.duration
     finally:
         if not exhausted:
             # Reached by cancellation discovered above, or by a player

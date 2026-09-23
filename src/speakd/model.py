@@ -59,6 +59,10 @@ class Segment:
     segment actually began, which is what subscribers describe. The two differ
     whenever synthesis stalls playback, and that difference is the point:
     a single measured number would hide the stall.
+
+    `index` is the unit's position in its utterance's segmentation, which is
+    what a seek addresses and what a monitor numbers its sentences by. It is
+    carried rather than counted because after a seek the count is wrong.
     """
 
     span: Span
@@ -66,6 +70,7 @@ class Segment:
     audio_offset: float
     duration: float
     played_at: float | None = None
+    index: int = 0
 
 
 @dataclass

@@ -4,12 +4,14 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from speakd.metrics import SynthesisWindow
 from speakd.model import Piece, Segment, Span
-from speakd.pipeline import SpeechResult, speak
-from speakd.player import RecordingPlayer
+from speakd.pipeline import AudioCache, SpeechResult, speak
+from speakd.player import FakeSink, RecordingPlayer, StreamingPlayer
 from speakd.synth.fake import FakeEngine
+from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
 
@@ -569,3 +571,69 @@ def test_start_offset_continues_the_audio_clock() -> None:
 def test_start_offset_defaults_to_zero() -> None:
     result = speak(three_sentences(), FakeEngine(), RecordingPlayer())
     assert result.timeline.segments[0].audio_offset == 0.0
+
+
+class CountingEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, float]] = []
+
+    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+        self.calls.append((text, speed))
+        return super().synthesize(text, voice, speed)
+
+
+def test_given_units_are_spoken_as_given() -> None:
+    units = [Piece(span=Span(0, 4), spoken="One."), Piece(span=Span(5, 9), spoken="Two.")]
+    player = RecordingPlayer()
+    result = speak([], FakeEngine(), player, units=units)
+    assert result.units == tuple(units)
+    assert len(player.played) == 2
+
+
+def test_segments_carry_their_absolute_index() -> None:
+    seen: list[int] = []
+    speak(
+        [piece("One. Two. Six.")],
+        FakeEngine(),
+        RecordingPlayer(),
+        start_index=1,
+        on_playing=lambda seg: seen.append(seg.index),
+    )
+    assert seen == [1, 2]
+
+
+def test_a_cached_unit_is_not_synthesised_again() -> None:
+    engine = CountingEngine()
+    cache = AudioCache()
+    pieces = [piece("One. Two.")]
+    speak(pieces, engine, RecordingPlayer(), cache=cache)
+    speak(pieces, engine, RecordingPlayer(), cache=cache)
+    assert len(engine.calls) == 2
+
+
+def test_new_audio_is_made_at_the_tempo() -> None:
+    engine = CountingEngine()
+    speak([piece("One.")], engine, RecordingPlayer(), speed=1.1, tempo=Tempo(1.5))
+    assert engine.calls == [("One.", pytest.approx(1.65))]
+
+
+def test_a_stretchable_player_is_held_to_the_tempo() -> None:
+    sink = FakeSink()
+    result = speak(
+        [piece("One.")],
+        FakeEngine(),
+        StreamingPlayer(sink),
+        speed=1.0,
+        tempo=Tempo(1.0),
+    )
+    assert result.timeline.segments[0].duration == sink.frames_written / 24000
+
+
+def test_the_cache_evicts_furthest_from_where_playback_is() -> None:
+    cache = AudioCache(max_bytes=3 * 400)
+    for i in range(4):
+        cache.near = i
+        cache.put(i, np.zeros(100, np.float32), 1.0)
+    assert cache.get(0) is None
+    assert cache.get(3) is not None
