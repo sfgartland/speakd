@@ -31,7 +31,8 @@ def time_stretch(audio: np.ndarray, ratio: float, sample_rate: int) -> np.ndarra
         # Too short for a frame to have a neighbour. A tail this short is
         # heard as a click either way; resampling it keeps the length right.
         positions = np.linspace(0, len(audio) - 1, num=out_len)
-        return np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
+        resampled: np.ndarray = np.interp(positions, np.arange(len(audio)), audio)
+        return resampled.astype(np.float32)
     hop_out = frame // 2
     hop_in = hop_out * ratio
     tol = int(_TOLERANCE_SECONDS * sample_rate)

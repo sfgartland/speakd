@@ -86,6 +86,7 @@ class AudioCache:
                 victim = max(self._entries, key=lambda i: abs(i - self.near))
                 self._bytes -= self._entries.pop(victim)[0].nbytes
 
+
 # How long `speak()` waits, once playback is over, for the reports it has
 # already handed over to reach the callback. Long enough that a subscriber
 # briefly behind still gets every position out before the caller says the

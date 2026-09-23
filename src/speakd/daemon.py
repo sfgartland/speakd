@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from traceback import format_exc
 from typing import Protocol, runtime_checkable
 
-from speakd import state
+from speakd import segmenter, state
 from speakd.channels import ChannelTable
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
@@ -28,7 +28,6 @@ from speakd.pipeline import AudioCache, speak
 from speakd.player import Pausable, Player
 from speakd.protocol import Request, Response, Verb
 from speakd.scheduler import SpeechRequest, decide
-from speakd import segmenter
 from speakd.synth import Synthesizer
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
@@ -1107,12 +1106,8 @@ class Daemon:
                     # outside `Exception`. `!r` because `str(SystemExit(3))`
                     # is just "3": a diagnostic that names neither the
                     # exception nor its type is no diagnostic.
-                    self._publish(
-                        "error", job.source_id, {"message": f"synthesis failed: {exc!r}"}
-                    )
-                    self._publish(
-                        "finished", job.source_id, {"cancelled": False, "aborted": True}
-                    )
+                    self._publish("error", job.source_id, {"message": f"synthesis failed: {exc!r}"})
+                    self._publish("finished", job.source_id, {"cancelled": False, "aborted": True})
                     return
                 # No position loop here any more: they went out as they were
                 # spoken. `speak()` has already waited for its own reporting
