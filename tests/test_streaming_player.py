@@ -4,7 +4,8 @@ import threading
 
 import numpy as np
 
-from speakd.player import FakeSink, StreamingPlayer
+from speakd.player import FakeSink, StreamingPlayer, Stretchable
+from speakd.tempo import Tempo
 
 
 def audio(frames: int) -> np.ndarray:
@@ -246,3 +247,53 @@ def test_player_exposes_what_the_sink_recorded() -> None:
 
     assert len(player.errors) == 1
     assert "dropped 100 frames" in player.errors[0]
+
+
+def tone(frames: int) -> np.ndarray:
+    return (0.3 * np.sin(np.arange(frames) * 2 * np.pi * 220 / 24000)).astype(np.float32)
+
+
+def test_play_at_the_speed_it_was_made_is_plain_play() -> None:
+    sink = FakeSink()
+    seconds = StreamingPlayer(sink, chunk_frames=1000).play_at(
+        tone(24000), 24000, made_at=1.2, tempo=Tempo(1.2)
+    )
+    assert sink.frames_written == 24000
+    assert seconds == 1.0
+
+
+def test_play_at_stretches_to_the_current_tempo() -> None:
+    sink = FakeSink()
+    seconds = StreamingPlayer(sink, chunk_frames=1000).play_at(
+        tone(24000), 24000, made_at=1.0, tempo=Tempo(1.5)
+    )
+    assert abs(sink.frames_written - 16000) <= 2
+    assert abs(seconds - 16000 / 24000) < 1e-3
+
+
+def test_a_tempo_change_mid_segment_stretches_only_the_rest() -> None:
+    tempo = Tempo(1.0)
+
+    class Changing(FakeSink):
+        def write(self, frames: np.ndarray) -> None:
+            super().write(frames)
+            if self.frames_written == 12000:
+                tempo.set(1.5)
+
+    sink = Changing()
+    StreamingPlayer(sink, chunk_frames=1000).play_at(tone(24000), 24000, made_at=1.0, tempo=tempo)
+    assert abs(sink.frames_written - (12000 + 8000)) <= 2
+
+
+def test_the_streaming_player_is_stretchable() -> None:
+    assert isinstance(StreamingPlayer(FakeSink()), Stretchable)
+
+
+def test_clear_interrupt_forgets_a_stop_aimed_at_finished_playback() -> None:
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.stop()
+    player.clear_interrupt()
+    player.play(audio(250), 24000)
+    assert player.interrupted is False
+    assert sink.frames_written == 250

@@ -13,14 +13,34 @@ from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 import numpy as np
 
+from speakd.stretch import time_stretch
+
 if TYPE_CHECKING:
     import sounddevice as sd
+
+    from speakd.tempo import Tempo
 
 
 class Player(Protocol):
     def play(self, audio: np.ndarray, sample_rate: int) -> None: ...
 
     def stop(self) -> None: ...
+
+
+@runtime_checkable
+class Stretchable(Protocol):
+    """A player that can follow a speed change inside a segment.
+
+    Separate from `Player` for the reason `Pausable` is: nothing else in the
+    speech path needs it, and a test double should not have to carry it.
+    `made_at` is the speed multiplier the audio was synthesised at; the
+    player holds what is left of it to `tempo`, and answers with the seconds
+    it actually played, which a stretch makes different from the audio's own.
+    """
+
+    def play_at(
+        self, audio: np.ndarray, sample_rate: int, *, made_at: float, tempo: Tempo
+    ) -> float: ...
 
 
 @runtime_checkable
@@ -610,24 +630,54 @@ class StreamingPlayer:
         larger change than one chunk nobody will hear as a defect is worth.
         Measured and accepted, not missed.
         """
+        self._play(audio, sample_rate, 1.0, None)
+
+    def play_at(
+        self, audio: np.ndarray, sample_rate: int, *, made_at: float, tempo: Tempo
+    ) -> float:
+        """`play()`, holding the rest of the segment to `tempo` as it changes.
+
+        Checked once a chunk, so a speed change is heard within one chunk
+        (about 85 ms) rather than at the next sentence. What is left is
+        stretched by the ratio between the speed it currently represents and
+        the one wanted now, and never re-stretched from the original: the
+        played part is gone, and the rest is all that can still change.
+        """
+        return self._play(audio, sample_rate, made_at, tempo) / sample_rate
+
+    def _play(
+        self, audio: np.ndarray, sample_rate: int, made_at: float, tempo: Tempo | None
+    ) -> int:
+        """The write loop both entry points share. Returns frames written."""
         self.interrupted = False
-        for start in range(0, len(audio), self._chunk):
+        buffer, effective, pos, written = audio, made_at, 0, 0
+        while pos < len(buffer):
             while not self._resume.wait(timeout=0.05):
                 if self._interrupt.is_set():
                     break
             if self._interrupt.is_set():
                 self._interrupt.clear()
                 self.interrupted = True
-                return
+                return written
+            if tempo is not None:
+                wanted = tempo.value
+                if abs(wanted / effective - 1.0) > 1e-3:
+                    rest = time_stretch(buffer[pos:], wanted / effective, sample_rate)
+                    buffer = np.concatenate([buffer[:pos], rest])
+                    effective = wanted
+                    if pos >= len(buffer):
+                        break
             # Started here, below the interrupt check, rather than before the
             # loop: a segment that writes nothing — empty, or interrupted at
             # the first chunk — must not open a device stream to write nothing
             # into. start() is idempotent, so paying for it per chunk is a
             # lock acquisition, not a device call.
             self._sink.start()
-            block = audio[start : start + self._chunk]
+            block = buffer[pos : pos + self._chunk]
             self._sink.write(block)
             self.frames_played += len(block)
+            written += len(block)
+            pos += len(block)
         # Repeated, not hoisted: a zero-length segment never enters the loop,
         # so without this an interrupt that landed on it stays set and kills
         # the *next* play(). Clearing at entry instead would erase a stop()
@@ -636,6 +686,17 @@ class StreamingPlayer:
         if self._interrupt.is_set():
             self._interrupt.clear()
             self.interrupted = True
+        return written
+
+    def clear_interrupt(self) -> None:
+        """Forget a stop that was aimed at playback which has already ended.
+
+        A seek stops the player and then speaks again at once. The stop the
+        pipeline sends on its way out of the cancelled pass lands after the
+        last `play()` has returned, and would otherwise cut off the first
+        chunk of the segment that was sought.
+        """
+        self._interrupt.clear()
 
     def pause(self) -> None:
         """Suspend playback between chunks; `play()` keeps blocking.
