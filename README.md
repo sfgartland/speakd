@@ -85,6 +85,8 @@ uv run speakctl hush   --source mine                   # stop one channel; the r
 uv run speakctl cancel --source mine                   # skip this one, that queue continues
 uv run speakctl pause  --source mine
 uv run speakctl resume --source mine
+uv run speakctl seek --by -1                           # back a sentence (--index N to jump)
+uv run speakctl speed 1.2                              # listen faster; `speed` alone prints it
 uv run speakctl mute                                   # silence everything, at once
 uv run speakctl unmute
 uv run speakctl mute   --source mine                   # silence one channel only
@@ -170,9 +172,19 @@ stale in the only way that matters.
 ## The window
 
 `clients/gui/` is a 384px always-on-top monitor meant to sit beside an editor. It
-shows the text being spoken — previous line, current, next — a scrubber over the
-segments, and four numbers: synthesis speed against realtime, drift, resident
-memory and queue depth.
+shows the whole utterance as it was written — markdown rendered, headings, lists
+and code included — with the sentence being spoken lit and the view following it,
+so you can read along. Below that are a scrubber over the sentences and four
+numbers: synthesis speed against realtime, drift, resident memory and queue depth.
+
+← and → move a sentence back or forward, and clicking a sentence goes to it.
+Going back is immediate: the utterance keeps the audio it has already made.
+− and + change the speed in tenths, from 0.7× to 1.6×. The change is heard at
+once: audio already made is time-stretched (pitch kept), and everything after is
+synthesised at the new speed, which sounds better than any stretch. Faster
+listening makes the synthesiser work harder, so watch the rtf number: above 1×
+it can no longer keep ahead. With the window focused, the arrow keys, `-`/`+`
+and space do the same.
 
 Both off switches are in it, and they follow `speakctl`: mute one from the CLI and
 the window's button moves, without a reload. Behind a disclosure — closed by
