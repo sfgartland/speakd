@@ -439,3 +439,191 @@ def test_mode_sends_set_mode(monkeypatch) -> None:  # type: ignore[no-untyped-de
     )
     assert main(["mode", "loud"]) != 0
     assert len(sent) == 1
+
+
+_SCHEMA_FIXTURE = [
+    {
+        "key": "speech.default_language",
+        "type": "choice",
+        "default": "en",
+        "label": "Default language",
+        "help": "h",
+        "options": ["en", "fr"],
+        "min": None,
+        "max": None,
+        "step": None,
+        "multiline": False,
+        "restart": False,
+    },
+    {
+        "key": "zotero.section_chars",
+        "type": "int",
+        "default": 1800,
+        "label": "Section size",
+        "help": "h",
+        "options": None,
+        "min": 600,
+        "max": 4000,
+        "step": None,
+        "multiline": False,
+        "restart": False,
+    },
+    {
+        "key": "speech.voices",
+        "type": "voice_map",
+        "default": {},
+        "label": "Voices",
+        "help": "h",
+        "options": None,
+        "min": None,
+        "max": None,
+        "step": None,
+        "multiline": False,
+        "restart": False,
+    },
+]
+
+
+def test_settings_prints_a_table_of_key_value_default_and_type(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    values = {"speech.default_language": "fr", "zotero.section_chars": 1800, "speech.voices": {}}
+    sent = _fake_call(
+        monkeypatch, Response(ok=True, data={"schema": _SCHEMA_FIXTURE, "values": values})
+    )
+    assert main(["settings"]) == 0
+    assert sent[0].verb is Verb.SETTINGS
+    assert sent[0].payload == {}
+    out = capsys.readouterr().out
+    assert "speech.default_language" in out
+    assert "fr" in out
+    assert "zotero.section_chars" in out
+
+
+def test_settings_with_an_owner_narrows_the_request(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"schema": [], "values": {}}))
+    assert main(["settings", "speech"]) == 0
+    assert sent[0].payload == {"owner": "speech"}
+
+
+def test_set_parses_the_value_by_the_settings_declared_type(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from pathlib import Path
+
+    from speakd import cli
+    from speakd.protocol import Response, Verb
+
+    calls: list[Request] = []
+
+    def call(_socket: Path, request: Request) -> Response:
+        calls.append(request)
+        if request.verb is Verb.SETTINGS:
+            return Response(ok=True, data={"schema": _SCHEMA_FIXTURE, "values": {}})
+        return Response(ok=True, data={"value": request.payload["value"]})
+
+    monkeypatch.setattr(cli, "_call", call)
+    assert main(["set", "zotero.section_chars", "2000"]) == 0
+    assert calls[1].verb is Verb.SET_SETTING
+    assert calls[1].payload == {"key": "zotero.section_chars", "value": 2000}
+
+
+def test_set_parses_a_bool_from_the_familiar_spellings(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from pathlib import Path
+
+    from speakd import cli
+    from speakd.protocol import Response, Verb
+
+    bool_schema = [
+        {
+            "key": "speech.detect_language",
+            "type": "bool",
+            "default": True,
+            "label": "l",
+            "help": "h",
+            "options": None,
+            "min": None,
+            "max": None,
+            "step": None,
+            "multiline": False,
+            "restart": False,
+        }
+    ]
+    calls: list[Request] = []
+
+    def call(_socket: Path, request: Request) -> Response:
+        calls.append(request)
+        if request.verb is Verb.SETTINGS:
+            return Response(ok=True, data={"schema": bool_schema, "values": {}})
+        return Response(ok=True, data={"value": request.payload["value"]})
+
+    monkeypatch.setattr(cli, "_call", call)
+    spellings = (
+        ("true", True),
+        ("false", False),
+        ("on", True),
+        ("off", False),
+        ("1", True),
+        ("0", False),
+    )
+    for spelling, expected in spellings:
+        calls.clear()
+        assert main(["set", "speech.detect_language", spelling]) == 0
+        assert calls[1].payload["value"] is expected
+
+
+def test_set_parses_a_voice_map(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from pathlib import Path
+
+    from speakd import cli
+    from speakd.protocol import Response, Verb
+
+    calls: list[Request] = []
+
+    def call(_socket: Path, request: Request) -> Response:
+        calls.append(request)
+        if request.verb is Verb.SETTINGS:
+            return Response(ok=True, data={"schema": _SCHEMA_FIXTURE, "values": {}})
+        return Response(ok=True, data={"value": request.payload["value"]})
+
+    monkeypatch.setattr(cli, "_call", call)
+    assert main(["set", "speech.voices", "fr=ff_siwis,it=if_sara"]) == 0
+    assert calls[1].payload == {
+        "key": "speech.voices",
+        "value": {"fr": "ff_siwis", "it": "if_sara"},
+    }
+
+
+def test_set_refuses_a_value_that_does_not_parse_as_the_settings_type(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from pathlib import Path
+
+    from speakd import cli
+    from speakd.protocol import Response, Verb
+
+    calls: list[Request] = []
+
+    def call(_socket: Path, request: Request) -> Response:
+        calls.append(request)
+        return Response(ok=True, data={"schema": _SCHEMA_FIXTURE, "values": {}})
+
+    monkeypatch.setattr(cli, "_call", call)
+    assert main(["set", "zotero.section_chars", "not-a-number"]) != 0
+    assert all(c.verb is not Verb.SET_SETTING for c in calls)
+
+
+def test_set_names_a_key_that_is_not_declared(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    from pathlib import Path
+
+    from speakd import cli
+    from speakd.protocol import Response, Verb
+
+    calls: list[Request] = []
+
+    def call(_socket: Path, request: Request) -> Response:
+        calls.append(request)
+        return Response(ok=True, data={"schema": _SCHEMA_FIXTURE, "values": {}})
+
+    monkeypatch.setattr(cli, "_call", call)
+    assert main(["set", "zotero.section_char", "2000"]) != 0
+    assert "no such setting" in capsys.readouterr().err
+    assert all(c.verb is not Verb.SET_SETTING for c in calls)
