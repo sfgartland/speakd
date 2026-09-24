@@ -24,7 +24,7 @@
 import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import type { Link } from "./link";
-import { ReaderSession, resumesOnStart, type ControllerCore, type Intent, type SegmentInfo } from "./session";
+import { NO_TEXT, ReaderSession, resumesOnStart, type ControllerCore, type Intent, type SegmentInfo } from "./session";
 import { VoicePref } from "./voice-pref";
 import { SPEAKD_VOICE_ID, mergeVoices, silentWav } from "./voices";
 
@@ -216,6 +216,7 @@ class Adopted implements ReaderHandle {
         return source.includes("getController(") && source.includes("'ActiveSegmentChange'");
       }],
       ["manager.setSegments calls _createController", () => String(m.setSegments).includes("_createController()")],
+      ["manager.clearSegments", () => isFunction(m.clearSegments)],
       ["manager.loadVoices", () => isFunction(m.loadVoices)],
       ["manager._voice", () => "_voice" in m],
       ["manager.selectVoice", () => isFunction(m.selectVoice)],
@@ -244,6 +245,7 @@ class Adopted implements ReaderHandle {
 
     const originalLoad = m.loadVoices;
     const originalCreate = m._createController;
+    const originalClear = m.clearSegments;
     // speakd is a remote voice, and remote voices load only for a user
     // logged in to Zotero (B:84271). Load them always; `getVoices` asks
     // Zotero's server only for a user who is.
@@ -265,6 +267,19 @@ class Adopted implements ReaderHandle {
         this.log.warn("the controller guard failed; Zotero's voice is used", error);
       }
       return originalCreate.call(m);
+    }, win);
+    // A document with no text gets no segments, and so no controller: the
+    // manager is cleared instead (B:84060-84066). Said at once, rather than
+    // when the wait for a controller runs out.
+    // It takes no arguments; ours are not passed on, since an array made
+    // here is one Zotero's code may not read.
+    m.clearSegments = Cu().exportFunction(() => {
+      const result = originalClear.call(m);
+      this.guard("checking for text", () => {
+        const found = waive(ir._readAloudSegments)?.segments;
+        if (found && found.length === 0) this.session?.giveUp(NO_TEXT);
+      });
+      return result;
     }, win);
     this.hooked = true;
 
@@ -668,6 +683,7 @@ class Adopted implements ReaderHandle {
         // Own properties shadowing the prototype's: deleting them restores Zotero's.
         delete this.manager.loadVoices;
         delete this.manager._createController;
+        delete this.manager.clearSegments;
         for (const voice of this.patchedVoices) delete voice.getController;
         win.document.getElementById(STYLE_ID)?.remove();
         win.document.documentElement.classList.remove(TAKEOVER_CLASS);

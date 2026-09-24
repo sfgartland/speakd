@@ -25,9 +25,12 @@ export interface Caller {
 
 /** Why a read did not happen, for the bar to say. */
 export interface Problem {
-  kind: "bad-token" | "no-daemon" | "http-error" | "refused" | "declined" | "zotero";
+  kind: "bad-token" | "no-daemon" | "http-error" | "refused" | "declined" | "zotero" | "empty";
   error: string;
 }
+
+/** A document with no text: a scan with no text layer, say. */
+export const NO_TEXT: Problem = { kind: "empty", error: "this document has no text to read" };
 
 /**
  * A cleanup stage for one section's text; `ordinal` is the section's place
@@ -189,7 +192,12 @@ export class Channel {
     return this.serially(async () => {
       if (generation !== this._generation) return;
       if (!(await this.hushIfLive(generation))) return;
+      if (!segments.some((segment) => segment.text.trim() !== "")) {
+        this.fail(NO_TEXT);
+        return;
+      }
       const sections = buildSections(segments, startIndex, this.firstSize, this.size);
+      // Past the end of a document that has text: nothing left to read.
       if (sections.length === 0) return;
       // On every start, not once: the daemon forgets a channel idle for
       // twelve hours, label and all.

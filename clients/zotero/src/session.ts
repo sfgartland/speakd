@@ -16,7 +16,9 @@
 // Pure. reader-takeover.ts wraps a core in the content-side object Zotero
 // calls, and supplies the hooks; nothing here touches Zotero.
 
-import type { Problem } from "./channel";
+import { NO_TEXT, type Problem } from "./channel";
+
+export { NO_TEXT };
 import { paragraphTarget, selectionEnd, selectionStart } from "./navigation";
 import type { SegmentText } from "./sections";
 import type { CallResult, SpeakdEvent } from "./speakd";
@@ -304,7 +306,10 @@ export class ReaderSession {
       channel.onProblem((problem) => {
         this._problem = problem;
         this.current?.failed(problem);
-        this.changed();
+        // Nothing to read is not something to try again: end the takeover,
+        // rather than leave Zotero's popup hidden over a read that cannot be.
+        if (problem.kind === "empty") this.finish();
+        else this.changed();
       }),
     ];
   }

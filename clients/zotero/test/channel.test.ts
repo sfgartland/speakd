@@ -435,4 +435,12 @@ describe("Channel", () => {
     await channel.stop();
     expect(daemon.calls).toEqual([]);
   });
+
+  it("says a document with no text has none to read, and sends nothing", async () => {
+    const { daemon, channel, problems } = setup();
+    await channel.start([{ text: "" }, { text: "  " }], 0);
+    expect(problems).toEqual([{ kind: "empty", error: "this document has no text to read" }]);
+    expect(daemon.calls).toEqual([]);
+    expect(channel.reading).toBe(false);
+  });
 });

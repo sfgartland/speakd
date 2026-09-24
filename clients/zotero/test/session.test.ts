@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Problem } from "../src/channel";
-import { CONTROLLER_WAIT_MS, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
+import { CONTROLLER_WAIT_MS, NO_TEXT, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
 import type { CallResult, SpeakdEvent } from "../src/speakd";
 import type { SegmentText } from "../src/sections";
 
@@ -482,5 +482,17 @@ describe("ReaderSession", () => {
     create(3);
     tick();
     expect(hooks.settles).toEqual(["settled"]);
+  });
+
+  it("ends the takeover, so Zotero's popup is not left hidden, when the document has no text", () => {
+    const { channel, emitted, hooks, session, tick, create } = setup();
+    session.want({ kind: "here" });
+    create(0);
+    tick();
+    channel.problem(NO_TEXT);
+    expect(emitted).toEqual(["Error"]);
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+    expect(session.wanted).toBe(false);
+    expect(session.problem).toEqual({ kind: "empty", error: "this document has no text to read" });
   });
 });
