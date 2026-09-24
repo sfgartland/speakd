@@ -171,7 +171,7 @@ def test_events_carry_the_time() -> None:
 
 **Interfaces:**
 - Produces:
-  - `Channel.briefs: bool = False`, `Channel.mode: str = "full"`, `Channel.briefed_this_turn: bool = False`.
+  - `Channel.briefs: bool = False`, `Channel.mode: str = "brief"` (the default only matters once a channel has a briefer, so any agent that connects starts in brief; channels without a briefer are effectively full), `Channel.briefed_this_turn: bool = False`.
   - `Verb.SET_MODE = "set_mode"` with `{mode}` → `{mode, briefs}`, and `Verb.SET_CAPABILITIES = "set_capabilities"` with `{briefs}` → `{briefs, mode}`.
   - The event `mode {mode, briefs}`.
   - Status channels gain `briefs`, `mode` (effective) and `briefed_this_turn`.
@@ -311,12 +311,13 @@ def test_only_in_mode_declines_in_the_other_mode() -> None:
 
 def test_claude_code_sessions_start_brief_and_muted() -> None:
     from speakd.__main__ import build_channels
+    from speakd.channels import effective_mode
 
     table = build_channels()
     main = table.open("claude-code:abc")
     assert (main.briefs, main.mode, main.muted) == (True, "brief", True)
     other = table.open("notify:whatsapp")
-    assert (other.briefs, other.mode, other.muted) == (False, "full", False)
+    assert (other.briefs, effective_mode(other), other.muted) == (False, "full", False)
     assert table.open("claude-code:abc:notify").briefs is False
 ```
 
@@ -330,7 +331,7 @@ def test_claude_code_sessions_start_brief_and_muted() -> None:
     - Add `def effective_mode(channel: Channel) -> str: return channel.mode if channel.briefs else "full"`.
     - `ChannelTable.__init__(self, defaults=None)` applies `defaults(source_id)` (a dict of field → value) with `setattr` on first open only.
     - Add `set_mode`, `set_briefs`, `mark_briefed(source, value)` helpers, each under the lock.
-  - **`__main__.build_channels`:** `ChannelTable(defaults=_claude_code_defaults)` with `def _claude_code_defaults(source): return {"briefs": True, "mode": "brief", "muted": True} if source.startswith("claude-code:") and source.count(":") == 1 else {}`, and its docstring updated.
+  - **`__main__.build_channels`:** `ChannelTable(defaults=_claude_code_defaults)` with `def _claude_code_defaults(source): return {"briefs": True, "muted": True} if source.startswith("claude-code:") and source.count(":") == 1 else {}`, and its docstring updated.
   - **`protocol.py`:** add `SET_MODE` and `SET_CAPABILITIES`.
   - **`daemon.py`:**
     - `handle` gets a `SET_MODE` branch: validate `mode in ("full", "brief")`; refuse with "this channel has no briefer" when the channel (opened) has `briefs` false; set it and publish `mode`.
@@ -459,7 +460,6 @@ def test_brief_answers_with_the_mode(daemon_socket, tmp_path: Path) -> None:  # 
         assert out["isError"] is False
         assert out["structuredContent"]["mode"] == "brief"
         assert out["structuredContent"]["spoken"] is True
-        channels = {c["source_id"]: c for c in d.handle_status_channels()} if hasattr(d, "handle_status_channels") else None
         status = rpc(proc, "tools/call", {"name": "briefing_status", "arguments": {}}, 3)["result"]["structuredContent"]
         assert status["briefs"] is True and "guide" in status
         switched = rpc(proc, "tools/call", {"name": "set_mode", "arguments": {"mode": "full"}}, 4)["result"]
@@ -532,7 +532,7 @@ def test_the_guide_is_the_users_file_when_there_is_one(tmp_path: Path) -> None:
     assert guide.text(tmp_path) == "Only tell me when it is done."
 ```
 
-  (Remove the unused `channels = …` line and `threading` import when writing the file. It is shown here only to flag that status is read through `briefing_status`, not the daemon directly.)
+  (Drop the unused `threading` import when writing the file.)
 - [ ] **Step 2: Run** `uv run pytest tests/test_mcp.py -q` and expect failures.
 - [ ] **Step 3: `send.call`.**
   - In `send.py`, factor the body of `send` into `call(request, *, socket=None, timeout=TIMEOUT) -> Response | str`, which returns the `Response` or the error string.
