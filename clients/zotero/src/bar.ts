@@ -140,7 +140,13 @@ export function describeBar(input: BarInput): BarView {
   }
   const base = { ...common, play: { enabled: true, action: "start" as const }, back: off, ahead: off, stop: off };
   if (input.problem !== null) {
-    return { ...base, kind: "problem", status: `speakd did not read it: ${input.problem.error}` };
+    const why =
+      input.problem.kind === "bad-token"
+        ? "the token was wrong then"
+        : input.problem.kind === "no-daemon"
+          ? "speakd was not running then"
+          : input.problem.error;
+    return { ...base, kind: "problem", status: `speakd did not read it: ${why}` };
   }
   if (other) return { ...base, kind: "other-speaking", status: "another channel is speaking" };
   return { ...base, kind: "idle", status: "" };

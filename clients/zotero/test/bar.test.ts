@@ -80,9 +80,11 @@ describe("describeBar", () => {
 
   it("lets a read that failed on an old token or a lost daemon be tried again once connected", () => {
     // A connected stream is the daemon, taking the token now in the preferences.
+    const said = { "bad-token": /token was wrong/, "no-daemon": /not running/ };
     for (const kind of ["bad-token", "no-daemon"] as const) {
-      const view = describeBar(input({ problem: { kind, error: "then" } }));
+      const view = describeBar(input({ problem: { kind, error: "TypeError: NetworkError" } }));
       expect(view.kind).toBe("problem");
+      expect(view.status).toMatch(said[kind]);
       expect(view.play).toMatchObject({ enabled: true, action: "start" });
     }
   });
