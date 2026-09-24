@@ -208,7 +208,12 @@ def http_port() -> int | None:
     except ValueError:
         sys.stderr.write(f"speakd: SPEAKD_HTTP_PORT={raw!r} is not a port; HTTP is off\n")
         return None
+    if port == 0:
+        # Documented as the deliberate off switch, so silent -- unlike a
+        # value nobody meant, this one is not a mistake to report.
+        return None
     if not 0 < port < 65536:
+        sys.stderr.write(f"speakd: SPEAKD_HTTP_PORT={raw!r} is out of range; HTTP is off\n")
         return None
     return port
 

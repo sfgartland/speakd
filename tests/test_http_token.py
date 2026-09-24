@@ -70,3 +70,21 @@ def test_speakctl_prints_it(tmp_path: Path, monkeypatch, capsys) -> None:  # typ
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert main(["http-token"]) == 0
     assert capsys.readouterr().out.strip() == http_token.read()
+
+
+def test_speakctl_reports_an_unwritable_config_dir_instead_of_a_traceback(  # type: ignore[no-untyped-def]
+    monkeypatch, capsys
+) -> None:
+    """An unwritable config directory (a read-only home, a full disk) must
+    reach the user as one clear line, not a bare traceback out of `ensure`."""
+    from speakd.cli import main
+
+    def broken(path: Path | None = None) -> str:
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(http_token, "ensure", broken)
+    code = main(["http-token"])
+    assert code != 0
+    err = capsys.readouterr().err
+    assert err.startswith("speakctl: ")
+    assert "Traceback" not in err

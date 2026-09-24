@@ -814,7 +814,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Made here as well as by the daemon, so it can be pasted into a
         # client before the daemon has ever run.
-        print(http_token.ensure())
+        try:
+            print(http_token.ensure())
+        except OSError as exc:
+            # An unwritable config directory (a read-only home, a full disk)
+            # must reach the user as one line, not the traceback `ensure`
+            # would otherwise raise straight out of `main`.
+            print(f"speakctl: could not create the http token: {exc}", file=sys.stderr)
+            return 2
         return 0
     if args.command == "subscribe":
         return _subscribe(args)
