@@ -69,8 +69,13 @@ export function planHighlights(
     if (segment.text !== undefined) {
       // Past any label speakd said first, which is no part of the document.
       const spoken = segment.text.slice(Math.max(0, textStart - segment.span_start));
-      const head = normalise(spoken).slice(0, EVIDENCE_LETTERS);
-      const chosen = section.text.slice(section.offsets[k], section.offsets[k + 1] ?? section.text.length);
+      const chosenEnd = section.offsets[k + 1] ?? section.text.length;
+      const chosen = section.text.slice(section.offsets[k], chosenEnd);
+      // Only as much of the opening as the chosen segment still holds from
+      // where the sentence starts in it: a sentence that runs on past a
+      // short heading has the rest of its opening in the next segment.
+      const room = normalise(section.text.slice(from, chosenEnd)).length;
+      const head = normalise(spoken).slice(0, Math.min(EVIDENCE_LETTERS, room));
       if (head && !normalise(chosen).includes(head)) continue;
     }
     plan.set(segment.index, zoteroIndex);

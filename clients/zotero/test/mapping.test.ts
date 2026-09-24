@@ -120,3 +120,34 @@ describe("the mis-mapping defence", () => {
     expect(plan.get(0)).toBe(0);
   });
 });
+
+describe("the mis-mapping defence, for a sentence that runs past its segment", () => {
+  // A heading with no full stop: speakd reads it into the sentence after it.
+  const section = buildSections([{ text: "Methods" }, { text: "We collected the data." }, { text: "Then more." }], 0, 3, 1000)[0]!;
+
+  // speakd's sentences over the section, with the text `started` names for each.
+  function spoken(sentences: string[]) {
+    return daemon(section.text, sentences).map((segment, index) => ({ ...segment, text: sentences[index] }));
+  }
+
+  it("lights a short heading that a sentence begins with", () => {
+    const plan = planHighlights(section, spoken(["Methods We collected the data.", "Then more."]), identity(section.text.length));
+    expect([plan.get(0), plan.get(1)]).toEqual([0, 2]);
+  });
+
+  it("still lights nothing when the heading chosen is not what the sentence begins with", () => {
+    // Offsets that went wrong: the second sentence sent to the heading.
+    const plan = planHighlights(
+      section,
+      [{ index: 0, span_start: 0, span_end: 22, text: "We collected the data." }],
+      identity(section.text.length),
+    );
+    expect(plan.has(0)).toBe(false);
+  });
+
+  it("still lights nothing when a sentence is sent to a longer segment that is not its own", () => {
+    const at = section.offsets[1]!;
+    const plan = planHighlights(section, [{ index: 0, span_start: at, span_end: at + 10, text: "Then more." }], identity(section.text.length));
+    expect(plan.has(0)).toBe(false);
+  });
+});
