@@ -91,9 +91,20 @@ export class ControllerCore {
   lastSkipGranularity: Granularity | null = null;
   error: string | null = null;
 
-  constructor(session: ReaderSession, segments: readonly SegmentInfo[], start: number, end: number, sink: ControllerSink) {
+  /** The array Zotero built this controller from: what tells a rebuild from a new segmentation. */
+  readonly source: unknown;
+
+  constructor(
+    session: ReaderSession,
+    segments: readonly SegmentInfo[],
+    start: number,
+    end: number,
+    sink: ControllerSink,
+    source: unknown,
+  ) {
     this.session = session;
     this.segments = segments;
+    this.source = source;
     this.start = start;
     this.end = end;
     this.sink = sink;
@@ -160,6 +171,20 @@ export class ControllerCore {
     if (this.destroyed) return;
     this.destroyed = true;
     this.session.destroyed(this);
+  }
+
+  /** Carry on the read `previous` was driving, as its replacement. */
+  takeOver(previous: ControllerCore): void {
+    this.begun = true;
+    this.isBuilt = true;
+    this.completed = previous.completed;
+    this.pos = previous.pos;
+    this.lastSkipGranularity = previous.lastSkipGranularity;
+  }
+
+  /** The segment last highlighted, or where it started. */
+  get position(): number {
+    return this.pos;
   }
 
   /** Called by the session once Zotero has finished building this controller. */
@@ -280,6 +305,7 @@ export class ReaderSession {
     backwardStopIndex: number | null,
     forwardStopIndex: number | null,
     sink: ControllerSink,
+    source: unknown = segments,
   ): ControllerCore {
     const last = segments.length - 1;
     const intent = this.intent;
@@ -289,10 +315,24 @@ export class ReaderSession {
     if (intent?.text !== undefined) start = selectionStart(segments, start, intent.text);
     let end = forwardStopIndex !== null && forwardStopIndex >= start ? Math.min(forwardStopIndex, last) : last;
     if (intent?.kind === "selection") end = Math.min(end, selectionEnd(segments, start, intent.text));
-    const core = new ControllerCore(this, segments, start, end, sink);
+    // Destroyed this tick, with no word yet on whether that was a stop.
+    const previous = this.current?.destroyed ? this.current : null;
+    // Zotero rebuilds the controller for reasons of its own -- voices that
+    // finish loading late re-apply the voice (B:82441, B:82533) -- starting
+    // at the segment being read. Over the same segments, at the sentence
+    // being read, that is no jump: the read carries on, bounds and all.
+    const rebuild =
+      intent === null &&
+      previous !== null &&
+      previous.source === source &&
+      this.channel.reading &&
+      start === previous.position;
+    if (rebuild) end = previous.end;
+    const core = new ControllerCore(this, segments, start, end, sink, source);
     this.current = this.closed ? null : core;
     if (this.closed) core.destroyed = true;
-    this.hooks.defer(() => core.built());
+    if (rebuild) core.takeOver(previous);
+    else this.hooks.defer(() => core.built());
     this.changed();
     return core;
   }

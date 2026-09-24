@@ -158,6 +158,38 @@ describe("ReaderSession", () => {
     expect(session.wanted).toBe(true);
   });
 
+  it("carries a read on through a rebuild at the sentence being read, rather than restarting it", () => {
+    // Zotero rebuilds the controller whenever its voices finish loading
+    // late (_resolveVoice -> _applyVoice), starting at the active segment.
+    const { channel, emitted, session, tick, create } = setup();
+    session.want({ kind: "selection", text: "One follows. Two ends a" });
+    const first = create(1);
+    tick();
+    channel.highlight(2);
+    first.destroy();
+    const second = create(2);
+    tick();
+    expect(channel.log).toEqual(["start 1"]);
+    channel.highlight(2);
+    expect(emitted).toEqual(["ActiveSegmentChange 2", "ActiveSegmentChange 2"]);
+    // Still the selection's read: it ends where the selection does.
+    expect(second.end).toBe(2);
+    channel.end();
+    expect(emitted.at(-1)).toBe("Complete");
+  });
+
+  it("starts over when the rebuilt controller has new segments, even at the same index", () => {
+    const { channel, session, tick } = setup();
+    const sink = { emit: () => {} };
+    const first = session.createController(SEGMENTS, 0, null, sink);
+    tick();
+    channel.highlight(2);
+    first.destroy();
+    session.createController([...SEGMENTS], 2, null, sink);
+    tick();
+    expect(channel.log).toEqual(["start 0", "start 2"]);
+  });
+
   it("stops the channel and ends the takeover when a controller goes with no successor", () => {
     const { channel, hooks, session, tick, create } = setup();
     session.want({ kind: "here" });

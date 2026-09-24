@@ -368,6 +368,9 @@ class Adopted implements ReaderHandle {
         typeof back === "number" ? back : null,
         typeof forward === "number" ? forward : null,
         sink,
+        // The manager's own array, read through the manager: the arguments
+        // come wrapped afresh on every call, and would never compare equal.
+        this.manager._segments,
       );
       this.fillController(target, core, list);
       return target;
