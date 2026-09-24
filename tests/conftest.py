@@ -29,6 +29,9 @@ import pytest
 def _isolated_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "speakd-state"))
+    # And configuration, now that the daemon writes some: the HTTP transport's
+    # token. A test must never mint one in the developer's own ~/.config.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     # `tests/test_cli_verbs.py` starts real `python -m speakd` subprocesses,
     # which inherit this. Without it every such test spawns a follower that
     # outlives its daemon's socket and tails the developer's own transcripts.

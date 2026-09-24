@@ -170,6 +170,9 @@ def _build_parser() -> argparse.ArgumentParser:
     where.add_argument("--by", type=int, help="sentences forward (negative: back)")
     where.add_argument("--index", type=int, help="the sentence to go to, counting from 0")
 
+    sub.add_parser(
+        "http-token", help="print the token clients of the HTTP transport need (the Zotero plugin)"
+    )
     sub.add_parser("subscribe", parents=[common], help="stream events as JSON lines")
     sub.add_parser("status", parents=[common], help="print the daemon's channels as JSON")
 
@@ -806,6 +809,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _set_engine(args, True)
     if args.command == "status":
         return _status(args)
+    if args.command == "http-token":
+        from speakd import http_token
+
+        # Made here as well as by the daemon, so it can be pasted into a
+        # client before the daemon has ever run.
+        print(http_token.ensure())
+        return 0
     if args.command == "subscribe":
         return _subscribe(args)
     if args.command == "notify":
