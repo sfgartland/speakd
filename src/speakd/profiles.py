@@ -43,6 +43,15 @@ NOTIFICATION_PROFILE = Profile(
 )
 
 
+# For documents whose reader highlights what is being spoken, the Zotero
+# reader first. No transforms at all: every rewriting transform marks its
+# pieces inexact, which drops each sentence's span to the whole piece, and a
+# highlight that lights a page is no use to follow. The reader cleans its text
+# before enqueueing it instead, keeping its own map of where each character
+# came from.
+PDF_PROFILE = Profile(name="pdf", transforms=())
+
+
 def load_profiles(path: Path) -> dict[str, Profile]:
     """Read profiles from TOML, always including the built-in ones.
 
@@ -53,6 +62,7 @@ def load_profiles(path: Path) -> dict[str, Profile]:
     profiles: dict[str, Profile] = {
         "default": DEFAULT_PROFILE,
         "notification": NOTIFICATION_PROFILE,
+        "pdf": PDF_PROFILE,
     }
     if not path.is_file():
         return profiles

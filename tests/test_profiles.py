@@ -10,6 +10,7 @@ from speakd.plugins.registry import ServiceRegistry
 from speakd.profiles import (
     DEFAULT_PROFILE,
     NOTIFICATION_PROFILE,
+    PDF_PROFILE,
     Profile,
     load_profiles,
     resolve_chain,
@@ -44,7 +45,11 @@ interrupt_on = ["error", "done"]
 
 def test_load_profiles_on_a_missing_file_yields_the_built_in_profiles(tmp_path: Path) -> None:
     profiles = load_profiles(tmp_path / "absent.toml")
-    assert profiles == {"default": DEFAULT_PROFILE, "notification": NOTIFICATION_PROFILE}
+    assert profiles == {
+        "default": DEFAULT_PROFILE,
+        "notification": NOTIFICATION_PROFILE,
+        "pdf": PDF_PROFILE,
+    }
 
 
 def test_the_notification_profile_does_not_run_the_markdown_transform() -> None:
@@ -152,3 +157,14 @@ def test_load_profiles_names_the_profile_when_speed_is_not_a_number(tmp_path: Pa
     path.write_text('[profile.bad]\nspeed = "fast"\n')
     with pytest.raises(ValueError, match="bad"):
         load_profiles(path)
+
+
+def test_a_pdf_profile_is_built_in_and_rewrites_nothing(tmp_path: Path) -> None:
+    """Sentence-exact spans are what the Zotero reader highlights by."""
+    assert load_profiles(tmp_path / "absent.toml")["pdf"].transforms == ()
+
+
+def test_the_pdf_profile_can_be_overridden(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.pdf]\nvoice = "am_michael"\n', encoding="utf-8")
+    assert load_profiles(path)["pdf"].voice == "am_michael"
