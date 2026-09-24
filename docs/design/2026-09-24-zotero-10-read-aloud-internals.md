@@ -936,3 +936,14 @@ Still unverified live: a real mouse selection (the hook was driven
 synthetically), a real engine's timing, OS media keys (MPRIS), two-column
 and footnote-heavy PDFs, `ReaderWindow` readers, real Zotero cloud voices
 for a logged-in user, and the preference pane's look.
+
+### Correction, 2026-09-24: the first-run dialog (§5)
+
+Verified live on a fresh profile with `reader.readAloudVoices` unset:
+starting a read through `startReadAloudAtPosition` does **not** show the
+first-run dialog. That path opens the popup directly and never sets
+`readAloudFirstRunPopup`; only `toggleReadAloudPopup(true)` does
+(`B:84202`). §5's "a user who has never used Read Aloud gets the first-run
+dialog instead of our voice" holds for the toolbar button, not for the
+plugin's reads. The plugin still seeds the pref for the document's language
+as insurance, and puts it back as soon as the controller is built.
