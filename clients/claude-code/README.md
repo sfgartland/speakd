@@ -5,56 +5,58 @@ process tails the session transcript and sends each block of text to the
 `speakd` daemon as it lands on disk — while the next tool is still running,
 rather than after it. A new prompt stops whatever is being said.
 
-Two hooks, both firing once per turn: `UserPromptSubmit`, which stops the
-speech and tells the follower this session is live, and `Notification`, which
-speaks the permission prompts. Neither reads the transcript, so a tool call
-costs nothing at all.
+It also gives each session a way to **brief** you instead: an MCP server,
+`speakd-mcp`, whose `brief` tool the agent calls when it has finished, is stuck,
+or has a question. Whether a session reads every response (full) or only its
+briefings (brief) is chosen per session — see the main README's *Briefings*.
+
+Three hooks, each firing once per turn:
+- `UserPromptSubmit` stops the speech, starts a new turn and tells the
+  follower this session is live.
+- `Notification` speaks the permission prompts.
+- `Stop` says "finished" when a turn ended in brief mode without a briefing.
+
+None of them reads the transcript, so a tool call costs nothing at all.
 
 ## Install, once
 
-Add this checkout as a plugin marketplace and install from it:
+Add this checkout as a plugin marketplace and install from it. From a shell:
 
-```
-/plugin marketplace add /path/to/speakd
-/plugin install speakd
-```
-
-If you would rather not use a marketplace, point `~/.claude/settings.json` at the
-wrapper directly. Both events run the same command:
-
-```json
-{
-  "hooks": {
-    "Notification": [
-      { "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 5 }] }
-    ],
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "bash \"/path/to/speakd/clients/claude-code/hooks/speakd-hook.sh\"", "timeout": 3 }] }
-    ]
-  }
-}
+```bash
+claude plugin marketplace add /path/to/speakd
+claude plugin install speakd@speakd
 ```
 
-If you installed an earlier version, delete any `Stop` and `PostToolUse` entries
-you added by hand. They are no-ops now — the follower has already spoken what
-they used to — but each one still costs an interpreter start-up per tool call.
+— or the same inside Claude Code, as `/plugin marketplace add /path/to/speakd`
+and `/plugin install speakd@speakd`. This installs the hooks and the MCP server
+together; a session started afterwards has both.
+
+**If you wired the hooks into `~/.claude/settings.json` by hand before**, remove
+those `speakd-hook.sh` entries first: with the plugin installed as well, every
+hook would fire twice.
+
+**After changing the checkout** nothing needs reinstalling for code changes —
+the hooks and the MCP launcher run whatever is in the venv. Only a change to
+`hooks/hooks.json` or `.mcp.json` needs `claude plugin marketplace update speakd`
+and a new session.
 
 ### Tell it where speakd lives
 
-`/plugin install` **copies** the plugin into `~/.claude/plugins/cache/`, so the
-installed copy has no way to find the checkout it came from. Point it back with
-`SPEAKD_HOME`, in whatever your shell reads at login, so Claude Code inherits it:
+`claude plugin install` **copies** the plugin into `~/.claude/plugins/cache/`, so
+the installed copy has no way to find the checkout it came from. Point it back
+with `SPEAKD_HOME`, somewhere every shell that starts Claude Code reads (for zsh,
+`~/.zshenv`):
 
 ```bash
 export SPEAKD_HOME=/path/to/speakd
 ```
 
-The wrapper looks for `speakd-claude-hook` on `PATH` first, then at
-`$SPEAKD_HOME/.venv/bin`, then in its own `../../../.venv/bin` (which resolves
-only when the plugin is run from inside the checkout, as the `settings.json`
-install above does), then in `~/.local/bin`. Finding none of them, it writes one
-line to the log saying so and exits 0 — so the symptom of a missing `SPEAKD_HOME`
-is a line in the log, not silence.
+The hook wrapper and the MCP launcher look the same way: for `speakd-claude-hook`
+/ `speakd-mcp` on `PATH` first, then in `$SPEAKD_HOME/.venv/bin`, then in the
+checkout they sit in, then in `~/.local/bin`. Finding none, the hook wrapper
+writes one line to the log saying so and exits 0, and the MCP launcher reports
+the failure to Claude Code — so the symptom of a missing `SPEAKD_HOME` is a line
+in the log and a failed `speakd` server in `/mcp`, not silence.
 
 ## Start the daemon
 

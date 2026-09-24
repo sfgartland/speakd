@@ -1,6 +1,6 @@
 {
   "name": "speakd",
-  "description": "Speak Claude Code's responses through the speakd daemon",
-  "version": "0.0.1",
+  "description": "Speak Claude Code's responses, or its briefings, through the speakd daemon",
+  "version": "0.2.0",
   "author": { "name": "Severin Gartland" }
 }
