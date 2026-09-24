@@ -1813,6 +1813,8 @@ def test_started_announces_every_segment_and_positions_say_which(daemon) -> None
     d.handle(enqueue("s", "One. Two. Six."))
     assert d.wait_idle(timeout=5.0)
     started = next(e for e in seen if e.kind == "started")
-    assert [s["text"] for s in started.data["segments"]] == ["One.", "Two.", "Six."]
-    assert [s["index"] for s in started.data["segments"]] == [0, 1, 2]
+    segments = started.data["segments"]
+    assert isinstance(segments, list)
+    assert [s["text"] for s in segments] == ["One.", "Two.", "Six."]
+    assert [s["index"] for s in segments] == [0, 1, 2]
     assert [e.data["index"] for e in seen if e.kind == "position"] == [0, 1, 2]

@@ -30,6 +30,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.ruff]
+# Design docs and plans carry illustrative snippets -- ellipses, fragments
+# of functions -- which ruff would otherwise try to format as real code.
+extend-exclude = ["docs"]
 line-length = 100
 # Kept at py310: raising it surfaces UP042 (str+Enum -> StrEnum) in modules
 # outside this change (model.py, protocol.py); a real improvement, but a
@@ -52,7 +55,7 @@ strict = true
 # imported inside functions and immediately adapted behind our own typed
 # interfaces (Player, Synthesizer), so nothing untyped escapes those modules.
 [[tool.mypy.overrides]]
-module = ["kokoro.*", "sounddevice.*"]
+module = ["kokoro.*", "sounddevice.*", "torch", "torch.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

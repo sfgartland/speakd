@@ -328,13 +328,20 @@ def test_a_connect_that_eats_the_whole_budget_gives_up_cleanly(  # type: ignore[
 
 
 def test_enqueue_carries_its_kind_and_flags(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from speakd.clients import send as send_module
-    from speakd.protocol import Response
+    from pathlib import Path
 
-    seen = []
-    monkeypatch.setattr(
-        send_module, "call", lambda request, **kw: seen.append(request) or Response(ok=True)
-    )
+    from speakd.clients import send as send_module
+    from speakd.protocol import Request, Response
+
+    seen: list[Request] = []
+
+    def fake_call(
+        request: Request, *, socket: Path | None = None, timeout: float = 0.0
+    ) -> Response:
+        seen.append(request)
+        return Response(ok=True)
+
+    monkeypatch.setattr(send_module, "call", fake_call)
     assert (
         send_module.enqueue("s", "finished", kind="attention", flags={"unless_briefed": True})
         is None

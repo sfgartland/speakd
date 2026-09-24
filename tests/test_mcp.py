@@ -6,13 +6,14 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from speakd.channels import ChannelTable
 from speakd.clients.mcp import guide, session
 from speakd.daemon import Daemon, ProfileView
-from speakd.events import EventBus
+from speakd.events import Event, EventBus
 from speakd.player import RecordingPlayer
 from speakd.synth.fake import FakeEngine
 from speakd.transport import SocketServer
@@ -41,18 +42,25 @@ def daemon_socket() -> Iterator[tuple[Path, Daemon]]:
         d.stop()
 
 
-Proc = subprocess.Popen  # type: ignore[type-arg]
+Proc = subprocess.Popen[str]
 
 
-def rpc(proc: Proc, method: str, params: dict[str, object] | None = None, id_: int = 1) -> dict:  # type: ignore[type-arg]
+def rpc(
+    proc: Proc, method: str, params: dict[str, object] | None = None, id_: int = 1
+) -> dict[str, Any]:
     message = {"jsonrpc": "2.0", "id": id_, "method": method, "params": params or {}}
+    assert proc.stdin is not None
     proc.stdin.write(json.dumps(message) + "\n")
     proc.stdin.flush()
-    return json.loads(proc.stdout.readline())  # type: ignore[no-any-return]
+    assert proc.stdout is not None
+    return cast("dict[str, Any]", json.loads(proc.stdout.readline()))
 
 
-def call(proc: Proc, name: str, arguments: dict[str, object], id_: int) -> dict:  # type: ignore[type-arg]
-    return rpc(proc, "tools/call", {"name": name, "arguments": arguments}, id_)["result"]  # type: ignore[no-any-return]
+def call(proc: Proc, name: str, arguments: dict[str, object], id_: int) -> dict[str, Any]:
+    return cast(
+        "dict[str, Any]",
+        rpc(proc, "tools/call", {"name": name, "arguments": arguments}, id_)["result"],
+    )
 
 
 def spawn(socket: Path, tmp_path: Path) -> Proc:
@@ -73,8 +81,12 @@ def spawn(socket: Path, tmp_path: Path) -> Proc:
 def test_initialize_hands_over_the_guide(daemon_socket, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     socket, _ = daemon_socket
     proc = spawn(socket, tmp_path)
+    assert proc.stdin is not None and proc.stdout is not None
     try:
-        init = {"protocolVersion": "2025-06-18", "clientInfo": {"name": "codex"}}
+        init: dict[str, object] = {
+            "protocolVersion": "2025-06-18",
+            "clientInfo": {"name": "codex"},
+        }
         result = rpc(proc, "initialize", init)["result"]
         assert result["serverInfo"]["name"] == "speakd"
         assert result["protocolVersion"] == "2025-06-18"
@@ -89,6 +101,7 @@ def test_initialize_hands_over_the_guide(daemon_socket, tmp_path: Path) -> None:
 def test_brief_answers_with_the_mode(daemon_socket, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     socket, _ = daemon_socket
     proc = spawn(socket, tmp_path)
+    assert proc.stdin is not None and proc.stdout is not None
     try:
         rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
         out = call(proc, "brief", {"text": "Tests pass.", "kind": "done"}, 2)
@@ -111,6 +124,7 @@ def test_brief_answers_with_the_mode(daemon_socket, tmp_path: Path) -> None:  # 
 def test_blank_unknown_and_malformed_do_not_crash(daemon_socket, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     socket, _ = daemon_socket
     proc = spawn(socket, tmp_path)
+    assert proc.stdin is not None and proc.stdout is not None
     try:
         rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
         blank = call(proc, "brief", {"text": "  ", "kind": "done"}, 2)
@@ -129,6 +143,7 @@ def test_blank_unknown_and_malformed_do_not_crash(daemon_socket, tmp_path: Path)
 
 def test_no_daemon_is_an_answer_not_an_error(tmp_path: Path) -> None:
     proc = spawn(tmp_path / "absent.sock", tmp_path)
+    assert proc.stdin is not None
     try:
         rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
         out = call(proc, "brief", {"text": "Hi.", "kind": "done"}, 2)
@@ -183,6 +198,7 @@ def test_a_daemon_that_forgot_the_briefer_is_told_again(daemon_socket, tmp_path:
 
     socket, d = daemon_socket
     proc = spawn(socket, tmp_path)
+    assert proc.stdin is not None and proc.stdout is not None
     try:
         rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
         assert call(proc, "brief", {"text": "One.", "kind": "done"}, 2)["structuredContent"][
@@ -208,13 +224,14 @@ def test_the_newest_registration_for_a_process_wins(tmp_path: Path, monkeypatch)
     import time as _time
 
     from speakd.clients.claude_code import registry
+    from speakd.clients.claude_code.watermark import state_dir
 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
     proc = fake_proc(tmp_path / "proc", [(300, "python3", 200), (200, "claude", 1)])
     registry.register("zzz-old", Path("/t.jsonl"), "/work", claude_pid=200)
     registry.register("aaa-new", Path("/t.jsonl"), "/work", claude_pid=200)
     # Make the old one older, whatever order the filenames sort in.
-    old = next(registry.state_dir().glob("*zzz-old*.session.json"))
+    old = next(state_dir().glob("*zzz-old*.session.json"))
     body = _json.loads(old.read_text())
     body["touched"] = _time.time() - 60
     old.write_text(_json.dumps(body))
@@ -222,8 +239,8 @@ def test_the_newest_registration_for_a_process_wins(tmp_path: Path, monkeypatch)
 
 
 def test_the_server_follows_its_process_to_a_new_session(
-    daemon_socket, tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    daemon_socket: tuple[Path, Daemon], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from speakd.clients.claude_code import registry
     from speakd.clients.mcp.server import Server
 
@@ -236,7 +253,7 @@ def test_the_server_follows_its_process_to_a_new_session(
     brief = {"name": "brief", "arguments": {"text": "Hi.", "kind": "done"}}
     server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": brief})
     registry.register("second", Path("/t.jsonl"), "/work", claude_pid=200)
-    seen = []
+    seen: list[Event] = []
     d.bus.subscribe(seen.append)
     server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": brief})
     assert {e.source_id for e in seen if e.kind in ("queued", "declined")} == {"claude-code:second"}
@@ -256,6 +273,7 @@ def test_invalid_utf8_is_a_parse_error_not_the_end(daemon_socket, tmp_path: Path
             "PYTHONIOENCODING": "utf-8",
         },
     )
+    assert proc.stdin is not None and proc.stdout is not None
     try:
         proc.stdin.write(b"\xff\xfe not utf-8\n")
         proc.stdin.flush()
@@ -271,6 +289,7 @@ def test_invalid_utf8_is_a_parse_error_not_the_end(daemon_socket, tmp_path: Path
 def test_a_notification_is_never_answered(daemon_socket, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     socket, _ = daemon_socket
     proc = spawn(socket, tmp_path)
+    assert proc.stdin is not None and proc.stdout is not None
     try:
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "no/such/thing"}) + "\n")
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "tools/list"}) + "\n")
@@ -283,8 +302,8 @@ def test_a_notification_is_never_answered(daemon_socket, tmp_path: Path) -> None
 
 
 def test_hook_and_server_meet_at_the_agent_whatever_it_is_called(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Claude Code from npm runs as `node`, and may run hooks through `sh -c`."""
     from speakd.clients.claude_code import registry
 
@@ -309,8 +328,8 @@ def test_hook_and_server_meet_at_the_agent_whatever_it_is_called(
 
 
 def test_a_terminal_shared_with_a_claude_session_does_not_capture_another_agent(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from speakd.clients.claude_code import registry
 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))

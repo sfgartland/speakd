@@ -3,6 +3,7 @@
 import threading
 import time
 from collections.abc import Sequence
+from typing import cast
 
 import numpy as np
 
@@ -60,7 +61,7 @@ class Built:
         self.daemon.start()
 
     def positions(self) -> list[int]:
-        return [e.data["index"] for e in list(self.seen) if e.kind == "position"]
+        return [cast(int, e.data["index"]) for e in list(self.seen) if e.kind == "position"]
 
     def kinds(self) -> list[str]:
         return [e.kind for e in list(self.seen)]
@@ -110,7 +111,9 @@ def test_replay_after_the_end_speaks_again_from_that_sentence() -> None:
         # The same utterance, announced whole, on the channel that first spoke it.
         assert started[0].source_id == "s"
         assert started[0].data["text"] == TEXT
-        assert len(started[0].data["segments"]) == 4
+        segments = started[0].data["segments"]
+        assert isinstance(segments, list)
+        assert len(segments) == 4
         assert b.positions() == [2, 3]
         assert b.kinds().count("finished") == 1
     finally:
