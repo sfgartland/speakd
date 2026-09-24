@@ -183,4 +183,19 @@ describe("Link", () => {
     expect(clients[0]!.signal!.aborted).toBe(true);
     expect(link.state.stream).toBe("no-daemon");
   });
+
+  it("says when a connected stream is lost, and only then", () => {
+    const { link, clients } = setup();
+    let lost = 0;
+    link.onStreamLost(() => lost++);
+    link.configure({ port: 1, token: "a" });
+    clients[0]!.onState!("no-daemon");
+    expect(lost).toBe(0);
+    clients[0]!.onState!("connected");
+    clients[0]!.onState!("connecting");
+    expect(lost).toBe(1);
+    clients[0]!.onState!("connected");
+    link.configure({ port: 2, token: "a" });
+    expect(lost).toBe(2);
+  });
 });

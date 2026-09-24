@@ -280,7 +280,13 @@ class Adopted implements ReaderHandle {
     );
     this.session = session;
     session.onChange(() => this.changed());
-    this.unsubscribeLink = this.takeover.options.link.onEvent((event) => session.handleEvent(event));
+    const link = this.takeover.options.link;
+    const offEvent = link.onEvent((event) => session.handleEvent(event));
+    const offLost = link.onStreamLost(() => this.guard("losing the stream", () => session.streamLost()));
+    this.unsubscribeLink = () => {
+      offEvent();
+      offLost();
+    };
 
     const onUnload = () => this.close();
     win.addEventListener("unload", onUnload);

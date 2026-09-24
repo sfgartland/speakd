@@ -50,6 +50,7 @@ export class Link {
   private readonly _state: LinkState = { stream: "no-daemon", speakingChannel: "", paused: false, speed: null };
   private readonly eventListeners = new Set<(event: SpeakdEvent) => void>();
   private readonly changeListeners = new Set<(state: LinkState) => void>();
+  private readonly lostListeners = new Set<() => void>();
 
   constructor(options: LinkOptions) {
     this.options = options;
@@ -102,11 +103,22 @@ export class Link {
     return () => this.changeListeners.delete(listener);
   }
 
+  /**
+   * Hear a connected stream be lost -- dropped, refused, or replaced by a
+   * reconfigure. What it said of who is speaking no longer stands, and what
+   * it would have said meanwhile is not replayed. Returns an unsubscribe.
+   */
+  onStreamLost(listener: () => void): () => void {
+    this.lostListeners.add(listener);
+    return () => this.lostListeners.delete(listener);
+  }
+
   close(): void {
     this.disconnect();
     this.client = null;
     this.eventListeners.clear();
     this.changeListeners.clear();
+    this.lostListeners.clear();
   }
 
   private disconnect(): void {
@@ -161,6 +173,7 @@ export class Link {
   }
 
   private update(change: Partial<LinkState>): void {
+    const lost = change.stream !== undefined && change.stream !== "connected" && this._state.stream === "connected";
     let changed = false;
     for (const key of Object.keys(change) as (keyof LinkState)[]) {
       if (this._state[key] !== change[key]) {
@@ -169,6 +182,17 @@ export class Link {
       }
     }
     if (!changed) return;
+    // Before the change is heard, so that what is drawn from it already
+    // knows the channels' reads are over.
+    if (lost) {
+      for (const listener of [...this.lostListeners]) {
+        try {
+          listener();
+        } catch {
+          // As for events.
+        }
+      }
+    }
     for (const listener of [...this.changeListeners]) {
       try {
         listener(this._state);

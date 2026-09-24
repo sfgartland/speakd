@@ -389,4 +389,35 @@ describe("Channel", () => {
     expect(daemon.calls).toEqual([]);
     expect(channel.reading).toBe(false);
   });
+
+  it("gives its read up when the stream is lost, forgets who was speaking, and still hushes on the next start", async () => {
+    const { daemon, channel, problems } = setup();
+    await channel.start(SEGMENTS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    expect(channel.speaking).toBe(true);
+
+    // The daemon restarts: its `finished` for this section is never heard.
+    channel.streamLost();
+    expect(channel.speaking).toBe(false);
+    expect(channel.speakingChannel).toBe("");
+    expect(channel.reading).toBe(false);
+    expect(problems).toEqual([{ kind: "no-daemon", error: "the connection to speakd was lost" }]);
+
+    // An agent speaks now: nothing global may be sent on this reader's behalf.
+    daemon.started("Something an agent says.", "", "claude:session");
+    expect((await channel.skip(1)).kind).toBe("refused");
+    expect((await channel.pause()).kind).toBe("refused");
+
+    // What the old daemon may still hold of this channel's is hushed first.
+    const before = daemon.calls.length;
+    await channel.start(SEGMENTS, 0);
+    expect(daemon.verbs().slice(before)).toEqual(["hush", "set_label", "enqueue"]);
+  });
+
+  it("says nothing when the stream is lost with no read under way", () => {
+    const { channel, problems } = setup();
+    channel.streamLost();
+    expect(problems).toEqual([]);
+  });
 });

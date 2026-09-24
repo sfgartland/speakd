@@ -224,6 +224,20 @@ export class Channel {
     return this.whileSpeaking(() => this.client.call("resume", this.sourceId, {}));
   }
 
+  /**
+   * The event stream is gone -- a dropped connection, a daemon restarted.
+   * Whatever it was saying, it will not say how it ended: no `finished` is
+   * replayed. So nobody is known to be speaking, and a read under way is
+   * given up, as a failure, rather than left waiting on an event that will
+   * never come. What the daemon may still hold of this channel's is still
+   * hushed by the next start.
+   */
+  streamLost(): void {
+    this._speakingChannel = "";
+    this.seeking = false;
+    if (this.read !== null) this.fail({ kind: "no-daemon", error: "the connection to speakd was lost" });
+  }
+
   /** Take in one event from the daemon's stream: every event, for every channel. */
   handleEvent(event: SpeakdEvent): void {
     const own = event.source_id === this.sourceId;

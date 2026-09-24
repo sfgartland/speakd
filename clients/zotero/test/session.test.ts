@@ -41,6 +41,11 @@ class FakeChannel implements ChannelLike {
     this.log.push("resume");
     return OK;
   }
+  streamLost(): void {
+    this.log.push("stream lost");
+    if (this.reading) this.problem({ kind: "no-daemon", error: "the connection to speakd was lost" });
+    this.speaking = false;
+  }
   handleEvent(event: SpeakdEvent): void {
     if (event.event === "transport") this.paused = event.data.paused === true;
   }
@@ -380,5 +385,15 @@ describe("ReaderSession", () => {
     expect(session.problem?.kind).toBe("bad-token");
     session.want({ kind: "here" });
     expect(session.problem).toBeNull();
+  });
+
+  it("tells Zotero the read failed when the stream is lost mid-read", () => {
+    const { channel, emitted, session, tick, create } = setup();
+    create(0);
+    tick();
+    session.streamLost();
+    expect(channel.log).toEqual(["start 0", "stream lost"]);
+    expect(emitted).toEqual(["Error"]);
+    expect(session.problem?.kind).toBe("no-daemon");
   });
 });

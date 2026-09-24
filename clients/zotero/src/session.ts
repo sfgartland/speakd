@@ -29,6 +29,8 @@ export interface ChannelLike {
   pause(): Promise<CallResult>;
   resume(): Promise<CallResult>;
   handleEvent(event: SpeakdEvent): void;
+  /** The event stream was lost: nothing it said about who is speaking stands. */
+  streamLost(): void;
   /** Resolves once everything asked of the channel so far has been sent and answered. */
   idle(): Promise<void>;
   readonly reading: boolean;
@@ -346,6 +348,13 @@ export class ReaderSession {
     if (event.event === "transport" && this.current !== null && this.channel.speaking) {
       this.hooks.mirrorPause(event.data.paused === true);
     }
+    this.changed();
+  }
+
+  /** The link's event stream was lost: the channel's read is given up, and Zotero told. */
+  streamLost(): void {
+    if (this.closed) return;
+    this.channel.streamLost();
     this.changed();
   }
 
