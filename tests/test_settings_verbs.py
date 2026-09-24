@@ -77,7 +77,11 @@ def test_settings_verb_answers_schema_and_values(daemon: Daemon) -> None:
     assert response.ok
     assert _dict(response.data["values"])["speech.detect_language"] is True
     keys = {_dict(decl)["key"] for decl in _list(response.data["schema"])}
-    assert keys == {"speech.default_language", "speech.detect_language"}
+    assert keys == {
+        "speech.default_language",
+        "speech.detect_language",
+        "speech.sentence_gap_ms",
+    }
 
 
 def test_settings_verb_with_no_owner_answers_every_owner(daemon: Daemon) -> None:

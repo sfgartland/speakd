@@ -17,8 +17,9 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from traceback import format_exc
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from speakd import segmenter, state
 from speakd.channels import MODES, Channel, ChannelTable, effective_mode
@@ -29,6 +30,14 @@ from speakd.paths import default_settings_paths
 from speakd.pipeline import AudioCache, speak
 from speakd.player import Pausable, Player
 from speakd.protocol import Request, Response, Verb
+from speakd.render import (
+    DEFAULT_BITRATE,
+    Part,
+    RenderJob,
+    RenderQueue,
+    ffmpeg_available,
+    new_job_id,
+)
 from speakd.scheduler import SpeechRequest, decide
 from speakd.settings.registry import Settings
 from speakd.settings.store import SettingsStore
@@ -64,7 +73,44 @@ _CORE_SPEECH_SETTINGS: tuple[dict[str, object], ...] = (
         "label": "Detect language",
         "help": "Guess an utterance's language when nothing else says it.",
     },
+    {
+        "name": "sentence_gap_ms",
+        "type": "int",
+        "default": 250,
+        "label": "Sentence gap",
+        "help": "Silence, in milliseconds, between sentences of a render.",
+        "min": 0,
+        "max": 5000,
+    },
 )
+
+# Render-wide settings (audio-export design §1). `mp3_bitrate` names the
+# bitrate ffmpeg is given for every format a render can produce -- mp3, opus
+# and m4b alike -- not only mp3; see `render._encode`.
+_CORE_RENDER_SETTINGS: tuple[dict[str, object], ...] = (
+    {
+        "name": "mp3_bitrate",
+        "type": "choice",
+        "default": DEFAULT_BITRATE,
+        "label": "Bitrate",
+        "help": "The audio bitrate ffmpeg encodes a render at.",
+        "options": ["32k", "48k", "64k", "96k"],
+    },
+    {
+        "name": "chapter_gap_ms",
+        "type": "int",
+        "default": 1500,
+        "label": "Chapter gap",
+        "help": "Silence, in milliseconds, between a render's parts.",
+        "min": 0,
+        "max": 10000,
+    },
+)
+
+# How often the `render` event repeats while a job is running. `_on_render_update`
+# always publishes on a state change, so this only bounds the progress ticks
+# in between -- see "Global Constraints (A)" in the audio-export plan.
+_RENDER_EVENT_THROTTLE_SECONDS = 2.0
 
 # How long a channel may go unused before it is forgotten.
 _CHANNEL_IDLE_SECONDS = 12 * 3600.0
@@ -236,6 +282,26 @@ class Daemon:
         # that can go offline and come back, so there is nothing here for a
         # persisted schema to stand in for.
         self.settings.declare("speech", list(_CORE_SPEECH_SETTINGS), persist=False)
+        self.settings.declare("render", list(_CORE_RENDER_SETTINGS), persist=False)
+        # Throttling state for the `render` event: the last state and last
+        # publish time seen per job, so `_on_render_update` can tell a real
+        # state change (always published) from mere progress (throttled to
+        # `_RENDER_EVENT_THROTTLE_SECONDS`). Pruned on a terminal state --
+        # nothing more will ever arrive for that job.
+        self._render_last_state: dict[str, str] = {}
+        self._render_last_published: dict[str, float] = {}
+        # Owned here, not built by `__main__`: a render shares this daemon's
+        # engine and `synth_lock` (so a render sentence and a live one never
+        # reach the engine together) and yields to `self.speaking` (so a
+        # render never delays live speech by more than one sentence). See
+        # `render.RenderQueue` and "Global Constraints (A)" in the
+        # audio-export plan.
+        self.render_queue = RenderQueue(
+            self.engine,
+            self.synth_lock,
+            busy=lambda: self.speaking,
+            on_update=self._on_render_update,
+        )
         # Loaded rather than defaulted: after a reboot, surprising silence is
         # a smaller failure than surprising speech.
         self.muted = state.load().muted
@@ -348,6 +414,10 @@ class Daemon:
                     self._metrics = None
                     self._metrics_stop.set()
                 raise
+        # Outside the lock, and after the worker and ticker are both up: a
+        # resumed render's first sentence should find a daemon that can
+        # already answer `speaking` correctly, not one still mid-start().
+        self.render_queue.resume()
         return Response(ok=True, data={"started": True})
 
     def silence(self) -> None:
@@ -379,6 +449,11 @@ class Daemon:
         True when there was no worker or the join succeeded; False when the
         worker outlived it and is still running.
         """
+        # First, and outside every lock this method takes below: the render
+        # worker's own `_stopping` flag is what breaks it out of a busy-wait
+        # behind live speech (see `RenderQueue._yield_to_live`), so stopping
+        # it does not depend on anything else here having run yet.
+        self.render_queue.stop()
         # Under the lock, so an enqueue in flight on another thread either
         # lands before this (and is discarded with an error) or is refused.
         with self._idle:
@@ -754,6 +829,99 @@ class Daemon:
         with self._idle:
             return self._idle.wait_for(lambda: self._pending == 0, timeout)
 
+    def _on_render_update(self, job: RenderJob) -> None:
+        """`RenderQueue`'s `on_update` hook: publish `render`, throttled.
+
+        Always published on a state change; while the state is unchanged
+        (the ticks `_synthesize` sends after every sentence) it is held to
+        one every `_RENDER_EVENT_THROTTLE_SECONDS`. The bookkeeping is
+        pruned once a job reaches a terminal state -- nothing more will ever
+        arrive for it, so there is nothing left to throttle against.
+        """
+        now = time.monotonic()
+        last_state = self._render_last_state.get(job.id)
+        last_published = self._render_last_published.get(job.id, 0.0)
+        changed = job.state != last_state
+        if not changed and now - last_published < _RENDER_EVENT_THROTTLE_SECONDS:
+            return
+        self._render_last_state[job.id] = job.state
+        self._render_last_published[job.id] = now
+        if job.state in ("done", "failed", "cancelled"):
+            self._render_last_state.pop(job.id, None)
+            self._render_last_published.pop(job.id, None)
+        self._publish("render", "", job.state_dict())
+
+    def _voice_for_render(self, lang: str, profile: ProfileView) -> str:
+        """The one seam a render's voice comes from.
+
+        Phase 2 (languages), on another branch, will make this read a
+        per-language voice for `lang` and fall back to the profile's only
+        when none is set. For now voice and language choice stays simple,
+        as the plan asks: `lang` is stored on the job and passed through
+        unread here, and every render speaks in the profile's own voice.
+        """
+        return profile.voice
+
+    _RENDER_FORMATS = ("mp3", "opus", "m4b")
+
+    def _render_verb(self, source_id: str, payload: dict[str, object]) -> Response:
+        """`render {parts, out, format, lang?, profile?, metadata?}`: queue a
+        render job and answer its id at once (design §1)."""
+        raw_parts = payload.get("parts")
+        if (
+            not isinstance(raw_parts, list)
+            or not raw_parts
+            or not all(
+                isinstance(p, dict)
+                and isinstance(p.get("title"), str)
+                and isinstance(p.get("text"), str)
+                for p in raw_parts
+            )
+        ):
+            return Response(
+                ok=False, error="render needs a non-empty 'parts' list of {title, text}"
+            )
+        out = payload.get("out")
+        if not isinstance(out, str) or not out:
+            return Response(ok=False, error="render needs an 'out' path")
+        fmt = payload.get("format")
+        if fmt not in self._RENDER_FORMATS:
+            return Response(
+                ok=False, error=f"render 'format' must be one of {list(self._RENDER_FORMATS)}"
+            )
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict) or not all(isinstance(v, str) for v in metadata.values()):
+            return Response(ok=False, error="render 'metadata' must be a map of strings")
+        lang = payload.get("lang", "")
+        if not isinstance(lang, str):
+            return Response(ok=False, error="render 'lang' must be a string")
+        profile_name = payload.get("profile", "default")
+        if not isinstance(profile_name, str):
+            return Response(ok=False, error="render 'profile' must be a string")
+        profile = self.profile_for(profile_name)
+        job = RenderJob(
+            id=new_job_id(),
+            parts=[Part(title=str(p["title"]), text=str(p["text"])) for p in raw_parts],
+            out=Path(out),
+            format=str(fmt),
+            lang=lang,
+            voice=self._voice_for_render(lang, profile),
+            speed=profile.speed,
+            metadata=dict(metadata),
+            sentence_gap_ms=cast(int, self.settings.get("speech.sentence_gap_ms")),
+            chapter_gap_ms=cast(int, self.settings.get("render.chapter_gap_ms")),
+            bitrate=str(self.settings.get("render.mp3_bitrate")),
+        )
+        job_id = self.render_queue.submit(job)
+        return Response(ok=True, data={"job": job_id})
+
+    def _render_cancel(self, payload: dict[str, object]) -> Response:
+        job_id = payload.get("job")
+        if not isinstance(job_id, str) or not job_id:
+            return Response(ok=False, error="render_cancel needs a string 'job'")
+        cancelled = self.render_queue.cancel(job_id)
+        return Response(ok=True, data={"cancelled": cancelled})
+
     def handle(self, request: Request) -> Response:
         if request.verb is Verb.ENQUEUE:
             return self._enqueue(request)
@@ -835,6 +1003,10 @@ class Daemon:
                     "muted": self.muted,
                     "engine": self._engine_status(),
                     "speed": self.tempo.target,
+                    "render": {
+                        "available": ffmpeg_available(),
+                        "jobs": self.render_queue.status(),
+                    },
                 },
             )
         if request.verb in (Verb.PAUSE, Verb.RESUME):
@@ -903,6 +1075,10 @@ class Daemon:
             return self._set_setting(request.payload.get("key"), request.payload.get("value"))
         if request.verb is Verb.DECLARE_SETTINGS:
             return self._declare_settings(request.source_id, request.payload.get("settings"))
+        if request.verb is Verb.RENDER:
+            return self._render_verb(request.source_id, request.payload)
+        if request.verb is Verb.RENDER_CANCEL:
+            return self._render_cancel(request.payload)
         return Response(ok=False, error=f"{request.verb.value} is not handled here")
 
     def _settings(self, owner: object) -> Response:

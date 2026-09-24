@@ -406,6 +406,109 @@ def test_a_client_that_sends_headers_slowly_is_eventually_dropped(monkeypatch) -
         daemon.stop()
 
 
+# --- render: a much larger body cap, and `out` scoped to home ----------
+
+
+def _render_body(out: str) -> dict[str, object]:
+    return {
+        "source_id": "zotero:K",
+        "payload": {
+            "parts": [{"title": "Whole", "text": "One. Two."}],
+            "out": out,
+            "format": "mp3",
+        },
+    }
+
+
+def test_render_accepts_a_body_over_1mb_while_other_verbs_stay_capped(  # type: ignore[no-untyped-def]
+    server, tmp_path, monkeypatch
+) -> None:
+    http, daemon = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    big_text = "a" * (2 * 1024 * 1024)  # over the 1 MB cap every other verb keeps
+    body = _render_body(str(tmp_path / "out.mp3"))
+    body["payload"]["parts"] = [{"title": "Whole", "text": big_text}]  # type: ignore[index]
+    status, _, response_body = call(http, "POST", "/v1/render", body)
+    assert status == 200
+    answer = json.loads(response_body)
+    assert answer["ok"] is True
+    assert isinstance(answer["data"]["job"], str)
+    daemon.render_queue.cancel(answer["data"]["job"])
+
+    # The same size body on an ordinary verb is still refused at 1 MB.
+    enqueue_body = {"source_id": "x", "payload": {"text": big_text}}
+    assert call(http, "POST", "/v1/enqueue", enqueue_body)[0] == 413
+
+
+def test_render_out_must_be_absolute(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    status, _, body = call(http, "POST", "/v1/render", _render_body("relative/out.mp3"))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is False
+    assert "absolute" in answer["error"]
+
+
+def test_render_out_inside_home_is_accepted(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    http, daemon = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(tmp_path / "out.mp3")))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is True
+    daemon.render_queue.cancel(answer["data"]["job"])
+
+
+def test_render_out_outside_home_is_refused(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(outside / "out.mp3")))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is False
+    assert "home" in answer["error"].lower()
+
+
+def test_render_out_through_a_symlink_escaping_home_is_refused(  # type: ignore[no-untyped-def]
+    server, tmp_path, monkeypatch
+) -> None:
+    http, _ = server
+    home = tmp_path / "home"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    escape = home / "escape"
+    escape.symlink_to(outside)
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(escape / "out.mp3")))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is False
+    assert "home" in answer["error"].lower()
+
+
+def test_render_cancel_is_served_over_http(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    http, daemon = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(tmp_path / "out.mp3")))
+    job_id = json.loads(body)["data"]["job"]
+    status, _, body = call(
+        http,
+        "POST",
+        "/v1/render_cancel",
+        {"source_id": "zotero:K", "payload": {"job": job_id}},
+    )
+    assert status == 200
+    answer = json.loads(body)
+    assert answer["ok"] is True
+    assert isinstance(daemon, Daemon)
+
+
 def test_a_handler_that_raises_is_answered_not_dropped() -> None:
     """The socket transport answers a failing handler; so must this one."""
     from speakd.protocol import Response

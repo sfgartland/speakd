@@ -31,6 +31,7 @@ import queue
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from speakd.events import Event, EventBus
 from speakd.protocol import Request, Response, Verb
@@ -52,12 +53,19 @@ VERBS = frozenset(
         "settings",
         "set_setting",
         "declare_settings",
+        "render",
+        "render_cancel",
     }
 )
 
 # A request body is a control message; a paper's page of text is a few
 # kilobytes. Anything past this is not something a client meant to send.
 _MAX_BODY = 1024 * 1024
+
+# `render` alone gets a much larger cap: Zotero sends a whole book's text in
+# one request (audio-export design §1), and a 400-page book is well over
+# 1 MB of plain text. Every other verb keeps the ordinary cap above.
+_MAX_RENDER_BODY = 256 * 1024 * 1024
 
 # Events a stream may fall behind by before it is dropped, as the socket
 # transport bounds its outboxes.
@@ -99,6 +107,30 @@ def _owner_of(source_id: str) -> str:
 def _key_owner(key: str) -> str:
     """The owner named by a setting key: `speech.default_language` -> `speech`."""
     return key.split(".", 1)[0]
+
+
+def _render_out_problem(out: object) -> str | None:
+    """None if `render`'s `out` is safe to write; otherwise what is wrong.
+
+    Checked here, over HTTP only (the plan's Global Constraints) -- a
+    Unix-socket caller is the trusted local user and is not narrowed this
+    way, exactly as `settings` is unscoped there. `resolve()` follows
+    symlinks, so a path that looks like it is inside home but escapes
+    through one is caught the same as a literal `../..`.
+    """
+    if not isinstance(out, str) or not out:
+        return "needs an 'out' path"
+    path = Path(out)
+    if not path.is_absolute():
+        return "'out' must be an absolute path"
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return "'out' could not be resolved"
+    home = Path.home().resolve()
+    if resolved != home and home not in resolved.parents:
+        return "'out' must be inside the user's home directory"
+    return None
 
 
 def _settings_response(
@@ -238,8 +270,9 @@ class HttpServer:
                     # of being rejected as the malformed request it is.
                     self._refuse(400, "Content-Length must not be negative")
                     return
-                if size > _MAX_BODY:
-                    self._refuse(413, f"a request body is at most {_MAX_BODY} bytes")
+                max_body = _MAX_RENDER_BODY if verb == "render" else _MAX_BODY
+                if size > max_body:
+                    self._refuse(413, f"a request body is at most {max_body} bytes")
                     return
                 try:
                     body = json.loads(self.rfile.read(size) or b"{}")
@@ -257,6 +290,11 @@ class HttpServer:
                 if not isinstance(source_id, str) or not isinstance(payload, dict):
                     self._refuse(400, "source_id must be a string and payload an object")
                     return
+                if verb == "render":
+                    problem = _render_out_problem(payload.get("out"))
+                    if problem is not None:
+                        self._refuse(200, f"render: {problem}")
+                        return
                 owner = _owner_of(source_id)
                 if verb == "set_setting" and _key_owner(str(payload.get("key", ""))) != owner:
                     # A client may set only its own owner's keys, and never

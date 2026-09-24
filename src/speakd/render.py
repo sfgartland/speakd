@@ -372,6 +372,7 @@ class RenderQueue:
         work_root: Path | None = None,
         poll_seconds: float = DEFAULT_POLL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        on_update: Callable[[RenderJob], None] | None = None,
     ) -> None:
         self._engine = engine
         # One of their own when not shared: the lock has to exist for the
@@ -382,6 +383,12 @@ class RenderQueue:
         self._poll_seconds = poll_seconds
         self._work_root = work_root or client_state_dir("renders")
         self._clock = clock
+        # Called with the job on every state change and every sentence's
+        # progress, so a caller (the daemon) can publish a `render` event
+        # without this module knowing anything about events or throttling --
+        # see "Global Constraints (A)" in the audio-export plan, which puts
+        # the throttling at the verb/event layer, not here.
+        self._on_update = on_update
         self._lock = threading.Lock()
         self._jobs: dict[str, RenderJob] = {}
         self._queue: list[str] = []
@@ -394,12 +401,27 @@ class RenderQueue:
     def _work_dir(self, job_id: str) -> Path:
         return self._work_root / job_id
 
+    def _notify(self, job: RenderJob) -> None:
+        """Tell `on_update` about the job's current state, if anyone is listening.
+
+        Guarded: a subscriber's own bug (a bad event handler, a dead bus)
+        must cost the render nothing. This runs on the worker thread, whose
+        one job is to keep synthesising and encoding.
+        """
+        if self._on_update is None:
+            return
+        try:
+            self._on_update(job)
+        except Exception:
+            pass
+
     def submit(self, job: RenderJob) -> str:
         save_manifest(job, self._work_dir(job.id))
         with self._lock:
             self._jobs[job.id] = job
             self._queue.append(job.id)
         self._wake.set()
+        self._notify(job)
         return job.id
 
     def resume(self) -> None:
@@ -422,6 +444,7 @@ class RenderQueue:
             with self._lock:
                 self._jobs[job.id] = job
                 self._queue.append(job.id)
+            self._notify(job)
         self._wake.set()
 
     def cancel(self, job_id: str) -> bool:
@@ -480,6 +503,7 @@ class RenderQueue:
     def _render(self, job: RenderJob) -> None:
         work_dir = self._work_dir(job.id)
         job.state = "running"
+        self._notify(job)
         try:
             self._synthesize(job, work_dir)
             _encode(job, work_dir)
@@ -491,6 +515,7 @@ class RenderQueue:
             # -- a test, or a client cleaning up -- must never see "cancelled"
             # with the files of a cancelled render still on it.
             job.state = "cancelled"
+            self._notify(job)
             return
         except _EncodeFailed as exc:
             # The work directory survives a failed encode -- every part WAV
@@ -500,10 +525,12 @@ class RenderQueue:
             job.error = str(exc)
             save_manifest(job, work_dir)
             job.state = "failed"
+            self._notify(job)
             return
 
         shutil.rmtree(work_dir, ignore_errors=True)
         job.state = "done"
+        self._notify(job)
 
     def _yield_to_live(self, job: RenderJob) -> None:
         """Wait, before a sentence, while live speech is in flight or queued.
@@ -518,6 +545,7 @@ class RenderQueue:
         if self._busy is None or not self._busy():
             return
         job.state = "paused"
+        self._notify(job)
         # `_stopping` breaks the wait rather than widening it: `stop()` joins
         # this thread, so a worker paused behind speech that never ends would
         # hang the join until its timeout with the job no further along.
@@ -526,6 +554,7 @@ class RenderQueue:
                 raise _Cancelled
             time.sleep(self._poll_seconds)
         job.state = "running"
+        self._notify(job)
 
     def _synthesize(self, job: RenderJob, work_dir: Path) -> None:
         for part_i in range(job.part_index, len(job.parts)):
@@ -552,6 +581,8 @@ class RenderQueue:
                     append_pcm(wav_path, b"\x00" * (gap_frames * 2), self._engine.sample_rate)
                 job.sentence_index = sent_i + 1
                 save_manifest(job, work_dir)
+                self._notify(job)
             job.part_index = part_i + 1
             job.sentence_index = 0
             save_manifest(job, work_dir)
+            self._notify(job)
