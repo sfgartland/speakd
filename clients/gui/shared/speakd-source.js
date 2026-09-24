@@ -108,7 +108,10 @@
  *     the utterance being spoken; past the last sentence it ends it, and
  *     answers `{ index: null, ended: true }`. `set_speed` takes `{ speed }`
  *     and answers with the speed applied, which is not always the one asked
- *     for.
+ *     for. `replay` takes `{ index }`: while the last utterance is still
+ *     speaking it is a seek, once it is over it is queued again from that
+ *     sentence on its own channel, and answers `{ spoken, index }` — or
+ *     `{ spoken: false, reason }` when that channel is muted.
  *
  *     `source` is for the three verbs the daemon routes by `source_id` —
  *     `mute`, `hush` and `cancel`. "" is everything, a channel id is that
@@ -404,6 +407,8 @@ export class SimulatedSource {
         return this._doSetEngine(payload);
       case "set_speed":
         return this._doSetSpeed(payload);
+      case "replay":
+        return this._doReplay(payload);
       case "status":
         return Promise.resolve({ ok: true, data: this._status() });
       case "enqueue":
@@ -549,6 +554,42 @@ export class SimulatedSource {
     this._speed = Math.round(Math.min(1.6, Math.max(0.7, raw)) * 20) / 20;
     this._emit({ kind: "speed", source_id: "", data: { speed: this._speed } });
     return Promise.resolve({ ok: true, data: { speed: this._speed } });
+  }
+
+  /** Is the fixture mid-utterance, rather than hushed or run to its end? */
+  _fixtureLive() {
+    if (this._utterance || this._hushed || this._speaking !== FIXTURE_SOURCE) return false;
+    const last = this._segments.length - 1;
+    return !(this._index === last && this._within >= this._segments[last].dur);
+  }
+
+  _doReplay(payload) {
+    const i = payload.index;
+    if (!Number.isInteger(i) || i < 0) {
+      return Promise.resolve({ ok: false, error: "replay needs a sentence 'index', from 0" });
+    }
+    if (i >= this._segments.length) {
+      return Promise.resolve({ ok: false, error: `no sentence ${i}` });
+    }
+    // Speaking still: "play from here" is a seek, as the daemon has it.
+    if (this._fixtureLive()) return this._doSeek({ index: i });
+    if (this._muted || this._channelMuted.get(FIXTURE_SOURCE)) {
+      this._emit({ kind: "declined", source_id: FIXTURE_SOURCE, data: { text: this._text, kind: "replay", reason: "muted" } });
+      return Promise.resolve({ ok: true, data: { spoken: false, reason: "muted" } });
+    }
+    // Over: the fixture again, announced whole, from sentence `i`.
+    this._clearUtterance();
+    this._speaking = FIXTURE_SOURCE;
+    this._hushed = false;
+    this._index = i;
+    this._within = 0;
+    this._emit({ kind: "started", source_id: FIXTURE_SOURCE, data: this._startedData() });
+    this._playing = true;
+    this._last = performance.now();
+    this._raf = requestAnimationFrame((t) => this._tick(t));
+    this._emit(this._positionEvent());
+    this._emit(this._metricsEvent());
+    return Promise.resolve({ ok: true, data: { spoken: true, index: i } });
   }
 
   _doPause() {

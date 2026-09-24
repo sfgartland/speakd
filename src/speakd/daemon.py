@@ -119,12 +119,32 @@ class ProfileView:
     prepare: Prepare
 
 
+@dataclass(frozen=True)
+class _Spoken:
+    """An utterance as it was prepared for speaking, kept so it can be said again.
+
+    The transforms' output and the segmentation, not only the text: a replay
+    that ran `prepare` again could segment differently -- a plugin is free to
+    be non-deterministic -- and the index a listener clicked would then name a
+    different sentence from the one on their screen.
+    """
+
+    source_id: str
+    profile: ProfileView
+    text: str
+    pieces: tuple[Piece, ...]
+    units: tuple[Piece, ...]
+
+
 @dataclass
 class _Job:
     source_id: str
     text: str
     profile: ProfileView
     prefix: str
+    # Set for a replay: speak this, already prepared, from `start`.
+    replay: _Spoken | None = None
+    start: int = 0
 
 
 @dataclass
@@ -173,6 +193,9 @@ class Daemon:
         self._speaking = ""
         # What a seek moves within; None between utterances.
         self._current: _Current | None = None
+        # The last utterance to start speaking, kept after it ends so that a
+        # listener can play it again from a sentence of their choosing.
+        self._last: _Spoken | None = None
         self._jobs: queue.Queue[_Job | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._running = False
@@ -551,6 +574,51 @@ class Daemon:
             return Response(ok=True, data={"index": None, "ended": True})
         return Response(ok=True, data={"index": target})
 
+    def _replay(self, index: object) -> Response:
+        """Play the last utterance again, from sentence `index`.
+
+        While that utterance is still being spoken this is a seek: "play from
+        here" means the same thing whether or not the voice has reached the
+        end yet, and a caller should not have to race the daemon to choose
+        between two verbs. Once it has finished, it is queued again on the
+        channel that first spoke it -- behind anything already waiting, and
+        subject to the same off switches as new speech.
+
+        Only what this daemon has already said can be replayed. That is why
+        the window may send it at all: it cannot put words on another
+        session's channel, only repeat ones that channel already spoke.
+        """
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            return Response(ok=False, error="replay needs a sentence 'index', from 0")
+        with self._idle:
+            last = self._last
+            speaking = self._current is not None
+        if last is None:
+            return Response(ok=False, error="nothing to replay")
+        if index >= len(last.units):
+            return Response(
+                ok=False, error=f"no sentence {index}: the last utterance has {len(last.units)}"
+            )
+        if speaking:
+            return self._seek({"index": index})
+        channel = self.channels.open(last.source_id)
+        refusal = self._refusal(last.source_id, channel.muted, last.text, "replay")
+        if refusal is not None:
+            return refusal
+        response = self._accept(
+            _Job(
+                source_id=last.source_id,
+                text=last.text,
+                profile=last.profile,
+                prefix="",
+                replay=last,
+                start=index,
+            )
+        )
+        if response.ok:
+            response.data["index"] = index
+        return response
+
     def _set_speed(self, raw: object) -> Response:
         """Change the listener's speed, answering with the one applied.
 
@@ -659,6 +727,8 @@ class Daemon:
             return self._set_speed(request.payload.get("speed"))
         if request.verb is Verb.SEEK:
             return self._seek(request.payload)
+        if request.verb is Verb.REPLAY:
+            return self._replay(request.payload.get("index"))
         if request.verb is Verb.SET_ROLE:
             raw = request.payload.get("role")
             try:
@@ -724,29 +794,9 @@ class Daemon:
             return Response(ok=False, error=_NOT_RUNNING)
         kind = str(request.payload.get("kind", "response"))
         channel = self.channels.open(request.source_id)
-        if self.muted or channel.muted:
-            # Dropped at the door, not held: unmuting must not release ten
-            # minutes of backlog into the room. Nothing reaches the worker,
-            # so a muted channel costs no synthesis at all — which is the
-            # difference between this and turning the volume down.
-            self._publish(
-                "declined",
-                request.source_id,
-                {"text": text, "kind": kind, "reason": "muted"},
-            )
-            return Response(ok=True, data={"spoken": False, "reason": "muted"})
-        if isinstance(self.engine, Loadable) and not self.engine.loaded:
-            # Disabled, or still loading: either way there is no model to say
-            # this with. Dropped for the same reason as a mute, and it covers
-            # the load as well as the disable deliberately — an enable that
-            # queued thirty seconds of arrivals would speak them all at once
-            # the moment the model landed.
-            self._publish(
-                "declined",
-                request.source_id,
-                {"text": text, "kind": kind, "reason": "disabled"},
-            )
-            return Response(ok=True, data={"spoken": False, "reason": "disabled"})
+        refusal = self._refusal(request.source_id, channel.muted, text, kind)
+        if refusal is not None:
+            return refusal
         profile_name = str(request.payload.get("profile", channel.profile))
         profile = self.profile_for(profile_name)
         decision = decide(
@@ -761,12 +811,38 @@ class Daemon:
                 {"text": text, "kind": kind, "reason": decision.reason},
             )
             return Response(ok=True, data={"spoken": False, "reason": decision.reason})
-        job = _Job(
-            source_id=request.source_id,
-            text=text,
-            profile=profile,
-            prefix=decision.prefix,
+        return self._accept(
+            _Job(
+                source_id=request.source_id,
+                text=text,
+                profile=profile,
+                prefix=decision.prefix,
+            )
         )
+
+    def _refusal(
+        self, source_id: str, channel_muted: bool, text: str, kind: str
+    ) -> Response | None:
+        """Why speech on this channel is dropped at the door, or None if it is not."""
+        if self.muted or channel_muted:
+            # Dropped at the door, not held: unmuting must not release ten
+            # minutes of backlog into the room. Nothing reaches the worker,
+            # so a muted channel costs no synthesis at all — which is the
+            # difference between this and turning the volume down.
+            self._publish("declined", source_id, {"text": text, "kind": kind, "reason": "muted"})
+            return Response(ok=True, data={"spoken": False, "reason": "muted"})
+        if isinstance(self.engine, Loadable) and not self.engine.loaded:
+            # Disabled, or still loading: either way there is no model to say
+            # this with. Dropped for the same reason as a mute, and it covers
+            # the load as well as the disable deliberately — an enable that
+            # queued thirty seconds of arrivals would speak them all at once
+            # the moment the model landed.
+            self._publish("declined", source_id, {"text": text, "kind": kind, "reason": "disabled"})
+            return Response(ok=True, data={"spoken": False, "reason": "disabled"})
+        return None
+
+    def _accept(self, job: _Job) -> Response:
+        """Put an accepted job on the queue and say so."""
         # Counted before the put, so the job is never in the queue while the
         # daemon still looks idle. Both under the lock stop() takes, so a
         # concurrent stop cannot slip its sentinel in between and leave this
@@ -787,7 +863,7 @@ class Daemon:
         # lock that does not re-enter. A client watching the stream could not
         # otherwise see an utterance until it began speaking, which for a deep
         # queue is minutes after it was accepted.
-        self._publish("queued", request.source_id, {"text": _preview(text), "pending": waiting})
+        self._publish("queued", job.source_id, {"text": _preview(job.text), "pending": waiting})
         return Response(ok=True, data={"spoken": True})
 
     def _run(self) -> None:
@@ -1014,18 +1090,30 @@ class Daemon:
             # the check above, so the Event alone cannot stop it.
             self._publish("error", job.source_id, {"message": _DISCARDED_STOPPED})
             return
-        text = f"{job.prefix} {job.text}".strip() if job.prefix else job.text
-        pieces, errors = job.profile.prepare([Piece(span=Span(0, len(text)), spoken=text)])
-        for message in errors:
-            self._publish("error", job.source_id, {"message": message})
-        # Segmented here rather than inside `speak()`, so that `started` can
-        # name every sentence before the first is heard. A monitor showing the
-        # whole utterance needs them all up front, and a seek addresses them
-        # by the index given here.
-        units = segmenter.segment(pieces)
-        current = _Current(units=tuple(units))
+        if job.replay is not None:
+            # Said before, so already prepared: see `_Spoken` for why the
+            # transforms are not run again.
+            text = job.replay.text
+            pieces = list(job.replay.pieces)
+            units = list(job.replay.units)
+        else:
+            text = f"{job.prefix} {job.text}".strip() if job.prefix else job.text
+            pieces, errors = job.profile.prepare([Piece(span=Span(0, len(text)), spoken=text)])
+            for message in errors:
+                self._publish("error", job.source_id, {"message": message})
+            # Segmented here rather than inside `speak()`, so that `started`
+            # can name every sentence before the first is heard. A monitor
+            # showing the whole utterance needs them all up front, and a seek
+            # addresses them by the index given here.
+            units = segmenter.segment(pieces)
         with self._idle:
-            self._current = current
+            self._last = _Spoken(
+                source_id=job.source_id,
+                profile=job.profile,
+                text=text,
+                pieces=tuple(pieces),
+                units=tuple(units),
+            )
         self._publish(
             "started",
             job.source_id,
@@ -1048,6 +1136,12 @@ class Daemon:
             # playing the first segment.
             self._publish("finished", job.source_id, {"cancelled": True, "aborted": False})
             return
+        # Installed only now, past the early return above, which would
+        # otherwise leave it pointing at an utterance that never spoke --
+        # and seek and replay treating that as the one in the room.
+        current = _Current(units=tuple(units))
+        with self._idle:
+            self._current = current
 
         def announce(segment: Segment) -> None:
             """Publish one segment's position, as that segment starts playing.
@@ -1080,7 +1174,7 @@ class Daemon:
             )
 
         cache = AudioCache()
-        start = 0
+        start = min(job.start, max(0, len(units) - 1))
         try:
             while True:
                 try:

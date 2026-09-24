@@ -203,10 +203,11 @@
   .doc hr { border: 0; border-top: 1px solid var(--rule); }
   .doc p.idle { color: var(--faint); font-size: 13px; font-style: italic; }
 
-  /* Clicking a sentence goes to it. The pointer says so over text that can
-     be clicked, which is text belonging to an utterance still speaking. */
-  .win[data-seekable] .doc .md > *,
-  .win[data-seekable] .doc li { cursor: pointer; }
+  /* Ctrl+click plays from the sentence clicked. A plain click does nothing,
+     so reading and selecting never move playback by accident; the pointer
+     changes only while Ctrl is held, which is the only time a click acts. */
+  .win[data-ctrl][data-replayable] .doc .md > *,
+  .win[data-ctrl][data-replayable] .doc li { cursor: pointer; }
 
   /* Already heard: out of the way, still readable. */
   .doc .spent { color: var(--spent); }
@@ -538,7 +539,7 @@
   </div>
 
   <div class="text" id="text">
-    <div class="doc" id="doc"><p class="idle">nothing speaking</p></div>
+    <div class="doc" id="doc" title="Ctrl+click a sentence to play from there"><p class="idle">nothing speaking</p></div>
   </div>
 
   <div class="scrub" id="scrub"></div>
@@ -859,8 +860,11 @@
     if (utterance !== null) delete win.dataset.idle;
     else win.dataset.idle = "1";
     const seekable = !hushed && utterance !== null && segs.length > 0;
-    if (seekable) win.dataset.seekable = "1";
-    else delete win.dataset.seekable;
+    // Over, but still on screen: the daemon keeps the last utterance, so it
+    // can be played again from any sentence of it.
+    const replayable = segs.length > 0 && utterance === null;
+    if (segs.length) win.dataset.replayable = "1";
+    else delete win.dataset.replayable;
 
     for (const [i, t] of tickEls) {
       const seg = segments.get(i);
@@ -892,7 +896,10 @@
     el("play").textContent = playing ? "Pause" : hushed ? (canReplay ? "Again" : "Play") : "Play";
     el("play").disabled = hushed && !canReplay;
     el("play").title = hushed && !canReplay ? "Nothing queued — waiting for another source to speak" : "";
-    el("back").disabled = !seekable;
+    el("back").disabled = !seekable && !replayable;
+    el("back").title = replayable
+      ? "Play the last sentence again (\u2190)"
+      : "Previous sentence (\u2190)";
     el("fwd").disabled = !seekable;
     el("hush").disabled = hushed;
 
@@ -1231,7 +1238,11 @@
         message = data.message;
         break;
       case "declined":
-        message = data.reason;
+        // A muted session is the normal state of a Claude Code channel until
+        // it is chosen, so its drops are not news: the error line would
+        // otherwise flash "muted" after every response of every session.
+        // The paste box's own channel still says why it was not heard.
+        if (data.reason !== "muted" || event.source_id === "gui") message = data.reason;
         // Refused rather than spoken. Usually it never reached the queue at
         // all, in which case this finds nothing and does nothing; when it was
         // queued and then dropped, this is the event that says so.
@@ -1255,8 +1266,21 @@
     render();
   }
 
+  /**
+   * Play from sentence `index`. The daemon decides what that means: a seek
+   * while the utterance is still speaking, a replay of it once it is over.
+   */
+  async function replay(index) {
+    const res = await source.send("replay", { index });
+    if (!res.ok) { message = res.error; render(); return; }
+    const data = res.data ?? {};
+    // Accepted and dropped is what a muted channel does with a replay, as
+    // with new speech; say so rather than look broken.
+    if (data.spoken === false) { message = `not replayed — ${data.reason ?? "refused"}`; render(); }
+  }
+
   function seekTo(index) {
-    seek({ index });
+    replay(index);
   }
 
   /**
@@ -1316,14 +1340,21 @@
   // Relative, not "currentIndex ± 1": a press that lands as the sentence
   // changes would otherwise go from where the window last drew, which may be
   // a sentence behind where the daemon is.
-  el("back").addEventListener("click", () => { if (!el("back").disabled) seek({ by: -1 }); });
+  el("back").addEventListener("click", () => {
+    if (el("back").disabled) return;
+    // Speaking: a sentence back. Over: the sentence it ended on, again --
+    // after a natural end that is the last sentence, after a hush the one
+    // that was cut off. Pressed again, it steps back as a seek does.
+    if (utterance !== null && !hushed) seek({ by: -1 });
+    else replay(currentIndex);
+  });
   el("fwd").addEventListener("click", () => { if (!el("fwd").disabled) seek({ by: 1 }); });
   el("slower").addEventListener("click", () => { if (!el("slower").disabled) changeSpeed(-0.1); });
   el("faster").addEventListener("click", () => { if (!el("faster").disabled) changeSpeed(0.1); });
 
-  // A click in the text goes to the sentence under it.
+  // Ctrl+click in the text plays from the sentence under it.
   el("doc").addEventListener("click", (e) => {
-    if (!win.dataset.seekable) return;
+    if (!(e.ctrlKey || e.metaKey) || !segs.length) return;
     // Selecting text to copy it is not a request to jump.
     if (String(window.getSelection?.() ?? "").length) return;
     let node = null;
@@ -1360,7 +1391,16 @@
     el("text").addEventListener(kind, () => { userScrolledAt = Date.now(); }, { passive: true });
   }
 
+  // Whether Ctrl is held, for the pointer over clickable sentences.
+  const trackCtrl = (e) => {
+    if (e.ctrlKey || e.metaKey) win.dataset.ctrl = "1";
+    else delete win.dataset.ctrl;
+  };
+  document.addEventListener("keyup", trackCtrl);
+  window.addEventListener("blur", () => delete win.dataset.ctrl);
+
   document.addEventListener("keydown", (e) => {
+    trackCtrl(e);
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target;
     if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) return;

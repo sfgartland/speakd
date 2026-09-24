@@ -146,6 +146,13 @@ Global mute and per-channel mute are separate flags, not one setting written twi
 a channel stays silent under a global mute whatever its own flag says, and clearing
 the global one gives each channel back what it had.
 
+**Claude Code sessions start muted.** With several sessions open, hearing all
+of them is noise, so each one is silent until you choose it: unmute it in the
+window's channel list, or with `speakctl unmute --source claude-code:<session>`.
+While muted, its text is dropped rather than held, as with any mute. Everything
+else — pasted text, notifications — starts audible. A daemon restart mutes every
+session again.
+
 The event stream is the same one the GUI reads:
 
 ```json
@@ -177,8 +184,12 @@ and code included — with the sentence being spoken lit and the view following 
 so you can read along. Below that are a scrubber over the sentences and four
 numbers: synthesis speed against realtime, drift, resident memory and queue depth.
 
-← and → move a sentence back or forward, and clicking a sentence goes to it.
-Going back is immediate: the utterance keeps the audio it has already made.
+← and → move a sentence back or forward, and Ctrl+click on a sentence plays
+from there; a plain click does nothing, so reading and selecting never move
+playback. Going back is immediate: the utterance keeps the audio it has already
+made. Both still work once the speaking has stopped — the daemon keeps the last
+utterance, so ← plays the sentence it ended on again and Ctrl+click replays it
+from anywhere (`replay` on the wire, which can only repeat what was said).
 − and + change the speed in tenths, from 0.7× to 1.6×. The change is heard at
 once: audio already made is time-stretched (pitch kept), and everything after is
 synthesised at the new speed, which sounds better than any stretch. Faster

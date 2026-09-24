@@ -79,8 +79,13 @@ const CONTROL_SOURCE_ID: &str = "gui";
 /// click on a sentence — and `set_speed` is the listener's speed. Both are
 /// global like pause: they change what is being heard, not what any channel
 /// says, so neither can make the window originate speech.
+///
+/// `replay` plays the daemon's last utterance again from a chosen sentence.
+/// It carries an index and nothing else, so it can only repeat words a channel
+/// has already spoken — never put new ones on it.
 const FORWARDED: &[&str] = &[
-    "pause", "resume", "hush", "cancel", "seek", "mute", "set_engine", "set_speed", "status",
+    "pause", "resume", "hush", "cancel", "seek", "replay", "mute", "set_engine", "set_speed",
+    "status",
 ];
 
 /// The one way the window originates speech.

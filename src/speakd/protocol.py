@@ -19,6 +19,7 @@ class Verb(str, Enum):
     PAUSE = "pause"
     RESUME = "resume"
     SEEK = "seek"
+    REPLAY = "replay"
     SET_ROLE = "set_role"
     SET_PRIORITY = "set_priority"
     SET_LABEL = "set_label"
