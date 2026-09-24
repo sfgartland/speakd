@@ -30,6 +30,9 @@ class Verb(str, Enum):
     SET_CAPABILITIES = "set_capabilities"
     SUBSCRIBE = "subscribe"
     STATUS = "status"
+    SETTINGS = "settings"
+    SET_SETTING = "set_setting"
+    DECLARE_SETTINGS = "declare_settings"
 
 
 class ProtocolError(Exception):

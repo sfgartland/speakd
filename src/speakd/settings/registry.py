@@ -86,6 +86,21 @@ class Settings:
             self._store.write_schema(owner, raws)
         return len(parsed)
 
+    def declare_one(self, owner: str, raw: dict[str, object]) -> Declaration:
+        """Add or replace a single setting of `owner`'s, keeping its others.
+
+        `declare()` replaces an owner's whole schema at once, which is right
+        for a client sending its full list in one `declare_settings` call.
+        A plugin's `PluginContext.setting()` calls this once per setting as
+        its `setup()` runs, and a second such call must not erase the first
+        -- so this merges into `owner`'s table instead of starting it over.
+        Never persisted: a plugin redeclares at every start, like core does.
+        """
+        decl = parse_declaration(owner, raw)
+        _, _, name = decl.key.partition(".")
+        self._by_owner.setdefault(owner, {})[name] = decl
+        return decl
+
     def undeclare(self, owner: str, names: Sequence[str]) -> None:
         """Forget these settings of `owner`'s, for plugin disposal."""
         table = self._by_owner.get(owner)

@@ -9,6 +9,7 @@ from functools import partial
 from speakd.model import Piece
 from speakd.plugins import Disposable, DisposableGroup, Disposer
 from speakd.plugins.registry import ServiceRegistry
+from speakd.settings.registry import Settings
 from speakd.transforms import Scope
 
 TransformFn = Callable[[Sequence[Piece]], Sequence[Piece]]
@@ -75,6 +76,26 @@ class PluginContext:
     def on_dispose(self, fn: Callable[[], None]) -> None:
         self._group.add(Disposer(fn))
 
+    def setting(self, name: str, type: str, default: object, **fields: object) -> None:  # noqa: A002
+        """Declare a setting under this plugin's own name, undone on dispose.
+
+        `type` shadows the builtin deliberately: it is what every declaration
+        dict elsewhere in `speakd.settings` calls this field, and a plugin
+        author reading `parse_declaration`'s raw dict beside this call should
+        see the same name in both. `**fields` carries `label`, `help`, and
+        whichever of `options`, `min`, `max`, `step`, `multiline` and
+        `restart` the type calls for.
+        """
+        self._reject_if_spent(f"declare setting {name!r}")
+        settings = self._host.settings
+        if settings is None:
+            raise RuntimeError(
+                f"plugin {self._plugin!r}: cannot declare settings; this host has no Settings"
+            )
+        raw: dict[str, object] = {"name": name, "type": type, "default": default, **fields}
+        settings.declare_one(self._plugin, raw)
+        self._group.add(Disposer(lambda: settings.undeclare(self._plugin, [name])))
+
 
 @dataclass
 class _Plugin:
@@ -88,8 +109,13 @@ class _Plugin:
 class PluginHost:
     """Loads plugins, and keeps them active exactly while their services exist."""
 
-    def __init__(self, registry: ServiceRegistry) -> None:
+    def __init__(self, registry: ServiceRegistry, settings: Settings | None = None) -> None:
         self.registry = registry
+        # Optional: most hosts built for `speakctl say`'s transform resolution
+        # (see `cli.py` and `__main__.py`'s `build_profiles`) have no need of
+        # settings at all, and giving them one just to satisfy this
+        # constructor would be a dependency with nothing to do.
+        self.settings = settings
         self._plugins: dict[str, _Plugin] = {}
         self._transforms: list[RegisteredTransform] = []
         self._errors: list[str] = []
