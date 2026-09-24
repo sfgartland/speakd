@@ -181,6 +181,13 @@ class HttpServer:
                 except ValueError:
                     self._refuse(400, "Content-Length is not a number")
                     return
+                if size < 0:
+                    # `rfile.read(-1)` means "read to EOF", not "read nothing" --
+                    # without this check a negative length would read until the
+                    # client closes the connection, holding the thread instead
+                    # of being rejected as the malformed request it is.
+                    self._refuse(400, "Content-Length must not be negative")
+                    return
                 if size > _MAX_BODY:
                     self._refuse(413, f"a request body is at most {_MAX_BODY} bytes")
                     return
