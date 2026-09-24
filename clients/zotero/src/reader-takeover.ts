@@ -24,7 +24,7 @@
 import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import type { Link } from "./link";
-import { ReaderSession, type ControllerCore, type Intent, type SegmentInfo } from "./session";
+import { ReaderSession, resumesOnStart, type ControllerCore, type Intent, type SegmentInfo } from "./session";
 import { SPEAKD_VOICE_ID, mergeVoices, silentWav } from "./voices";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -528,8 +528,10 @@ class Adopted implements ReaderHandle {
       // Pause is global and survives a hush: a read stopped while paused
       // leaves speakd paused, and a reconnected link cannot know it is (the
       // daemon's status does not say). Asking for a read is asking to hear
-      // it, and a resume with nothing paused changes nothing.
-      void this.takeover.options.link.call("resume", this.sourceId, {});
+      // it, and a resume with nothing paused changes nothing -- but one while
+      // another channel speaks would unpause what the user paused there.
+      const link = this.takeover.options.link;
+      if (resumesOnStart(link.state.speakingChannel, this.sourceId)) void link.call("resume", this.sourceId, {});
       session.want(intent);
       ir.startReadAloudAtPosition(position ?? null);
     });

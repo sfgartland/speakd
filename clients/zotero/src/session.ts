@@ -73,6 +73,17 @@ export interface ControllerSink {
   emit(type: string, index: number | null): void;
 }
 
+/**
+ * Whether starting a read should send a `resume`. Pause is global and
+ * survives a hush, so a read stopped while paused would start paused; but
+ * `resume` is global too, and must not unpause another channel the user
+ * paused -- an agent mid-sentence. So only when nothing is speaking, or this
+ * reader is.
+ */
+export function resumesOnStart(speakingChannel: string, ownChannel: string): boolean {
+  return speakingChannel === "" || speakingChannel === ownChannel;
+}
+
 type Granularity = "sentence" | "paragraph" | string;
 
 export class ControllerCore {

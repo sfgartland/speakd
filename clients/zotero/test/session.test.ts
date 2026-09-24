@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Problem } from "../src/channel";
-import { ReaderSession, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
+import { ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
 import type { CallResult, SpeakdEvent } from "../src/speakd";
 import type { SegmentText } from "../src/sections";
 
@@ -395,5 +395,13 @@ describe("ReaderSession", () => {
     expect(channel.log).toEqual(["start 0", "stream lost"]);
     expect(emitted).toEqual(["Error"]);
     expect(session.problem?.kind).toBe("no-daemon");
+  });
+
+  it("resumes on start only when nothing is speaking or this reader is", () => {
+    expect(resumesOnStart("", "zotero:A")).toBe(true);
+    expect(resumesOnStart("zotero:A", "zotero:A")).toBe(true);
+    // An agent the user paused stays paused.
+    expect(resumesOnStart("claude:session", "zotero:A")).toBe(false);
+    expect(resumesOnStart("zotero:B", "zotero:A")).toBe(false);
   });
 });
