@@ -298,6 +298,27 @@ not evidence.
 
 ## Clients
 
+**Zotero** (in progress) — [`clients/zotero/`](clients/zotero/) reads a paper
+aloud from inside Zotero 10's reader, with Zotero's own sentence highlight and
+follow-scroll showing what is being spoken. speakd does the speaking; the
+plugin borrows Zotero's Read Aloud segmentation (reading order, headers and
+citations skipped) and its highlight. A paper is a channel like any other,
+`zotero:<item>`, named after its title.
+
+Zotero's plugin sandbox cannot open a Unix socket, so the daemon also serves
+**loopback HTTP**, on `127.0.0.1:8642`:
+
+- `POST /v1/<verb>` with `{"source_id", "payload"}`, for the verbs a reader
+  needs (`enqueue`, `hush`, `cancel`, `pause`, `resume`, `seek`, `replay`,
+  `set_label`, `set_speed`, `status`), and `GET /v1/events` as server-sent
+  events carrying the same JSON as `speakctl subscribe`.
+- Every request needs `Authorization: Bearer <token>`. Loopback is not the
+  socket's trust boundary — any web page you open can reach 127.0.0.1 — so the
+  token is what keeps them out. `speakctl http-token` prints it (made on first
+  use, readable by you alone); paste it into the plugin's preferences.
+- `SPEAKD_HTTP_PORT` moves it; `SPEAKD_HTTP_PORT=0` turns it off.
+
+
 **Claude Code** — [`clients/claude-code/`](clients/claude-code/) is a loadable
 plugin that speaks a session's responses as they land on disk. The speaking is
 done by a follower process the daemon keeps alive, which tails the transcript;
