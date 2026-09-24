@@ -11,7 +11,18 @@ dependencies = ["numpy>=1.24"]
 [project.optional-dependencies]
 # Kokoro pulls torch; keep it out of the default install so the core stays light.
 # NOTE: misaki (a kokoro dep) requires Python < 3.14.
-kokoro = ["kokoro", "sounddevice", "scipy"]
+kokoro = [
+    "kokoro",
+    "sounddevice",
+    "scipy",
+    # Kokoro's English pronunciation (misaki) needs spaCy's small English
+    # model, and downloads it at first use when missing. Declared so the
+    # lockfile keeps it: otherwise every `uv sync` removes it again, and the
+    # daemon's next start stalls on a download -- or fails, offline. Where it
+    # comes from is in [tool.uv.sources]: it is not on PyPI, so publishing
+    # this extra will mean dropping it and relying on misaki's own download.
+    "en-core-web-sm",
+]
 llm = ["litellm"]
 
 [project.scripts]
@@ -60,3 +71,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
