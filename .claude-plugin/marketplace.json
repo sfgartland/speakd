@@ -8,7 +8,7 @@
     {
       "name": "speakd",
       "source": "./clients/claude-code",
-      "description": "Speak Claude Code's responses through the speakd daemon"
+      "description": "Speak Claude Code's responses, or its briefings, through the speakd daemon"
     }
   ]
 }
