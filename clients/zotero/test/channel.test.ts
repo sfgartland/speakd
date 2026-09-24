@@ -19,11 +19,14 @@ class FakeDaemon {
   answer: (call: Call) => CallResult = (call) =>
     call.verb === "enqueue" ? { kind: "ok", data: { spoken: true } } : { kind: "ok", data: {} };
   channel!: Channel;
+  /** Called as a verb arrives, before it is answered: what the daemon publishes meanwhile. */
+  during: (call: Call) => void = () => {};
 
   readonly client = {
     call: async (verb: string, sourceId: string, payload: Record<string, unknown> = {}): Promise<CallResult> => {
       const call = { verb, sourceId, payload };
       this.calls.push(call);
+      this.during(call);
       // Answered on a later turn, as a real request would be, so that
       // anything relying on answers arriving at once is caught.
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -333,6 +336,30 @@ describe("Channel", () => {
     expect(problems).toEqual([{ kind: "bad-token", error: "missing or wrong token" }]);
     expect(daemon.verbs()).toEqual(["set_label"]);
     expect(channel.reading).toBe(false);
+  });
+
+  it("recognises a section the daemon starts before it has answered the enqueue", async () => {
+    // An idle daemon starts a job at once, and publishes `started` before
+    // the enqueue's HTTP answer is on its way.
+    const { daemon, channel, highlights } = setup();
+    daemon.during = (call) => {
+      if (call.verb === "enqueue" && daemon.enqueued().length === 1) daemon.started(call.payload.text as string);
+    };
+    await channel.start(SEGMENTS, 0);
+    await channel.idle();
+    daemon.position(1);
+    expect(highlights).toEqual([1]);
+    expect(daemon.enqueued()).toHaveLength(2);
+  });
+
+  it("forgets a section the daemon declined, so its text starts nothing", async () => {
+    const { daemon, channel, highlights } = setup();
+    daemon.answer = (call) =>
+      call.verb === "enqueue" ? { kind: "ok", data: { spoken: false, reason: "muted" } } : { kind: "ok", data: {} };
+    await channel.start(SEGMENTS, 0);
+    daemon.started("Zero is first. One follows.");
+    daemon.position(0);
+    expect(highlights).toEqual([]);
   });
 
   it("says so when the daemon declines to speak the section", async () => {

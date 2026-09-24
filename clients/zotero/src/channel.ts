@@ -330,14 +330,18 @@ export class Channel {
       // A section cleaned to nothing -- a page number alone -- has nothing
       // to say, and the daemon refuses empty text.
       if (stage.text.trim() === "") continue;
+      // Known before it is sent: an idle daemon starts a job, and says so,
+      // before its answer to the enqueue is on the way.
+      const entry: Entry = { section, stage, started: false };
+      read.entries.push(entry);
       const result = await this.client.call("enqueue", this.sourceId, { text: stage.text, profile: "pdf" });
       if (result.kind === "ok" && result.data.spoken !== false) {
         // Queued in the daemon whether or not this read is still wanted,
         // so the next stop or jump has to hush it.
         this.live = true;
-        if (read === this.read) read.entries.push({ section, stage, started: false });
         return;
       }
+      read.entries.splice(read.entries.indexOf(entry), 1);
       if (read !== this.read) return;
       if (result.kind === "ok") {
         const reason = typeof result.data.reason === "string" ? result.data.reason : "declined";
