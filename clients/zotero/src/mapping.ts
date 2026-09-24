@@ -15,6 +15,18 @@ export interface DaemonSegment {
   readonly index: number;
   readonly span_start: number;
   readonly span_end: number;
+  /** What speakd will say for it, when `started` names it -- the defence's evidence. */
+  readonly text?: string;
+}
+
+// How many letters of a sentence's opening the defence looks for. Enough that
+// a coincidence is unlikely, few enough that cleanup trimming a sentence's
+// tail, or a sentence running on into the next segment, still passes.
+const EVIDENCE_LETTERS = 12;
+
+/** Letters and digits only, lower-cased: what survives cleanup and normalisation alike. */
+function normalise(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 /**
@@ -49,7 +61,19 @@ export function planHighlights(
 
     const k = segmentAt(section.offsets, from);
     const zoteroIndex = section.segmentIndices[k];
-    if (zoteroIndex !== undefined) plan.set(segment.index, zoteroIndex);
+    if (zoteroIndex === undefined) continue;
+    // The mis-mapping defence: the sentence's opening words must be in the
+    // segment the offsets chose. A map that went wrong anywhere upstream
+    // would otherwise light a confident, wrong sentence -- the one failure
+    // worse than lighting none.
+    if (segment.text !== undefined) {
+      // Past any label speakd said first, which is no part of the document.
+      const spoken = segment.text.slice(Math.max(0, textStart - segment.span_start));
+      const head = normalise(spoken).slice(0, EVIDENCE_LETTERS);
+      const chosen = section.text.slice(section.offsets[k], section.offsets[k + 1] ?? section.text.length);
+      if (head && !normalise(chosen).includes(head)) continue;
+    }
+    plan.set(segment.index, zoteroIndex);
   }
   return plan;
 }

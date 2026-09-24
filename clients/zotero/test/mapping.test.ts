@@ -90,3 +90,33 @@ describe("planHighlights", () => {
     expect([...plan.keys()]).toEqual([0]);
   });
 });
+
+describe("the mis-mapping defence", () => {
+  // Two Zotero segments, and a map that is wrong: it sends every cleaned
+  // character to the second segment. Offsets alone would light the wrong one.
+  const section = buildSections(
+    [{ text: "Kant gives the definition." }, { text: "Hegel disagrees entirely." }],
+    0,
+  )[0]!;
+  const wrong = Array.from({ length: section.text.length + 1 }, () => section.offsets[1]!);
+
+  it("lights nothing when the words spoken are not in the segment chosen", () => {
+    const plan = planHighlights(section, [
+      { index: 0, span_start: 0, span_end: 26, text: "Kant gives the definition." },
+    ], wrong);
+    expect(plan.has(0)).toBe(false);
+  });
+
+  it("still lights a segment whose words match", () => {
+    const plan = planHighlights(section, [
+      { index: 0, span_start: 0, span_end: 26, text: "Kant gives the definition." },
+      { index: 1, span_start: 27, span_end: 52, text: "Hegel disagrees entirely." },
+    ], identity(section.text.length));
+    expect([plan.get(0), plan.get(1)]).toEqual([0, 1]);
+  });
+
+  it("trusts the offsets when speakd names no text", () => {
+    const plan = planHighlights(section, [{ index: 0, span_start: 0, span_end: 26 }], identity(section.text.length));
+    expect(plan.get(0)).toBe(0);
+  });
+});
