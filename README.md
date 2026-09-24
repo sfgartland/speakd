@@ -258,8 +258,9 @@ session id, and a box that speaks text you paste into it (Ctrl+Enter, 8 KiB cap)
 
 The channel list is ranked by relevance: starred channels first, then the ones
 you can hear, then muted ones, each by how recently it last tried to speak (a
-muted session that just finished still rises). Muted channels you have not
-starred fold behind one line. Each row shows how long ago the channel spoke,
+muted session that just finished still rises). A channel you hide folds away
+behind one line and stays there until you show it again; mute is left for
+silencing a channel for a moment, without it leaving the list. Each row shows how long ago the channel spoke,
 and a channel that can brief has a **brief / full** switch beside skip and mute.
 
 Pasted text is an ordinary channel called `gui`: it appears in the list, it can be

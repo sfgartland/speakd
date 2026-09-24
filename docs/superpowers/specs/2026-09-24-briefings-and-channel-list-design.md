@@ -212,9 +212,13 @@ keeps it current without polling.
   and never folded. Stars are kept in the window (`localStorage`, keyed by
   source id, wrapped in try/catch) because sessions are short-lived and the
   daemon need not know.
-- **Fold.** Muted, unstarred channels sit behind a `N muted` line inside the
-  channel disclosure, closed by default. Opening it is remembered for the
-  window's lifetime.
+- **Hide and fold.** Each row gets a hide button. Hidden channels sit behind
+  an `N hidden` line inside the channel disclosure, closed by default, each
+  with a button to show it again. Hidden is kept in the window as stars are,
+  and hiding a channel removes its star. *Revised 2026-09-24:* the fold was
+  first keyed on mute, but mute is often a momentary switch, and a channel
+  that left the list whenever it was silenced would be hard to find to
+  unmute.
 - **Rows** show relative last output ("2m", "1h") in faint mono, so the order
   explains itself.
 

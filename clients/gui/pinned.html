@@ -425,6 +425,10 @@
     flex: none; font-family: "IBM Plex Mono", monospace; font-size: 9px;
     color: var(--faint); font-variant-numeric: tabular-nums; min-width: 22px; text-align: right;
   }
+  /* Hide sits at the far right, quieter than mute: it changes the list, not
+     what is heard. */
+  .chan-row button.hide { border-color: transparent; color: var(--faint); padding: 1px 3px; }
+  .chan-row button.hide:hover { color: var(--ink-soft); }
   .chans .fold > summary {
     list-style: none; cursor: pointer; padding: 4px 0 2px;
     font-family: "IBM Plex Mono", monospace; font-size: 8.5px;
@@ -1004,23 +1008,27 @@
    * or refuse (a private window, blocked site data), and a list that fails to
    * draw over it would be far worse than stars that do not stick.
    */
-  function loadStars() {
+  function loadSet(key) {
     try {
-      const raw = JSON.parse(localStorage.getItem("speakd.stars") ?? "[]");
+      const raw = JSON.parse(localStorage.getItem(key) ?? "[]");
       return new Set(Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : []);
     } catch {
       return new Set();
     }
   }
-  function saveStars() {
+  function saveSet(key, set) {
     try {
-      localStorage.setItem("speakd.stars", JSON.stringify([...stars]));
+      localStorage.setItem(key, JSON.stringify([...set]));
     } catch {
-      /* the star still holds for this window's life */
+      /* it still holds for this window's life */
     }
   }
-  const stars = loadStars();
-  // Whether the fold of muted channels is open, kept across rebuilds: the
+  const stars = loadSet("speakd.stars");
+  // Hidden is its own choice, not mute's: a mute is often for a minute, and a
+  // channel that vanished from the list every time it was silenced would be
+  // hard to find again to unmute. Hiding is how a channel leaves the list.
+  const hidden = loadSet("speakd.hidden");
+  // Whether the fold of hidden channels is open, kept across rebuilds: the
   // list is redrawn on every mute and every output, and a fold that snapped
   // shut each time would be one nobody could read.
   let foldOpen = false;
@@ -1069,8 +1077,30 @@
     star.title = starred ? "Starred — kept at the top" : "Keep at the top";
     star.addEventListener("click", () => {
       if (stars.has(channel.source_id)) stars.delete(channel.source_id);
-      else stars.add(channel.source_id);
-      saveStars();
+      else {
+        stars.add(channel.source_id);
+        // Starred and hidden contradict each other; the newer choice wins.
+        hidden.delete(channel.source_id);
+        saveSet("speakd.hidden", hidden);
+      }
+      saveSet("speakd.stars", stars);
+      renderChannels();
+    });
+
+    const isHidden = hidden.has(channel.source_id);
+    const hide = document.createElement("button");
+    hide.type = "button";
+    hide.className = "hide";
+    hide.textContent = isHidden ? "show" : "hide";
+    hide.title = isHidden ? "Put back in the list" : "Move out of the list, into the hidden fold";
+    hide.addEventListener("click", () => {
+      if (hidden.has(channel.source_id)) hidden.delete(channel.source_id);
+      else {
+        hidden.add(channel.source_id);
+        stars.delete(channel.source_id);
+        saveSet("speakd.stars", stars);
+      }
+      saveSet("speakd.hidden", hidden);
       renderChannels();
     });
 
@@ -1109,7 +1139,7 @@
     // Only a channel something can brief for has a mode to choose; on any
     // other the switch would do nothing, so it is not offered.
     if (channel.briefs) row.append(modeSwitch(channel));
-    row.append(toggle);
+    row.append(toggle, hide);
     return row;
   }
 
@@ -1140,9 +1170,9 @@
    * and rebuilding these rows there would take the focus out from under
    * anyone mid-click on a mute toggle.
    *
-   * Muted channels nobody has starred fold away behind one line: with a
-   * dozen sessions open, the ones set aside are what makes the list
-   * unreadable, and they are still one click away.
+   * Hidden channels fold away behind one line: with a dozen sessions open,
+   * the ones set aside are what makes the list unreadable, and they are still
+   * one click away. Muted ones stay in the list, ranked below the audible.
    */
   function renderChannels() {
     const host = el("chans");
@@ -1157,7 +1187,7 @@
     }
     const folded = [];
     for (const channel of rank(channels)) {
-      if (isMuted(channel) && !stars.has(channel.source_id)) folded.push(channel);
+      if (hidden.has(channel.source_id)) folded.push(channel);
       else host.append(channelRow(channel));
     }
     if (!folded.length) return;
@@ -1166,7 +1196,7 @@
     fold.open = foldOpen;
     fold.addEventListener("toggle", () => { foldOpen = fold.open; });
     const summary = document.createElement("summary");
-    summary.textContent = `${folded.length} muted`;
+    summary.textContent = `${folded.length} hidden`;
     fold.append(summary, ...folded.map(channelRow));
     host.append(fold);
   }
