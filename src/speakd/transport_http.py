@@ -47,6 +47,7 @@ VERBS = frozenset(
         "seek",
         "replay",
         "set_label",
+        "set_language",
         "set_speed",
         "status",
         "settings",

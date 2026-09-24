@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from traceback import format_exc
 from typing import Protocol, runtime_checkable
 
-from speakd import segmenter, state
+from speakd import languages, segmenter, state
 from speakd.channels import MODES, Channel, ChannelTable, effective_mode
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
@@ -187,6 +187,12 @@ class _Job:
     # Set for a replay: speak this, already prepared, from `start`.
     replay: _Spoken | None = None
     start: int = 0
+    # The payload's own `lang`, normalised, or None when it named none -- the
+    # first candidate in resolution order (design §2). `languages.UNSUPPORTED`
+    # is a real value here, not None: a payload lang the daemon could not
+    # parse must still win resolution and reach speech.unsupported_language,
+    # not fall through to the channel or default as though nothing were given.
+    lang: str | None = None
 
 
 @dataclass
@@ -774,6 +780,8 @@ class Daemon:
             return Response(ok=True, data={"discarded": discarded, "scope": scope})
         if request.verb is Verb.SET_MODE:
             return self._set_mode(request.source_id, request.payload.get("mode"))
+        if request.verb is Verb.SET_LANGUAGE:
+            return self._set_language(request.source_id, request.payload.get("lang"))
         if request.verb is Verb.SET_CAPABILITIES:
             return self._set_capabilities(request.source_id, request.payload.get("briefs"))
         if request.verb is Verb.STATUS:
@@ -796,6 +804,7 @@ class Daemon:
                             "briefs": c.briefs,
                             "mode": effective_mode(c),
                             "briefed_this_turn": c.briefed_this_turn,
+                            "lang": c.lang,
                         }
                         for c in self.channels.all()
                     ],
@@ -959,6 +968,8 @@ class Daemon:
             return refusal
         profile_name = str(request.payload.get("profile", channel.profile))
         profile = self.profile_for(profile_name)
+        lang_raw = request.payload.get("lang")
+        job_lang = languages.normalise(lang_raw) if isinstance(lang_raw, str) else None
         decision = decide(
             SpeechRequest(request.source_id, text, kind), channel, profile.interrupt_on
         )
@@ -977,7 +988,13 @@ class Daemon:
             # know which one is talking before what it says.
             prefix = f"{channel.label}:"
         response = self._accept(
-            _Job(source_id=request.source_id, text=text, profile=profile, prefix=prefix),
+            _Job(
+                source_id=request.source_id,
+                text=text,
+                profile=profile,
+                prefix=prefix,
+                lang=job_lang,
+            ),
             at,
         )
         # A progress note is not the end of the turn: only an outcome, a
@@ -1043,6 +1060,27 @@ class Daemon:
         data = {"mode": effective_mode(channel), "briefs": channel.briefs}
         self._publish("mode", source_id, dict(data))
         return Response(ok=True, data=data)
+
+    def _set_language(self, source_id: str, lang: object) -> Response:
+        """Pin a channel's language, or clear it with `auto`.
+
+        Scoped like `set_mode` -- a channel names itself, since there is no
+        sense in which "the whole daemon's" language is a thing to pin.
+        `auto` and the empty string both clear it, which is the one case
+        `languages.normalise` is not asked to handle: they mean "nothing was
+        chosen," not "something unparseable was."
+        """
+        if not source_id:
+            return Response(ok=False, error="set_language needs a channel")
+        if not isinstance(lang, str):
+            return Response(ok=False, error="set_language needs a string 'lang'")
+        if lang.strip().lower() in ("", "auto"):
+            normalised = None
+        else:
+            normalised = languages.normalise(lang)
+        self.channels.set_lang(source_id, normalised)
+        self._publish("language", source_id, {"lang": normalised})
+        return Response(ok=True, data={"lang": normalised})
 
     def _set_capabilities(self, source_id: str, briefs: object) -> Response:
         """A client declares that it can brief for this channel, or no longer can."""

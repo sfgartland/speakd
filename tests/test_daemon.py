@@ -85,6 +85,47 @@ def test_enqueue_with_no_text_is_rejected(daemon) -> None:  # type: ignore[no-un
     assert "text" in response.error
 
 
+def _capture_accepted_job(d: Daemon) -> list[_Job]:
+    """Wrap `_accept` to record every job the daemon puts on the queue."""
+    captured: list[_Job] = []
+    original = d._accept
+
+    def spy(job: _Job, at: float) -> Response:
+        captured.append(job)
+        return original(job, at)
+
+    d._accept = spy  # type: ignore[method-assign]
+    return captured
+
+
+def test_enqueue_lang_is_normalised_and_stored_on_the_job(daemon) -> None:  # type: ignore[no-untyped-def]
+    d, _player, _bus = daemon
+    captured = _capture_accepted_job(d)
+    response = d.handle(
+        Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "hi", "lang": "EN_GB"})
+    )
+    assert response.ok
+    assert captured[0].lang == "en-gb"
+
+
+def test_enqueue_lang_that_cannot_be_parsed_is_kept_as_unsupported(daemon) -> None:  # type: ignore[no-untyped-def]
+    d, _player, _bus = daemon
+    captured = _capture_accepted_job(d)
+    response = d.handle(
+        Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "hi", "lang": "klingon"})
+    )
+    assert response.ok
+    assert captured[0].lang == "und"
+
+
+def test_enqueue_with_no_lang_leaves_the_job_lang_unset(daemon) -> None:  # type: ignore[no-untyped-def]
+    d, _player, _bus = daemon
+    captured = _capture_accepted_job(d)
+    response = d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "hi"}))
+    assert response.ok
+    assert captured[0].lang is None
+
+
 def test_a_background_channel_stays_silent_for_ordinary_output(daemon) -> None:  # type: ignore[no-untyped-def]
     d, player, _bus = daemon
     d.handle(Request(verb=Verb.SET_ROLE, source_id="s", payload={"role": "background"}))

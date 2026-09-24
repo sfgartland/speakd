@@ -441,6 +441,34 @@ def test_mode_sends_set_mode(monkeypatch) -> None:  # type: ignore[no-untyped-de
     assert len(sent) == 1
 
 
+def test_lang_sends_set_language(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"lang": "fr"}))
+    assert main(["lang", "fr", "--source", "claude-code:abc"]) == 0
+    assert (sent[0].verb, sent[0].source_id, sent[0].payload) == (
+        Verb.SET_LANGUAGE,
+        "claude-code:abc",
+        {"lang": "fr"},
+    )
+
+
+def test_lang_auto_is_sent_through_unchanged_for_the_daemon_to_clear(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"lang": None}))
+    assert main(["lang", "auto"]) == 0
+    assert sent[0].verb is Verb.SET_LANGUAGE
+    assert sent[0].payload == {"lang": "auto"}
+
+
+def test_lang_reports_a_refusal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response
+
+    _fake_call(monkeypatch, Response(ok=False, error="nope"))
+    assert main(["lang", "fr"]) != 0
+
+
 _SCHEMA_FIXTURE = [
     {
         "key": "speech.default_language",

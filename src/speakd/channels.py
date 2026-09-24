@@ -42,6 +42,12 @@ class Channel:
     # Whether the briefer has spoken since the user last prompted, so the end
     # of a turn can stay quiet when the agent has already said its piece.
     briefed_this_turn: bool = False
+    # Set with `set_language`; None means "not pinned" -- the channel defers
+    # to detection or the default (`speakd.languages.resolve`). Not the same
+    # as `speakd.languages.UNSUPPORTED`: that sentinel can be stored here too,
+    # for a code the verb could not parse, so it still reaches
+    # speech.unsupported_language rather than silently falling through.
+    lang: str | None = None
     # When anything last touched this channel -- a request naming it, or an
     # attempt to speak -- so one nobody has used in a long time can be
     # forgotten rather than listed for ever.
@@ -143,6 +149,12 @@ class ChannelTable:
         channel = self.open(source_id)
         with self._lock:
             channel.briefs = briefs
+        return channel
+
+    def set_lang(self, source_id: str, lang: str | None) -> Channel:
+        channel = self.open(source_id)
+        with self._lock:
+            channel.lang = lang
         return channel
 
     def mark_briefed(self, source_id: str, briefed: bool) -> None:
