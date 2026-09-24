@@ -32,7 +32,8 @@ def say(d: Daemon, source: str) -> None:
 
 def channel(d: Daemon, source: str) -> dict[str, object]:
     channels = d.handle(Request(verb=Verb.STATUS, source_id="")).data["channels"]
-    return next(c for c in channels if c["source_id"] == source)  # type: ignore[union-attr]
+    assert isinstance(channels, list)
+    return next(c for c in channels if c["source_id"] == source)
 
 
 def test_speaking_records_when() -> None:

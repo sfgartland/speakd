@@ -2,6 +2,7 @@
 
 import threading
 import time
+from typing import cast
 
 import numpy as np
 
@@ -70,7 +71,7 @@ def build(engine: FakeEngine | None = None) -> tuple[Daemon, StreamingPlayer, li
 
 
 def positions(seen: list[Event]) -> list[int]:
-    return [e.data["index"] for e in list(seen) if e.kind == "position"]
+    return [cast(int, e.data["index"]) for e in list(seen) if e.kind == "position"]
 
 
 def seek(d: Daemon, **payload: int) -> Response:

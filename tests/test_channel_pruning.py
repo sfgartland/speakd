@@ -25,9 +25,9 @@ def build(player: Player | None = None) -> Daemon:
 
 
 def listed(d: Daemon) -> list[str]:
-    return [
-        c["source_id"] for c in d.handle(Request(verb=Verb.STATUS, source_id="")).data["channels"]
-    ]
+    channels = d.handle(Request(verb=Verb.STATUS, source_id="")).data["channels"]
+    assert isinstance(channels, list)
+    return [c["source_id"] for c in channels]
 
 
 def age(d: Daemon, source: str, hours: float) -> None:

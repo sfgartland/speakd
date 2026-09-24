@@ -14,6 +14,10 @@ from speakd.clients.claude_code import hook, registry
 from speakd.clients.claude_code.watermark import state_dir
 from speakd.clients.log import LOG_CAP_BYTES
 
+# What one call to `enqueue` or `hush` records: text plus its kind and flags,
+# or, for a hush, just the source and the message.
+Sent = tuple[str, str] | tuple[str, str, object, object]
+
 PLUGIN = Path(__file__).resolve().parent.parent / "clients" / "claude-code"
 # Read from the manifest rather than restated, so the two cannot drift.
 PROMPT_BUDGET = min(
@@ -53,7 +57,7 @@ def transcript(tmp_path: Path, *texts: str) -> Path:
     return path
 
 
-def run(monkeypatch, stdin: str, sent: list[tuple[str, str]]) -> int:  # type: ignore[no-untyped-def]
+def run(monkeypatch, stdin: str, sent: list[Sent]) -> int:  # type: ignore[no-untyped-def]
     """Drive `main` with `stdin`, recording what it tried to say.
 
     The fakes stand in for `send.enqueue`/`send.hush` and, unlike the real
@@ -77,7 +81,7 @@ def run(monkeypatch, stdin: str, sent: list[tuple[str, str]]) -> int:  # type: i
 
 def test_a_notification_is_an_attention_on_the_main_channel(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list = []  # type: ignore[type-arg]
+    sent: list[Sent] = []
     body = payload(hook_event_name="Notification", message="Claude needs your permission.")
     assert run(monkeypatch, body, sent) == 0
     assert sent == [("claude-code:s1", "Claude needs your permission.", "attention", None)]
@@ -85,7 +89,7 @@ def test_a_notification_is_an_attention_on_the_main_channel(tmp_path: Path, monk
 
 def test_a_prompt_hushes_the_session(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     assert run(monkeypatch, payload(hook_event_name="UserPromptSubmit"), sent) == 0
     assert sent == [("claude-code:s1", "<hush>")]
 
@@ -100,7 +104,7 @@ def test_post_tool_use_no_longer_speaks(tmp_path: Path, monkeypatch) -> None:  #
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     path = transcript(tmp_path, "Hello there.")
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     body = payload(transcript_path=str(path), hook_event_name="PostToolUse")
     assert run(monkeypatch, body, sent) == 0
     assert sent == []
@@ -113,7 +117,7 @@ def test_stop_says_finished_unless_the_agent_briefed(tmp_path: Path, monkeypatch
     and only when the agent said nothing itself; the daemon judges both.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list = []  # type: ignore[type-arg]
+    sent: list[Sent] = []
     assert run(monkeypatch, payload(hook_event_name="Stop"), sent) == 0
     assert sent == [
         (
@@ -140,7 +144,7 @@ def test_a_prompt_registers_the_session(tmp_path: Path, monkeypatch) -> None:  #
     long as it ran.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     assert run(monkeypatch, payload(transcript_path="/tmp/t.jsonl", cwd="/home/me/p"), sent) == 0
     found = registry.live()
     assert [r.session_id for r in found] == ["s1"]
@@ -189,7 +193,7 @@ def test_a_prompt_without_a_transcript_path_still_hushes(  # type: ignore[no-unt
     to follow -- but the user pressing enter still means silence.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     assert run(monkeypatch, payload(transcript_path=""), sent) == 0
     assert sent == [("claude-code:s1", "<hush>")]
     assert registry.live() == []
@@ -197,7 +201,7 @@ def test_a_prompt_without_a_transcript_path_still_hushes(  # type: ignore[no-unt
 
 def test_garbage_on_stdin_exits_zero(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     assert run(monkeypatch, "not json", sent) == 0
     assert sent == []
     assert capsys.readouterr().out == ""
@@ -206,7 +210,7 @@ def test_garbage_on_stdin_exits_zero(tmp_path: Path, monkeypatch, capsys) -> Non
 
 def test_an_unknown_event_exits_zero_and_does_nothing(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     assert run(monkeypatch, payload(hook_event_name="PreCompact"), sent) == 0
     assert sent == []
 
@@ -238,7 +242,7 @@ def test_no_event_ever_writes_to_stdout(  # type: ignore[no-untyped-def]
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     path = transcript(tmp_path, "Something to say.")
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     bodies = [
         payload(transcript_path=str(path)),
         payload(transcript_path=str(path), hook_event_name="PostToolUse"),
@@ -267,7 +271,7 @@ def test_a_payload_that_blows_the_parser_still_exits_zero(  # type: ignore[no-un
     top level has to be the backstop, not the parse.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     assert run(monkeypatch, "[" * 200_000, sent) == 0
     assert sent == []
     assert "RecursionError" in (state_dir() / "hook.log").read_text(encoding="utf-8")
@@ -406,7 +410,7 @@ def test_a_prompt_against_an_unreachable_daemon_stays_inside_its_budget(tmp_path
 def _run_failing(  # type: ignore[no-untyped-def]
     monkeypatch,
     stdin: str,
-    sent: list[tuple[str, str]],
+    sent: list[Sent],
     reason: str = "no daemon at /run/user/1000/speakd/speakd.sock",
 ) -> int:
     """Like `run`, but the daemon refuses everything, as a stopped one does."""
@@ -428,7 +432,7 @@ def test_a_failed_notification_is_logged(tmp_path: Path, monkeypatch) -> None:  
     no explanation at all.
     """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list[Sent] = []
     body = payload(hook_event_name="Notification", message="Permission needed.")
     assert _run_failing(monkeypatch, body, sent) == 0
     assert sent == [("claude-code:s1", "Permission needed.", "attention", None)]

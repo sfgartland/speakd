@@ -6,6 +6,7 @@ import pytest
 
 from speakd.cli import main
 from speakd.model import Piece
+from speakd.protocol import Request, Response
 
 
 @pytest.fixture(autouse=True)
@@ -366,12 +367,14 @@ def test_default_voice_and_speed_when_nothing_is_specified(monkeypatch) -> None:
     assert captured["speed"] == 1.1
 
 
-def _fake_call(monkeypatch, answer):  # type: ignore[no-untyped-def]
+def _fake_call(monkeypatch: pytest.MonkeyPatch, answer: Response) -> list[Request]:
+    from pathlib import Path
+
     from speakd import cli
 
-    sent = []
+    sent: list[Request] = []
 
-    def call(socket, request):  # type: ignore[no-untyped-def]
+    def call(socket: Path, request: Request) -> Response:
         sent.append(request)
         return answer
 

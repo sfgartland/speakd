@@ -32,7 +32,8 @@ def req(d: Daemon, verb: Verb, source: str = "s", **payload: object) -> Response
 
 
 def say(d: Daemon, kind: str, text: str = "Hello there.", **flags: object) -> Response:
-    return req(d, Verb.ENQUEUE, text=text, kind=kind, **flags)
+    payload: dict[str, object] = {"text": text, "kind": kind, **flags}
+    return d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload=payload))
 
 
 @pytest.mark.parametrize(
@@ -84,7 +85,9 @@ def test_mode_changes_are_announced_and_reported() -> None:
         req(d, Verb.SET_CAPABILITIES, briefs=True)
         req(d, Verb.SET_MODE, mode="full")
         assert [e.data for e in seen if e.kind == "mode"][-1] == {"mode": "full", "briefs": True}
-        ch = req(d, Verb.STATUS, source="").data["channels"][0]
+        channels = req(d, Verb.STATUS, source="").data["channels"]
+        assert isinstance(channels, list)
+        ch = channels[0]
         assert (ch["briefs"], ch["mode"]) == (True, "full")
     finally:
         d.stop()
@@ -185,6 +188,8 @@ def test_set_mode_on_a_channel_that_does_not_exist_opens_none() -> None:
         response = req(d, Verb.SET_MODE, source="typo", mode="full")
         assert not response.ok
         assert "no channel" in response.error
-        assert [c["source_id"] for c in req(d, Verb.STATUS, source="").data["channels"]] == []
+        channels = req(d, Verb.STATUS, source="").data["channels"]
+        assert isinstance(channels, list)
+        assert [c["source_id"] for c in channels] == []
     finally:
         d.stop()

@@ -333,9 +333,9 @@ def test_a_stretch_only_ever_covers_a_short_look_ahead(monkeypatch) -> None:  # 
     """A ramp changes speed every chunk; re-stretching all of a long sentence
     each time costs as much CPU as the synthesiser needs."""
     import speakd.player as player_module
+    from speakd.stretch import time_stretch as real
 
     lengths: list[int] = []
-    real = player_module.time_stretch
 
     def recording(audio: np.ndarray, ratio: float, sample_rate: int) -> np.ndarray:
         lengths.append(len(audio))

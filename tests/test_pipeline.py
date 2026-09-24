@@ -615,7 +615,9 @@ def test_a_cached_unit_is_not_synthesised_again() -> None:
 def test_new_audio_is_made_at_the_tempo() -> None:
     engine = CountingEngine()
     speak([piece("One.")], engine, RecordingPlayer(), speed=1.1, tempo=Tempo(1.5))
-    assert engine.calls == [("One.", pytest.approx(1.65))]
+    [(text, speed)] = engine.calls
+    assert text == "One."
+    assert speed == pytest.approx(1.65)
 
 
 def test_a_stretchable_player_is_held_to_the_tempo() -> None:
