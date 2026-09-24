@@ -98,6 +98,10 @@ its own project; moving `profiles.toml` / `notifications.toml` into settings.
   - Claude Code sessions are brief and muted by default, and a daemon restart
     resets that.
 - **Real German speech** needs a second engine.
+- **Battery power (deferred by choice, 2026-09-24):** for now the engine is
+  switched by hand (Piper as a cheaper engine, being designed). Later: switch
+  automatically on battery (`/sys/class/power_supply/AC0/online`), hold
+  background renders while on battery, and cap Kokoro's CPU threads.
 - **CI** runs without the kokoro extra, so the real-engine tests are skipped there.
 
 ## Working on this repo — things that bite

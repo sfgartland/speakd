@@ -55,3 +55,18 @@ def default_notifications_path() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
     return base / "speakd" / "notifications.toml"
+
+
+def default_settings_paths() -> tuple[Path, Path]:
+    """Where the settings values and their persisted schema live.
+
+    Paired, since every daemon that builds its own default `SettingsStore`
+    (rather than a test's own) needs both, and the two must always name the
+    same `speakd` config directory -- returning them together is what keeps
+    a future caller from building one from `XDG_CONFIG_HOME` and the other
+    from a stale copy of it.
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    directory = base / "speakd"
+    return directory / "settings.toml", directory / "settings-schema.json"

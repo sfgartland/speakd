@@ -87,9 +87,14 @@ const CONTROL_SOURCE_ID: &str = "gui";
 /// `replay` plays the daemon's last utterance again from a chosen sentence.
 /// It carries an index and nothing else, so it can only repeat words a channel
 /// has already spoken — never put new ones on it.
+///
+/// `settings` and `set_setting` are the Settings view's two verbs (§1 of the
+/// settings-and-languages design). `declare_settings` is deliberately never
+/// forwarded: it is how a *client* — the Zotero plugin, a Claude Code
+/// session — declares the settings it owns, and this window is neither.
 const FORWARDED: &[&str] = &[
     "pause", "resume", "hush", "cancel", "seek", "replay", "mute", "set_mode", "set_engine",
-    "set_speed", "status",
+    "set_speed", "status", "settings", "set_setting",
 ];
 
 /// The one way the window originates speech.
@@ -110,10 +115,6 @@ const FORWARDED: &[&str] = &[
 /// would silently turn the window's master mute into a per-channel mute of
 /// this box, and nothing else would look wrong.
 const SAY_SOURCE: &str = "gui";
-
-/// Past this the box refuses. The segmenter will accept a novel; the person
-/// who pasted one did not mean to hear it.
-const SAY_MAX_BYTES: usize = 8192;
 
 /// Matches `speakd.transport._REQUEST_TIMEOUT_SECONDS`. Applied only around
 /// a request's reply and around the subscribe ack — never to the event
@@ -352,11 +353,8 @@ pub async fn speakd_say(text: String) -> Result<Value, String> {
     if trimmed.is_empty() {
         return Err("nothing to say".into());
     }
-    // Bytes rather than characters, matching the cap the frontend enforces so
-    // that the two agree about a paste full of em dashes.
-    if trimmed.len() > SAY_MAX_BYTES {
-        return Err(format!("that is longer than {SAY_MAX_BYTES} bytes"));
-    }
+    // No length cap: a long paste -- a whole article -- is what the box is
+    // for, and the daemon segments and streams it like any other utterance.
     let payload = json!({ "text": trimmed, "kind": "response" });
     tauri::async_runtime::spawn_blocking(move || request_on("enqueue", SAY_SOURCE, payload))
         .await

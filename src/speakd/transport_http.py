@@ -49,6 +49,9 @@ VERBS = frozenset(
         "set_label",
         "set_speed",
         "status",
+        "settings",
+        "set_setting",
+        "declare_settings",
     }
 )
 
@@ -82,6 +85,53 @@ class _Dropped(Exception):
 
 def _event_json(event: Event) -> str:
     return json.dumps({"event": event.kind, "source_id": event.source_id, "data": event.data})
+
+
+def _owner_of(source_id: str) -> str:
+    """The owner a request's `source_id` speaks for: `zotero:K` -> `zotero`.
+
+    Matches `Daemon._declare_settings`'s own derivation exactly, and for the
+    same reason -- see "Keys" in the settings-core plan's Global Constraints.
+    """
+    return source_id.split(":", 1)[0]
+
+
+def _key_owner(key: str) -> str:
+    """The owner named by a setting key: `speech.default_language` -> `speech`."""
+    return key.split(".", 1)[0]
+
+
+def _settings_response(
+    handler: Handler, source_id: str, owner: str, payload: dict[str, object]
+) -> Response:
+    """`settings` scoped to `owner` and `speech` only.
+
+    A loopback client may read its own owner's settings and `speech`'s (§1 of
+    the settings-and-languages design); nothing else. An explicit `owner` in
+    the payload that names one of those two goes straight to the daemon,
+    which already narrows to it. Anything else -- no `owner` given, or one
+    naming some other owner -- is answered with only those two, merged,
+    rather than refused: asking a bigger question than you are allowed to is
+    not a violation the way asking for someone else's settings by name would
+    be, and the caller gets the honest, narrower answer instead of an error
+    for a request that is not actually a leak.
+    """
+    requested = payload.get("owner")
+    if isinstance(requested, str) and requested in (owner, "speech"):
+        return handler(Request(Verb.SETTINGS, source_id, {"owner": requested}))
+    schema: list[object] = []
+    values: dict[str, object] = {}
+    for allowed in sorted({owner, "speech"}):
+        sub = handler(Request(Verb.SETTINGS, source_id, {"owner": allowed}))
+        if not sub.ok:
+            continue
+        sub_schema = sub.data.get("schema")
+        sub_values = sub.data.get("values")
+        if isinstance(sub_schema, list):
+            schema.extend(sub_schema)
+        if isinstance(sub_values, dict):
+            values.update(sub_values)
+    return Response(ok=True, data={"schema": schema, "values": values})
 
 
 class HttpServer:
@@ -207,8 +257,27 @@ class HttpServer:
                 if not isinstance(source_id, str) or not isinstance(payload, dict):
                     self._refuse(400, "source_id must be a string and payload an object")
                     return
+                owner = _owner_of(source_id)
+                if verb == "set_setting" and _key_owner(str(payload.get("key", ""))) != owner:
+                    # A client may set only its own owner's keys, and never
+                    # `speech.*` (the plan's Global Constraints) -- checked
+                    # here rather than left to the daemon, which has every
+                    # owner reachable over the trusted Unix socket and no
+                    # reason to refuse this for a socket caller.
+                    self._refuse(
+                        200, f"set_setting: {owner!r} may not set a key of a different owner"
+                    )
+                    return
                 try:
-                    response = outer._handler(Request(Verb(verb), source_id, payload))
+                    if verb == "settings":
+                        response = _settings_response(outer._handler, source_id, owner, payload)
+                    else:
+                        # `declare_settings` needs no check here: the daemon
+                        # always declares under the source's own owner,
+                        # whatever the payload says, so there is nothing this
+                        # transport could refuse that the daemon would not
+                        # already have scoped correctly.
+                        response = outer._handler(Request(Verb(verb), source_id, payload))
                 except Exception as exc:
                     # Answered, as the socket transport answers it. Unanswered,
                     # a client cannot tell a verb that failed from a daemon that
