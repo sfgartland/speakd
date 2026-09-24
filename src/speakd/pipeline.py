@@ -211,6 +211,7 @@ def speak(
     cache: AudioCache | None = None,
     tempo: Tempo | None = None,
     on_waiting: Callable[[int], None] | None = None,
+    synth_lock: threading.Lock | None = None,
 ) -> SpeechResult:
     """Speak `pieces`, returning the timeline of what was actually played.
 
@@ -263,8 +264,20 @@ def speak(
     carries the language rather than `errors` -- nothing already queued is
     played after that point, so the caller can retry the whole call with a
     language it knows the engine can speak.
+
+    `synth_lock` is shared with the background renderer (`speakd.render`),
+    which synthesises through the same engine object: taken around each
+    synthesize() call here and there, so the engine is never entered twice
+    at once. Each side holds it for exactly one sentence, which is what
+    bounds the wait either way at one sentence's synthesis time -- and the
+    renderer also yields between sentences while this pipeline speaks, so
+    in practice a live utterance only ever waits out the sentence already
+    in flight.
     """
     cancel = cancel or threading.Event()
+    # Taken even when nobody shared one: uncontended, and it keeps the
+    # producer's synthesize path a single shape rather than two.
+    lock = synth_lock if synth_lock is not None else threading.Lock()
     # Only when somebody is listening: a caller that passes no callback pays
     # neither a thread nor a queue for a report nobody asked for.
     announcer = (
@@ -291,9 +304,17 @@ def speak(
                     work.put((unit, index, *cached))
                     continue
                 made_at = tempo.value if tempo is not None else 1.0
-                started = time.monotonic()
+                # Held for this one call and nothing more -- see `synth_lock`
+                # above. Taken before the clock starts, so the synthesis
+                # window below measures the engine, not a wait behind a
+                # render's sentence. The error put stays outside it: `work`
+                # has depth one, so a put can block until playback takes the
+                # previous segment, and the lock must never be held for
+                # longer than a synthesize.
                 try:
-                    audio = engine.synthesize(unit.spoken, voice, speed * made_at, lang)
+                    with lock:
+                        started = time.monotonic()
+                        audio = engine.synthesize(unit.spoken, voice, speed * made_at, lang)
                 except UnsupportedLanguage as exc:
                     # Distinct from the except below: this is not "one bad
                     # segment" but "this engine cannot speak this language at

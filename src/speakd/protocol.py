@@ -34,6 +34,8 @@ class Verb(str, Enum):
     SETTINGS = "settings"
     SET_SETTING = "set_setting"
     DECLARE_SETTINGS = "declare_settings"
+    RENDER = "render"
+    RENDER_CANCEL = "render_cancel"
 
 
 class ProtocolError(Exception):

@@ -655,3 +655,209 @@ def test_set_names_a_key_that_is_not_declared(monkeypatch, capsys) -> None:  # t
     assert main(["set", "zotero.section_char", "2000"]) != 0
     assert "no such setting" in capsys.readouterr().err
     assert all(c.verb is not Verb.SET_SETTING for c in calls)
+
+
+# --- render -----------------------------------------------------------------
+
+
+def test_render_splits_on_form_feed_and_picks_the_format_from_out(tmp_path, monkeypatch, capsys):  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    textfile = tmp_path / "book.txt"
+    textfile.write_text("Chapter one text.\x0cChapter two text.", encoding="utf-8")
+    out = tmp_path / "book.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-1"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait", "--lang", "fr"])
+    assert code == 0
+    assert capsys.readouterr().out.strip() == "job-1"
+
+    assert len(sent) == 1
+    request = sent[0]
+    assert request.verb is Verb.RENDER
+    assert request.payload["format"] == "m4b"
+    assert request.payload["lang"] == "fr"
+    assert request.payload["out"] == str(out.resolve())
+    assert request.payload["parts"] == [
+        {"title": "Part 1", "text": "Chapter one text."},
+        {"title": "Part 2", "text": "Chapter two text."},
+    ]
+
+
+def test_render_with_no_form_feed_is_a_single_part_titled_from_title_or_stem(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "article.txt"
+    textfile.write_text("Just the one part.", encoding="utf-8")
+    out = tmp_path / "article.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-2"}))
+    assert main(["render", str(textfile), "--out", str(out), "--no-wait"]) == 0
+    assert sent[0].payload["parts"] == [{"title": "article", "text": "Just the one part."}]
+
+    sent2 = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-3"}))
+    assert (
+        main(
+            [
+                "render",
+                str(textfile),
+                "--out",
+                str(out),
+                "--no-wait",
+                "--title",
+                "My Article",
+            ]
+        )
+        == 0
+    )
+    assert sent2[0].payload["parts"] == [{"title": "My Article", "text": "Just the one part."}]
+    assert sent2[0].payload["metadata"] == {"title": "My Article"}
+
+
+def test_render_sends_metadata_tags(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "a.txt"
+    textfile.write_text("Text.", encoding="utf-8")
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "j"}))
+    assert (
+        main(
+            [
+                "render",
+                str(textfile),
+                "--out",
+                str(tmp_path / "a.opus"),
+                "--no-wait",
+                "--title",
+                "T",
+                "--artist",
+                "A",
+                "--album",
+                "B",
+                "--date",
+                "2026",
+            ]
+        )
+        == 0
+    )
+    assert sent[0].payload["metadata"] == {
+        "title": "T",
+        "artist": "A",
+        "album": "B",
+        "date": "2026",
+    }
+    assert sent[0].payload["format"] == "opus"
+
+
+def test_render_refuses_an_unknown_extension(tmp_path, monkeypatch, capsys):  # type: ignore[no-untyped-def]
+    textfile = tmp_path / "a.txt"
+    textfile.write_text("Text.", encoding="utf-8")
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "j"}))
+    code = main(["render", str(textfile), "--out", str(tmp_path / "a.wav"), "--no-wait"])
+    assert code != 0
+    assert sent == []
+    assert ".wav" in capsys.readouterr().err
+
+
+def test_render_missing_textfile_is_reported_without_reaching_the_daemon(  # type: ignore[no-untyped-def]
+    tmp_path, monkeypatch, capsys
+):
+    from speakd.protocol import Response
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "j"}))
+    code = main(
+        [
+            "render",
+            str(tmp_path / "nope.txt"),
+            "--out",
+            str(tmp_path / "a.mp3"),
+            "--no-wait",
+        ]
+    )
+    assert code != 0
+    assert sent == []
+    assert "nope.txt" in capsys.readouterr().err
+
+
+def test_render_without_no_wait_polls_status_and_prints_progress_until_done(  # type: ignore[no-untyped-def]
+    tmp_path, monkeypatch, capsys
+):
+    import time as time_module
+
+    from speakd import cli
+    from speakd.protocol import Request, Response, Verb
+
+    textfile = tmp_path / "a.txt"
+    textfile.write_text("Text.", encoding="utf-8")
+
+    responses = [
+        Response(ok=True, data={"job": "job-9"}),  # the render verb itself
+        Response(
+            ok=True,
+            data={"render": {"jobs": [{"job": "job-9", "state": "running", "done_seconds": 0}]}},
+        ),
+        Response(
+            ok=True,
+            data={"render": {"jobs": [{"job": "job-9", "state": "running", "done_seconds": 1}]}},
+        ),
+        Response(
+            ok=True,
+            data={
+                "render": {
+                    "jobs": [
+                        {
+                            "job": "job-9",
+                            "state": "done",
+                            "done_seconds": 2,
+                            "out": str(tmp_path / "a.mp3"),
+                        }
+                    ]
+                }
+            },
+        ),
+    ]
+    sent: list[Request] = []
+
+    def call(socket, request):  # type: ignore[no-untyped-def]
+        sent.append(request)
+        return responses[len(sent) - 1]
+
+    monkeypatch.setattr(cli, "_call", call)
+    monkeypatch.setattr(time_module, "sleep", lambda _seconds: None)
+
+    code = main(["render", str(textfile), "--out", str(tmp_path / "a.mp3")])
+    assert code == 0
+    assert [r.verb for r in sent] == [Verb.RENDER, Verb.STATUS, Verb.STATUS, Verb.STATUS]
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    states = [json.loads(line)["state"] for line in lines]
+    assert states == ["running", "running", "done"]
+
+
+def test_render_stops_and_reports_a_failed_job(tmp_path, monkeypatch, capsys):  # type: ignore[no-untyped-def]
+    from speakd import cli
+    from speakd.protocol import Request, Response
+
+    textfile = tmp_path / "a.txt"
+    textfile.write_text("Text.", encoding="utf-8")
+
+    responses = [
+        Response(ok=True, data={"job": "job-x"}),
+        Response(
+            ok=True,
+            data={
+                "render": {
+                    "jobs": [{"job": "job-x", "state": "failed", "error": "ffmpeg not found"}]
+                }
+            },
+        ),
+    ]
+    sent: list[Request] = []
+
+    def call(socket, request):  # type: ignore[no-untyped-def]
+        sent.append(request)
+        return responses[len(sent) - 1]
+
+    monkeypatch.setattr(cli, "_call", call)
+    code = main(["render", str(textfile), "--out", str(tmp_path / "a.mp3")])
+    assert code != 0
+    assert "ffmpeg not found" in capsys.readouterr().err

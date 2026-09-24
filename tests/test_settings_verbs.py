@@ -82,6 +82,7 @@ def test_settings_verb_answers_schema_and_values(daemon: Daemon) -> None:
         "speech.detect_language",
         "speech.voices",
         "speech.unsupported_language",
+        "speech.sentence_gap_ms",
     }
 
 

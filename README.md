@@ -360,6 +360,58 @@ It is built for the nine languages above plus German, Dutch, Swedish,
 Norwegian, Danish and Polish, so a common near-neighbour is recognised as
 itself rather than guessed as English.
 
+## Audio files
+
+`render` turns a stretch of text into an mp3, opus, or m4b with chapters —
+the daemon side of "turn this paper into a podcast episode", read through
+the same pipeline as live speech: cleanup, segmentation and Kokoro. It runs
+on its own worker, never the live queue, so a render never delays a sentence
+you are actually listening to; the two directions are kept apart on purpose.
+Before each sentence the worker checks whether anything is speaking live and
+waits if so, so live speech is never held up by more than the one render
+sentence already in flight — and the two never reach the engine at the same
+moment, since both sides of `render.py`'s worker take the same lock around a
+`synthesize()` call that the live pipeline does.
+
+```bash
+uv run speakctl render paper.txt --out paper.mp3
+uv run speakctl render book.txt --out book.m4b --title "A Book" --no-wait
+```
+
+A text file is one part unless it contains form feeds (`\f`), in which case
+each chunk becomes a chapter — titled from `--title` (or the file's own name)
+when there is only one, and "Part 1", "Part 2", ... otherwise. The output's
+extension picks the format. Left to run, `speakctl render` polls and prints
+progress until the job is done or fails; `--no-wait` just prints the job id
+and returns.
+
+Progress survives a crash or a restart: a work directory under
+`$XDG_STATE_HOME/speakd/renders/<job>/` holds a manifest (which part and
+sentence come next) and each part's audio as it is made, so a daemon that
+comes back mid-render picks up exactly where it left off rather than
+resynthesising anything already on disk. A part's audio is stored as headerless
+PCM rather than a WAV — a WAV's 32-bit RIFF size field caps a part at 4 GiB
+(about 24.8 hours at Kokoro's rate), which a real audiobook is not obliged to
+fit inside, and encoding streams that PCM to ffmpeg rather than concatenating
+it into one file first, so nothing about a render's length is ever held in
+memory or written twice.
+
+`render.mp3_bitrate` (32k/48k/64k/96k, default 64k — mono speech needs
+little) is the bitrate for every format, `render.chapter_gap_ms` (default
+1500) is the silence between parts, and `speech.sentence_gap_ms` (default
+250) is the silence between sentences within a part. `status` reports
+`render: {available, jobs}` — `available` is whether ffmpeg was found on
+`PATH` at all — and the `render` event carries each job's state, progress
+and, once done, its output path, published on every state change and at
+most once every two seconds while one is running. `render_cancel` drops a
+queued job outright, or flags a running one to unwind at its next check,
+without disturbing whatever else is in the queue.
+
+Over HTTP — the transport Zotero's export flow will drive this through —
+`out` must resolve to somewhere inside your home directory; a symlink that
+would land it elsewhere is refused the same as a literal path outside it
+would be.
+
 ## Measured
 
 On an i7-10510U with Kokoro on CPU (RTF 0.75). **Read the provenance** — some of
@@ -393,7 +445,8 @@ Zotero's plugin sandbox cannot open a Unix socket, so the daemon also serves
 
 - `POST /v1/<verb>` with `{"source_id", "payload"}`, for the verbs a reader
   needs (`enqueue`, `hush`, `cancel`, `pause`, `resume`, `seek`, `replay`,
-  `set_label`, `set_speed`, `status`), and `GET /v1/events` as server-sent
+  `set_label`, `set_speed`, `status`, `render`, `render_cancel`), and
+  `GET /v1/events` as server-sent
   events carrying the same JSON as `speakctl subscribe`.
 - Every request needs `Authorization: Bearer <token>`. Loopback is not the
   socket's trust boundary — any web page you open can reach 127.0.0.1 — so the
