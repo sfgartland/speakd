@@ -56,7 +56,13 @@ def resolve(
 ) -> tuple[str, str | None]:
     """(source_id, label) for this server. A label of None means the channel has one."""
     chain = ancestors(proc)
-    sessions = {r.claude_pid: r.session_id for r in registry.live() if r.claude_pid}
+    # The newest registration for each Claude process: `/clear` and `/resume`
+    # start a new session in the same process, and the old one stays live in
+    # the registry until it idles out.
+    sessions: dict[int, str] = {}
+    for reg in sorted(registry.live(), key=lambda r: r.touched):
+        if reg.claude_pid:
+            sessions[reg.claude_pid] = reg.session_id
     for pid, _comm in chain:
         if pid in sessions:
             return f"claude-code:{sessions[pid]}", None

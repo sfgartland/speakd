@@ -90,7 +90,6 @@ class Server:
         self._client = "agent"
         self._channel: str | None = None
         self._label: str | None = None
-        self._announced = False
 
     # ---- JSON-RPC ----
 
@@ -131,6 +130,8 @@ class Server:
         arguments = params.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
         try:
+            if name in ("brief", "briefing_status", "set_mode"):
+                self._arrive()
             if name == "brief":
                 data = self._brief(arguments)
             elif name == "briefing_status":
@@ -207,35 +208,34 @@ class Server:
         return {"mode": "unknown", "muted": bool(answer.data.get("muted")), "briefs": False}
 
     def _channel_id(self) -> str:
-        # Resolved lazily and retried until it names a Claude Code session: the
-        # prompt hook registers a session on its first prompt, which can come
-        # after this server started.
-        if self._channel is None or not self._channel.startswith("claude-code:"):
-            channel, label = session.resolve(self._client, proc=self._proc)
-            if channel != self._channel:
-                self._channel, self._label, self._announced = channel, label, False
+        """The channel this call briefs on, settled by `_arrive`."""
+        if self._channel is None:
+            self._arrive()
         assert self._channel is not None
         return self._channel
+
+    def _arrive(self) -> None:
+        """Work out which channel this is, and tell the daemon a briefer is on it.
+
+        Done at the start of every tool call rather than once. The session can
+        change under a running server -- `/clear` starts a new one in the same
+        Claude process -- and the daemon can forget: a restart brings a
+        channel back with no briefer, where it reads as full mode and every
+        briefing would be refused as one, telling the agent to stop. Both are
+        a directory listing and two local round trips; a briefing is rare.
+        """
+        channel, label = session.resolve(self._client, proc=self._proc)
+        self._channel, self._label = channel, label
+        call(Request(Verb.SET_CAPABILITIES, channel, {"briefs": True}), socket=self._socket)
+        if label:
+            call(Request(Verb.SET_LABEL, channel, {"label": label}), socket=self._socket)
 
     def _send(
         self, verb: Verb, payload: dict[str, object], source: str | None = None
     ) -> Response | str:
-        channel = self._channel_id()
-        if not self._announced:
-            # Say who is here before anything else, so the channel can brief
-            # and has a name the listener will recognise.
-            announced = call(
-                Request(Verb.SET_CAPABILITIES, channel, {"briefs": True}), socket=self._socket
-            )
-            if isinstance(announced, Response) and announced.ok:
-                self._announced = True
-                if self._label:
-                    call(
-                        Request(Verb.SET_LABEL, channel, {"label": self._label}),
-                        socket=self._socket,
-                    )
         return call(
-            Request(verb, channel if source is None else source, payload), socket=self._socket
+            Request(verb, self._channel_id() if source is None else source, payload),
+            socket=self._socket,
         )
 
 

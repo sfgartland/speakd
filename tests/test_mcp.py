@@ -175,3 +175,68 @@ def test_the_guide_is_the_users_file_when_there_is_one(tmp_path: Path) -> None:
     (tmp_path / "speakd").mkdir()
     (tmp_path / "speakd" / "briefing.md").write_text("Only tell me when it is done.")
     assert guide.text(tmp_path) == "Only tell me when it is done."
+
+
+def test_a_daemon_that_forgot_the_briefer_is_told_again(daemon_socket, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """A daemon restart loses `briefs`; the next brief must not be refused as full mode."""
+    from speakd.protocol import Request, Verb
+
+    socket, d = daemon_socket
+    proc = spawn(socket, tmp_path)
+    try:
+        rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
+        assert call(proc, "brief", {"text": "One.", "kind": "done"}, 2)["structuredContent"][
+            "spoken"
+        ]
+        channel = next(
+            c["source_id"]
+            for c in d.handle(Request(verb=Verb.STATUS, source_id="")).data["channels"]
+            if c["source_id"].startswith("agent:codex:")
+        )
+        d.handle(Request(verb=Verb.SET_CAPABILITIES, source_id=channel, payload={"briefs": False}))
+        again = call(proc, "brief", {"text": "Two.", "kind": "done"}, 3)["structuredContent"]
+        assert again["spoken"] is True
+        assert again["mode"] == "brief"
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=5)
+
+
+def test_the_newest_registration_for_a_process_wins(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`/clear` starts a new session in the same Claude process."""
+    import json as _json
+    import time as _time
+
+    from speakd.clients.claude_code import registry
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    proc = fake_proc(tmp_path / "proc", [(300, "python3", 200), (200, "claude", 1)])
+    registry.register("zzz-old", Path("/t.jsonl"), "/work", claude_pid=200)
+    registry.register("aaa-new", Path("/t.jsonl"), "/work", claude_pid=200)
+    # Make the old one older, whatever order the filenames sort in.
+    old = next(registry.state_dir().glob("*zzz-old*.session.json"))
+    body = _json.loads(old.read_text())
+    body["touched"] = _time.time() - 60
+    old.write_text(_json.dumps(body))
+    assert session.resolve("claude-code", proc=proc) == ("claude-code:aaa-new", None)
+
+
+def test_the_server_follows_its_process_to_a_new_session(
+    daemon_socket, tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    from speakd.clients.claude_code import registry
+    from speakd.clients.mcp.server import Server
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    socket, d = daemon_socket
+    proc = fake_proc(tmp_path / "proc", [(300, "python3", 200), (200, "claude", 1)])
+    registry.register("first", Path("/t.jsonl"), "/work", claude_pid=200)
+    server = Server(socket, proc=proc)
+    server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    brief = {"name": "brief", "arguments": {"text": "Hi.", "kind": "done"}}
+    server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": brief})
+    registry.register("second", Path("/t.jsonl"), "/work", claude_pid=200)
+    seen = []
+    d.bus.subscribe(seen.append)
+    server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": brief})
+    assert {e.source_id for e in seen if e.kind in ("queued", "declined")} == {"claude-code:second"}
