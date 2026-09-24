@@ -21,3 +21,19 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy src tests
       - run: uv run pytest -q
+
+  zotero-plugin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/zotero
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: clients/zotero/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

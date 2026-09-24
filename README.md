@@ -298,7 +298,7 @@ not evidence.
 
 ## Clients
 
-**Zotero** (in progress) — [`clients/zotero/`](clients/zotero/) reads a paper
+**Zotero** — [`clients/zotero/`](clients/zotero/) reads a paper
 aloud from inside Zotero 10's reader, with Zotero's own sentence highlight and
 follow-scroll showing what is being spoken. speakd does the speaking; the
 plugin borrows Zotero's Read Aloud segmentation (reading order, headers and
