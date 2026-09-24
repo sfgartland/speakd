@@ -240,3 +240,29 @@ def test_a_client_that_never_reads_cannot_stall_the_daemon(server) -> None:  # t
         assert done.wait(timeout=10), "publishing blocked on a client that does not read"
     finally:
         raw.close()
+
+
+def test_a_body_nested_too_deep_to_parse_is_a_400(server) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    assert call(http, "POST", "/v1/status", raw=b"[" * 100_000)[0] == 400
+    assert call(http, "POST", "/v1/status", {})[0] == 200
+
+
+def test_a_handler_that_raises_is_answered_not_dropped() -> None:
+    """The socket transport answers a failing handler; so must this one."""
+    from speakd.protocol import Response
+
+    def explode(request: Request) -> Response:
+        raise OSError("state directory is read-only")
+
+    http = HttpServer(0, explode, EventBus(), TOKEN)
+    http.start()
+    try:
+        status, _, body = call(http, "POST", "/v1/set_speed", {"payload": {"speed": 1.2}})
+        answer = json.loads(body)
+        assert status == 200
+        assert answer["ok"] is False
+        assert "read-only" in answer["error"]
+        assert call(http, "GET", "/v1/health")[0] == 200
+    finally:
+        http.stop()

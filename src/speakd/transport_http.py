@@ -178,7 +178,10 @@ class HttpServer:
                     return
                 try:
                     body = json.loads(self.rfile.read(size) or b"{}")
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                except (ValueError, RecursionError):
+                    # ValueError covers undecodable bytes as well as bad JSON;
+                    # RecursionError is a body nested deeper than the parser
+                    # will follow. Either way the answer is the client's fault.
                     self._refuse(400, "the body is not JSON")
                     return
                 if not isinstance(body, dict):
@@ -189,7 +192,13 @@ class HttpServer:
                 if not isinstance(source_id, str) or not isinstance(payload, dict):
                     self._refuse(400, "source_id must be a string and payload an object")
                     return
-                response = outer._handler(Request(Verb(verb), source_id, payload))
+                try:
+                    response = outer._handler(Request(Verb(verb), source_id, payload))
+                except Exception as exc:
+                    # Answered, as the socket transport answers it. Unanswered,
+                    # a client cannot tell a verb that failed from a daemon that
+                    # is not there, and says the daemon is not running.
+                    response = Response(ok=False, error=f"{verb} failed: {exc!r}")
                 self._answer(
                     200, {"ok": response.ok, "data": response.data, "error": response.error}
                 )
