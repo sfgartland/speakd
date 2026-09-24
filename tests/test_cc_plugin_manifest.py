@@ -16,16 +16,17 @@ def test_the_plugin_manifest_parses() -> None:
 
 
 def test_every_hook_we_handle_is_registered() -> None:
-    """Two events, and `_dispatch` acts on exactly these two.
+    """Three events, and `_dispatch` acts on exactly these three.
 
-    Stop and PostToolUse were deleted rather than left declared and ignored:
-    the follower speaks a message when it lands on disk, which is before the
-    tool after it has finished, so those hooks bought nothing and cost a
-    Python start-up on every single tool call. Declaring an event we do not
-    act on would put that cost straight back.
+    PostToolUse was deleted rather than left declared and ignored: the
+    follower speaks a message when it lands on disk, before the tool after it
+    has finished, so that hook bought nothing and cost a Python start-up on
+    every tool call. Stop came back with a different job -- the backstop for a
+    turn that ended without a briefing -- and fires once a turn, not once a
+    tool call.
     """
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
-    assert set(hooks) == {"Notification", "UserPromptSubmit"}
+    assert set(hooks) == {"Notification", "UserPromptSubmit", "Stop"}
 
 
 def test_every_registered_hook_runs_the_one_entry_point() -> None:
@@ -319,7 +320,7 @@ def test_the_marketplace_entry_points_at_the_plugin_we_ship() -> None:
 def test_the_prompt_hushes_fit_inside_the_manifests_budget() -> None:
     """The arithmetic, checked against the manifest rather than remembered.
 
-    `UserPromptSubmit` sends two hushes in sequence and has the shorter
+    `UserPromptSubmit` sends one hush and has the shorter
     window of the two events. Either number can be changed by someone who
     is not thinking about the other; this is what notices.
     """
@@ -329,15 +330,14 @@ def test_the_prompt_hushes_fit_inside_the_manifests_budget() -> None:
     budget = min(
         entry["timeout"] for matcher in hooks["UserPromptSubmit"] for entry in matcher["hooks"]
     )
-    # Two hushes, one budget each -- which is only true because `send` shares
-    # one deadline between connecting and waiting for the reply. Without that
-    # the real ceiling is 4 * HUSH_TIMEOUT and this arithmetic models half of
-    # it; test_connecting_and_replying_share_one_budget is what holds it.
-    # Start-up measured at ~0.22s on the development machine, doubled here.
+    # One budget for the hush -- which is only true because `send` shares one
+    # deadline between connecting and waiting for the reply; without that the
+    # ceiling is twice this, and test_connecting_and_replying_share_one_budget
+    # is what holds it. Start-up measured at ~0.22s, doubled here.
     startup_allowance = 0.5
-    worst_case = 2 * HUSH_TIMEOUT + startup_allowance
+    worst_case = HUSH_TIMEOUT + startup_allowance
     assert worst_case <= budget, (
-        f"two hushes at {HUSH_TIMEOUT}s plus start-up is {worst_case}s, against a {budget}s budget"
+        f"a hush at {HUSH_TIMEOUT}s plus start-up is {worst_case}s, against a {budget}s budget"
     )
 
 
@@ -602,3 +602,45 @@ def test_with_home_unset_both_halves_pick_the_same_log(tmp_path: Path) -> None:
     assert shell.stdout.strip() == python.stdout.strip(), (
         f"shell says {shell.stdout.strip()!r}, python says {python.stdout.strip()!r}"
     )
+
+
+def test_the_plugin_ships_the_mcp_server_through_its_launcher() -> None:
+    config = json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8"))
+    server = config["mcpServers"]["speakd"]
+    assert server["command"] == "bash"
+    assert server["args"] == ["${CLAUDE_PLUGIN_ROOT}/speakd-mcp.sh"]
+    assert (ROOT / "speakd-mcp.sh").is_file()
+
+
+def test_the_mcp_launcher_finds_the_server_through_speakd_home(tmp_path: Path) -> None:
+    """The same lookup the hook wrapper makes, so an installed copy works too."""
+    copy = tmp_path / "plugin"
+    copy.mkdir()
+    (copy / "speakd-mcp.sh").write_text((ROOT / "speakd-mcp.sh").read_text(encoding="utf-8"))
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(tmp_path / "home"),
+        "SPEAKD_HOME": str(ROOT.parent.parent),
+    }
+    done = sp.run(
+        ["bash", str(copy / "speakd-mcp.sh")],
+        input='{"jsonrpc":"2.0","id":1,"method":"ping"}\n',
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert done.returncode == 0
+    assert json.loads(done.stdout)["result"] == {}
+
+
+def test_the_mcp_launcher_says_what_it_could_not_find(tmp_path: Path) -> None:
+    copy = tmp_path / "plugin"
+    copy.mkdir()
+    (copy / "speakd-mcp.sh").write_text((ROOT / "speakd-mcp.sh").read_text(encoding="utf-8"))
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "home")}
+    done = sp.run(
+        ["bash", str(copy / "speakd-mcp.sh")], capture_output=True, text=True, env=env, timeout=30
+    )
+    assert done.returncode != 0
+    assert "SPEAKD_HOME" in done.stderr

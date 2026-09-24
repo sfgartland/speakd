@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "speakd": {
+      "command": "bash",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/speakd-mcp.sh"
+      ]
+    }
+  }
+}

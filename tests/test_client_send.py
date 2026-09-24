@@ -325,3 +325,18 @@ def test_a_connect_that_eats_the_whole_budget_gives_up_cleanly(  # type: ignore[
     assert "went on connecting" in reason, reason
     # Still bounded by what the connect cost, not by a second budget on top.
     assert elapsed < 1.0, f"took {elapsed:.2f}s"
+
+
+def test_enqueue_carries_its_kind_and_flags(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.clients import send as send_module
+    from speakd.protocol import Response
+
+    seen = []
+    monkeypatch.setattr(
+        send_module, "call", lambda request, **kw: seen.append(request) or Response(ok=True)
+    )
+    assert (
+        send_module.enqueue("s", "finished", kind="attention", flags={"unless_briefed": True})
+        is None
+    )
+    assert seen[0].payload == {"text": "finished", "kind": "attention", "unless_briefed": True}

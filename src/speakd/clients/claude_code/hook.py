@@ -15,6 +15,7 @@ out what happened, send it, and under no circumstances fail the user's turn.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -22,14 +23,15 @@ from pathlib import Path
 from speakd.clients.claude_code import registry
 from speakd.clients.claude_code.watermark import state_dir
 from speakd.clients.log import logger_for
+from speakd.clients.mcp.session import ancestors
 from speakd.clients.send import enqueue, hush
 
-# Two hushes go out on the UserPromptSubmit path, one per channel, and Claude
-# Code gives that event the shorter window of the two (3s in the manifest
-# this client ships). At `send.TIMEOUT` the pair costs 4s against it: measured
-# at 4.01s, the second hush never lands and the user's prompt stalls waiting
-# for a hook that has already lost. Halved so that both, plus interpreter
-# start-up, fit inside the budget -- which
+# A hush goes out on the UserPromptSubmit path, and Claude Code gives that
+# event the shorter window (3s in the manifest this client ships). When there
+# were two, one per channel, the pair at `send.TIMEOUT` measured 4.01s against
+# it and the prompt stalled on a hook that had already lost. There is one now,
+# since a session has one channel; the halved timeout stays, because the
+# budget is the user's and interpreter start-up comes out of it too -- which
 # test_the_prompt_hushes_fit_inside_the_manifests_budget holds us to.
 HUSH_TIMEOUT = 1.0
 
@@ -37,21 +39,57 @@ HUSH_TIMEOUT = 1.0
 _log = logger_for(state_dir, "hook.log")
 
 
-def _channels(session_id: str) -> tuple[str, str]:
-    return f"claude-code:{session_id}", f"claude-code:{session_id}:notify"
+def _channel(session_id: str) -> str:
+    """The session's one channel.
+
+    Notifications used to have a second, `:notify`, so that they could be
+    heard in a session whose responses were not. A channel's mode now does
+    that job -- a notification is `attention`, which every mode speaks -- and
+    one row per session in the window is one fewer thing to mute.
+    """
+    return f"claude-code:{session_id}"
+
+
+def _claude_pid() -> int:
+    """The Claude Code process this hook runs under, for `speakd-mcp` to find.
+
+    The nearest ancestor named `claude`; failing that, the grandparent, since
+    the hook is `bash wrapper -> python` under whatever started it.
+    """
+    chain = ancestors()
+    for pid, comm in chain[1:]:
+        if comm == "claude":
+            return pid
+    return chain[2][0] if len(chain) > 2 else os.getppid()
 
 
 def _dispatch(body: dict[str, object]) -> None:
     session_id = str(body.get("session_id") or "unknown")
     event = str(body.get("hook_event_name") or "")
-    response, notify = _channels(session_id)
+    channel = _channel(session_id)
 
     if event == "Notification":
+        # Claude is waiting on the user -- for permission, or for input -- and
+        # cannot say so itself, so this speaks in every mode.
         message = body.get("message")
         if isinstance(message, str):
-            reason = enqueue(notify, message)
+            reason = enqueue(channel, message, kind="attention")
             if reason is not None:
                 _log(reason)
+        return
+
+    if event == "Stop":
+        # The backstop for a turn that ended without a briefing. The daemon
+        # drops it when the agent already briefed this turn, and in full mode,
+        # where the response has just been read aloud.
+        reason = enqueue(
+            channel,
+            "finished",
+            kind="attention",
+            flags={"unless_briefed": True, "only_in_mode": "brief"},
+        )
+        if reason is not None:
+            _log(reason)
         return
 
     if event == "UserPromptSubmit":
@@ -64,16 +102,20 @@ def _dispatch(body: dict[str, object]) -> None:
             # timeout against one that does not -- and a registration written
             # after that is one a hook killed at its budget never writes at
             # all, leaving the follower unaware of the session.
-            registry.register(session_id, Path(transcript_path), str(body.get("cwd") or ""))
-        for channel in (response, notify):
-            reason = hush(channel, timeout=HUSH_TIMEOUT)
-            if reason is not None:
-                _log(reason)
+            registry.register(
+                session_id,
+                Path(transcript_path),
+                str(body.get("cwd") or ""),
+                claude_pid=_claude_pid(),
+            )
+        reason = hush(channel, timeout=HUSH_TIMEOUT)
+        if reason is not None:
+            _log(reason)
         return
 
-    # Every other event is deliberately nothing at all, Stop and PostToolUse
-    # included: an install still carrying the old four-event manifest keeps
-    # firing them, and the follower has already said what they would have.
+    # Every other event is deliberately nothing at all, PostToolUse included:
+    # an install still carrying the old four-event manifest keeps firing it,
+    # and the follower has already said what it would have.
 
 
 def _read_and_dispatch() -> None:

@@ -62,7 +62,7 @@ def run(monkeypatch, stdin: str, sent: list[tuple[str, str]]) -> int:  # type: i
     """
 
     def fake_enqueue(source: str, text: str, **kw: object) -> str | None:
-        sent.append((source, text))
+        sent.append((source, text, kw.get("kind"), kw.get("flags")))
         return None
 
     def fake_hush(source: str, **kw: object) -> str | None:
@@ -75,19 +75,19 @@ def run(monkeypatch, stdin: str, sent: list[tuple[str, str]]) -> int:  # type: i
     return hook.main([])
 
 
-def test_a_notification_speaks_on_the_notify_channel(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_a_notification_is_an_attention_on_the_main_channel(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    sent: list[tuple[str, str]] = []
+    sent: list = []  # type: ignore[type-arg]
     body = payload(hook_event_name="Notification", message="Claude needs your permission.")
     assert run(monkeypatch, body, sent) == 0
-    assert sent == [("claude-code:s1:notify", "Claude needs your permission.")]
+    assert sent == [("claude-code:s1", "Claude needs your permission.", "attention", None)]
 
 
-def test_a_prompt_hushes_both_channels(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_a_prompt_hushes_the_session(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     sent: list[tuple[str, str]] = []
     assert run(monkeypatch, payload(hook_event_name="UserPromptSubmit"), sent) == 0
-    assert sent == [("claude-code:s1", "<hush>"), ("claude-code:s1:notify", "<hush>")]
+    assert sent == [("claude-code:s1", "<hush>")]
 
 
 def test_post_tool_use_no_longer_speaks(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -106,13 +106,30 @@ def test_post_tool_use_no_longer_speaks(tmp_path: Path, monkeypatch) -> None:  #
     assert sent == []
 
 
-def test_stop_no_longer_speaks(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """The same for the end of a turn, which the follower reached first."""
+def test_stop_says_finished_unless_the_agent_briefed(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """The backstop for a turn that ended without a briefing.
+
+    Only in brief mode -- in full mode the response was just read aloud --
+    and only when the agent said nothing itself; the daemon judges both.
+    """
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
-    path = transcript(tmp_path, "Hello there.")
-    sent: list[tuple[str, str]] = []
-    assert run(monkeypatch, payload(transcript_path=str(path), hook_event_name="Stop"), sent) == 0
-    assert sent == []
+    sent: list = []  # type: ignore[type-arg]
+    assert run(monkeypatch, payload(hook_event_name="Stop"), sent) == 0
+    assert sent == [
+        (
+            "claude-code:s1",
+            "finished",
+            "attention",
+            {"unless_briefed": True, "only_in_mode": "brief"},
+        )
+    ]
+
+
+def test_a_prompt_records_the_claude_process(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(hook, "_claude_pid", lambda: 4242)
+    run(monkeypatch, payload(hook_event_name="UserPromptSubmit"), [])
+    assert [r.claude_pid for r in registry.live()] == [4242]
 
 
 def test_a_prompt_registers_the_session(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -159,7 +176,7 @@ def test_the_session_is_registered_before_the_hushes_go_out(  # type: ignore[no-
             "cwd": "/p",
         }
     )
-    assert seen == [["s1"], ["s1"]]
+    assert seen == [["s1"]]
 
 
 def test_a_prompt_without_a_transcript_path_still_hushes(  # type: ignore[no-untyped-def]
@@ -174,7 +191,7 @@ def test_a_prompt_without_a_transcript_path_still_hushes(  # type: ignore[no-unt
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     sent: list[tuple[str, str]] = []
     assert run(monkeypatch, payload(transcript_path=""), sent) == 0
-    assert sent == [("claude-code:s1", "<hush>"), ("claude-code:s1:notify", "<hush>")]
+    assert sent == [("claude-code:s1", "<hush>")]
     assert registry.live() == []
 
 
@@ -343,7 +360,7 @@ def test_the_prompt_path_hushes_on_the_shorter_timeout(  # type: ignore[no-untyp
     monkeypatch.setattr("sys.stdin", io.StringIO(payload(hook_event_name="UserPromptSubmit")))
     monkeypatch.setattr(hook, "hush", recording_hush)
     assert hook.main([]) == 0
-    assert seen == [hook.HUSH_TIMEOUT, hook.HUSH_TIMEOUT]
+    assert seen == [hook.HUSH_TIMEOUT]
     assert hook.HUSH_TIMEOUT < send_module.TIMEOUT, "the prompt path must be the quicker one"
 
 
@@ -395,7 +412,7 @@ def _run_failing(  # type: ignore[no-untyped-def]
     """Like `run`, but the daemon refuses everything, as a stopped one does."""
 
     def failing_enqueue(source: str, text: str, **kw: object) -> str | None:
-        sent.append((source, text))
+        sent.append((source, text, kw.get("kind"), kw.get("flags")))
         return reason
 
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
@@ -414,7 +431,7 @@ def test_a_failed_notification_is_logged(tmp_path: Path, monkeypatch) -> None:  
     sent: list[tuple[str, str]] = []
     body = payload(hook_event_name="Notification", message="Permission needed.")
     assert _run_failing(monkeypatch, body, sent) == 0
-    assert sent == [("claude-code:s1:notify", "Permission needed.")]
+    assert sent == [("claude-code:s1", "Permission needed.", "attention", None)]
     assert "no daemon" in (state_dir() / "hook.log").read_text(encoding="utf-8")
 
 

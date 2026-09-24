@@ -77,14 +77,21 @@ def enqueue(
     source: str,
     text: str,
     *,
+    kind: str = "response",
+    flags: dict[str, object] | None = None,
     socket: Path | None = None,
     timeout: float = TIMEOUT,
 ) -> str | None:
-    """Speak `text` on `source`. Blank text is a no-op, not a request."""
+    """Speak `text` on `source`. Blank text is a no-op, not a request.
+
+    `kind` is what the daemon weighs against the channel's mode; `flags` are
+    per-enqueue conditions it checks, such as `unless_briefed`.
+    """
     if not text.strip():
         return None
+    payload: dict[str, object] = {"text": text, "kind": kind, **(flags or {})}
     return send(
-        Request(verb=Verb.ENQUEUE, source_id=source, payload={"text": text}),
+        Request(verb=Verb.ENQUEUE, source_id=source, payload=payload),
         socket=socket,
         timeout=timeout,
     )
