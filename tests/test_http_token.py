@@ -1,5 +1,6 @@
 """Tests for the bearer token the HTTP transport requires."""
 
+import os
 import stat
 from pathlib import Path
 
@@ -31,6 +32,31 @@ def test_an_empty_token_file_is_replaced(tmp_path: Path) -> None:
     path = tmp_path / "http-token"
     path.write_text("\n")
     assert len(http_token.ensure(path)) >= 40
+
+
+def test_a_concurrent_creator_wins_the_race(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Two callers of `ensure()` (a daemon starting and a concurrent `speakctl
+    http-token`) can both see no token file and both try to create one. The
+    one that loses the race to create it must end up holding the winner's
+    token, not overwrite it with its own."""
+    path = tmp_path / "http-token"
+    real_read = http_token.read
+    seen: list[int] = []
+
+    def racy_read(p: Path | None = None) -> str | None:
+        seen.append(1)
+        if len(seen) == 1:
+            # A concurrent process creates the real file between this
+            # caller's read and its own attempt to create one.
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write("winner-token\n")
+            return None
+        return real_read(p)
+
+    monkeypatch.setattr(http_token, "read", racy_read)
+    assert http_token.ensure(path) == "winner-token"
+    assert mode(path) == 0o600
 
 
 def test_the_default_path_follows_xdg_config_home(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
