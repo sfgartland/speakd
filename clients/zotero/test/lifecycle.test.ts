@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Channel } from "../src/channel";
-import { dismantle } from "../src/lifecycle";
+import { dismantle, hushOnQuit } from "../src/lifecycle";
 import { Link, type LinkClient } from "../src/link";
 import type { AbortSignalLike, CallResult } from "../src/speakd";
 
@@ -71,5 +71,51 @@ describe("dismantle", () => {
     };
     await dismantle({ ...parts, takeover: { uninstall: () => new Promise<void>(() => {}) } }, 20);
     expect(closed).toBe(true);
+  });
+});
+
+describe("hushOnQuit", () => {
+  it("sends a hush for every reader whose channel may hold something, without waiting on any", () => {
+    const sent: string[] = [];
+    const call = (verb: string, sourceId: string) => {
+      sent.push(`${verb} ${sourceId}`);
+      return new Promise<never>(() => {});
+    };
+    hushOnQuit(
+      [
+        { sourceId: "zotero:A", holding: true },
+        { sourceId: "zotero:B", holding: false },
+        { sourceId: "zotero:C", holding: true },
+      ],
+      call,
+    );
+    expect(sent).toEqual(["hush zotero:A", "hush zotero:C"]);
+  });
+
+  it("goes on to the next reader when a hush throws", () => {
+    const sent: string[] = [];
+    hushOnQuit(
+      [
+        { sourceId: "zotero:A", holding: true },
+        { sourceId: "zotero:B", holding: true },
+      ],
+      (verb, sourceId) => {
+        sent.push(sourceId);
+        if (sourceId === "zotero:A") throw new Error("the link is gone");
+        return Promise.resolve();
+      },
+    );
+    expect(sent).toEqual(["zotero:A", "zotero:B"]);
+  });
+});
+
+describe("Channel.holding", () => {
+  it("is true from a start until the read ends or is hushed", async () => {
+    const { channel } = setup();
+    expect(channel.holding).toBe(false);
+    await channel.start([{ text: "Zero is first." }], 0);
+    expect(channel.holding).toBe(true);
+    await channel.stop();
+    expect(channel.holding).toBe(false);
   });
 });

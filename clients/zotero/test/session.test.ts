@@ -11,6 +11,7 @@ const OK: CallResult = { kind: "ok", data: {} };
 class FakeChannel implements ChannelLike {
   log: string[] = [];
   reading = false;
+  holding = false;
   speaking = false;
   paused = false;
   lastIndex: number | null = null;
@@ -97,8 +98,9 @@ function setup() {
   const elapse = () => {
     for (const timer of timers.splice(0)) timer.task();
   };
-  const hooks: SessionHooks & { log: string[] } = {
+  const hooks: SessionHooks & { log: string[]; settles: string[] } = {
     log: [],
+    settles: [],
     defer: (task) => tasks.push(task),
     later: (task, ms) => {
       const timer = { task, ms };
@@ -107,6 +109,7 @@ function setup() {
     },
     takeover: (active) => hooks.log.push(active ? "takeover on" : "takeover off"),
     mirrorPause: (paused) => hooks.log.push(paused ? "mirror pause" : "mirror play"),
+    settled: () => hooks.settles.push("settled"),
   };
   const session = new ReaderSession(channel, hooks);
   const emitted: string[] = [];
@@ -458,5 +461,26 @@ describe("ReaderSession", () => {
     session.giveUp({ kind: "zotero", error: "no voice" });
     expect(session.wanted).toBe(true);
     expect(hooks.log).toEqual(["takeover on"]);
+  });
+
+  it("says a controller of its own is settled only once Zotero's synchronous work is done", () => {
+    const { hooks, session, tick, create } = setup();
+    session.want({ kind: "here" });
+    create(0);
+    // Zotero's selectVoice persists the voice after building the controller,
+    // in the same synchronous run: too soon to put the pref back.
+    expect(hooks.settles).toEqual([]);
+    tick();
+    expect(hooks.settles).toEqual(["settled"]);
+  });
+
+  it("says nothing is settled for a controller replaced in the same tick, only for its successor", () => {
+    const { hooks, session, tick, create } = setup();
+    session.want({ kind: "here" });
+    const first = create(0);
+    first.destroy();
+    create(3);
+    tick();
+    expect(hooks.settles).toEqual(["settled"]);
   });
 });

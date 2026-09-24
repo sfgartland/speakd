@@ -133,6 +133,15 @@ export class Channel {
     return this._speakingChannel === this.sourceId;
   }
 
+  /**
+   * Whether the daemon may hold something of this channel's: a read under
+   * way, or sections queued and not yet hushed. What a quitting Zotero
+   * hushes.
+   */
+  get holding(): boolean {
+    return this.live || this.read !== null;
+  }
+
   /** Whether the daemon's playback is paused. Global, like pause itself. */
   get paused(): boolean {
     return this._paused;

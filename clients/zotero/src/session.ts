@@ -35,6 +35,8 @@ export interface ChannelLike {
   /** Resolves once everything asked of the channel so far has been sent and answered. */
   idle(): Promise<void>;
   readonly reading: boolean;
+  /** Whether the daemon may hold something of this channel's. */
+  readonly holding: boolean;
   readonly speaking: boolean;
   readonly paused: boolean;
   readonly lastIndex: number | null;
@@ -78,6 +80,12 @@ export interface SessionHooks {
   takeover(active: boolean): void;
   /** Bring Zotero's paused state in line with the daemon's. */
   mirrorPause(paused: boolean): void;
+  /**
+   * A controller of speakd's is built, and Zotero's synchronous work around
+   * it done -- selecting the voice persists it after building the
+   * controller. What was changed to get there can be put back.
+   */
+  settled(): void;
 }
 
 /** Where a controller's events go: the content-side object Zotero listens to. */
@@ -385,6 +393,9 @@ export class ReaderSession {
     if (this.closed) core.destroyed = true;
     if (rebuild) core.takeOver(previous);
     else this.hooks.defer(() => core.built());
+    this.hooks.defer(() => {
+      if (this.current === core) this.hooks.settled();
+    });
     this.changed();
     return core;
   }

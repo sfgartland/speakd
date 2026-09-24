@@ -23,7 +23,14 @@ function onMainWindowUnload({ window }) {
 
 function shutdown(data, reason) {
   // On application shutdown nothing needs undoing: the process is ending.
+  // But speakd is not: a reader mid-read is hushed, best effort, and not
+  // waited for.
   if (reason === APP_SHUTDOWN) {
+    try {
+      scope?.SpeakdReader.quit?.();
+    } catch {
+      // Zotero is quitting regardless.
+    }
     return;
   }
   const current = scope;

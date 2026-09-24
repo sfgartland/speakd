@@ -11,6 +11,33 @@ export interface RunningParts {
   link: { close(): void };
 }
 
+/** A reader, as a quitting Zotero sees it. */
+export interface Holder {
+  readonly sourceId: string;
+  /** Whether the daemon may hold something of its channel's. */
+  readonly holding: boolean;
+}
+
+/**
+ * Zotero is quitting: there is no time to take anything apart, and no
+ * waiting on answers, but speakd must not go on reading a closed Zotero's
+ * PDF. A hush for each reader that may have something queued, sent and not
+ * awaited; best effort, since the process may end before it is out.
+ */
+export function hushOnQuit(
+  readers: Iterable<Holder>,
+  call: (verb: string, sourceId: string, payload: Record<string, unknown>) => Promise<unknown>,
+): void {
+  for (const reader of readers) {
+    if (!reader.holding) continue;
+    try {
+      call("hush", reader.sourceId, {}).catch(() => {});
+    } catch {
+      // The next reader's hush is still worth sending.
+    }
+  }
+}
+
 /** How long a shutdown waits for the readers' hushes before closing the link anyway. */
 export const SETTLE_MS = 2000;
 

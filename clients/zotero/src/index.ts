@@ -3,7 +3,7 @@
 // disabling it leaves Zotero as it found it.
 
 import { Controls } from "./controls";
-import { dismantle } from "./lifecycle";
+import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
 import { observeConfig, readConfig } from "./prefs";
 import { Takeover } from "./reader-takeover";
@@ -24,6 +24,7 @@ interface Running {
   takeover: Takeover;
   controls: Controls;
   unobserve: () => void;
+  quitting: boolean;
 }
 
 let running: Running | null = null;
@@ -70,13 +71,21 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
     makeAbort,
   });
   link.configure(readConfig());
-  const unobserve = observeConfig(() => link.configure(readConfig()));
+  const unobserveConfig = observeConfig(() => link.configure(readConfig()));
+  // A quit is heard here, while the network is still up: by the time
+  // bootstrap.js hears APP_SHUTDOWN, it has been torn down.
+  const quitObserver = { observe: () => quit() };
+  Services.obs.addObserver(quitObserver, "quit-application-granted");
+  const unobserve = () => {
+    unobserveConfig();
+    Services.obs.removeObserver(quitObserver, "quit-application-granted");
+  };
 
   const takeover = new Takeover({ link, log, warn });
   takeover.install();
   const controls = new Controls({ pluginID: data.id, takeover, link, warn });
   controls.register();
-  running = { link, takeover, controls, unobserve };
+  running = { link, takeover, controls, unobserve, quitting: false };
 
   try {
     await Zotero.PreferencePanes.register({
@@ -97,6 +106,31 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
     handles: () => takeover.handles(),
   };
   log(`loaded (${data.version})`);
+}
+
+/**
+ * Zotero is quitting ("quit-application-granted", and bootstrap.js's
+ * APP_SHUTDOWN after it): nothing is taken apart, but no reader's read
+ * should outlive Zotero, nor its voice pref stay speakd's. Once;
+ * synchronous, and never throws.
+ */
+export function quit(): void {
+  const current = running;
+  if (current === null || current.quitting) return;
+  current.quitting = true;
+  try {
+    current.takeover.quit();
+    hushOnQuit(
+      current.takeover.handles().map((handle) => ({
+        sourceId: handle.sourceId,
+        holding: handle.session?.channel.holding ?? false,
+      })),
+      (verb, sourceId, payload) => current.link.call(verb, sourceId, payload),
+    );
+    log("quitting: hushed what was reading");
+  } catch (error) {
+    warn("quitting failed", error);
+  }
 }
 
 export async function shutdown(_data: StartupData, _reason: number): Promise<void> {

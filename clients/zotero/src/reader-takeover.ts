@@ -281,6 +281,9 @@ class Adopted implements ReaderHandle {
           return () => clearTimeout(timer);
         },
         takeover: (active) => this.guard("the takeover", () => this.setTakeover(active)),
+        // The voice is in the manager now (`_voice`); the pref need not say
+        // speakd a moment longer, lest Zotero quit mid-read and keep it.
+        settled: () => this.guard("restoring the voice pref", () => this.voicePref.restore()),
         mirrorPause: (paused) =>
           this.guard("mirroring the pause", () => {
             if (m.active && m.paused !== paused) ir.toggleReadAloudPaused(paused);
@@ -647,6 +650,11 @@ class Adopted implements ReaderHandle {
     this.changeListeners.clear();
   }
 
+  /** Zotero is quitting: put the user's voice pref back, if it is still changed. */
+  quit(): void {
+    this.guard("quitting", () => this.voicePref.restore());
+  }
+
   /**
    * The plugin is shutting down: stop its read, undo every hook, and let go.
    * Resolves once the stop's hush has been sent: the link must outlive it.
@@ -776,6 +784,11 @@ export class Takeover {
     }
     this.adopted.clear();
     return Promise.all(settled).then(() => {});
+  }
+
+  /** Zotero is quitting: every reader's voice pref put back, synchronously. */
+  quit(): void {
+    for (const record of this.adopted.values()) record.quit();
   }
 
   /** The handle for a reader, whichever side of Zotero's Proxy it is (X:76-98). */
