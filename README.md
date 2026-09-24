@@ -146,12 +146,54 @@ Global mute and per-channel mute are separate flags, not one setting written twi
 a channel stays silent under a global mute whatever its own flag says, and clearing
 the global one gives each channel back what it had.
 
-**Claude Code sessions start muted.** With several sessions open, hearing all
-of them is noise, so each one is silent until you choose it: unmute it in the
-window's channel list, or with `speakctl unmute --source claude-code:<session>`.
-While muted, its text is dropped rather than held, as with any mute. Everything
-else — pasted text, notifications — starts audible. A daemon restart mutes every
-session again.
+**Briefings.** An agent can tell you what matters instead of having every
+response read out: that it finished and what came of it, that it is stuck, or
+that it has a question. It decides when, through an MCP server speakd ships,
+`speakd-mcp`, whose `brief` tool it calls like any other. There is no
+summariser in speakd — the agent doing the work is the one that knows what is
+worth saying.
+
+Each session is in one of two modes, beside mute:
+
+| mode | spoken |
+|---|---|
+| **brief** | what the agent chooses to tell you, and alerts it cannot give itself |
+| **full** | every response, in full, as the follower reads it |
+
+The alerts are Claude Code's own "needs your permission" notices, and a plain
+"‹session›: finished" when a turn ends without the agent having briefed —
+the hooks send those, since an agent waiting at a prompt cannot. Briefings and
+alerts are spoken with the session's name in front, because with several
+sessions running you need to know who is talking.
+
+**New Claude Code sessions start brief and muted.** Unmute the ones you want
+to hear; switch one to full when you are following it closely:
+
+```bash
+uv run speakctl mode full --source claude-code:<session>   # every response
+uv run speakctl mode brief --source claude-code:<session>  # briefings only
+```
+
+Only a session with something that can brief for it has a mode; everything
+else — pasted text, notifications, a bare `speakctl enqueue` — is always read in
+full. A daemon restart puts every session back to brief and muted.
+
+**What agents are told to brief about** is a standing guide every agent is
+handed when it connects: the built-in default, or yours, in
+`~/.config/speakd/briefing.md`. Anything you tell an agent in its own
+conversation ("only tell me when the migration is done") takes precedence.
+The agent can also read and change its session's mode, so "read everything to
+me" said to it works too.
+
+The Claude Code plugin ships the MCP server (`clients/claude-code/.mcp.json`).
+For other agents, register it once:
+
+```bash
+codex mcp add speakd -- /path/to/speakd/.venv/bin/speakd-mcp
+```
+
+— or the equivalent `mcpServers` entry for OpenCode. Such an agent's channel is
+named after it and its working directory.
 
 The event stream is the same one the GUI reads:
 
@@ -213,6 +255,12 @@ the window's button moves, without a reload. Behind a disclosure — closed by
 default, because the window's whole argument is that it is small — are the open
 channels, each with a mute of its own and each named by its label rather than its
 session id, and a box that speaks text you paste into it (Ctrl+Enter, 8 KiB cap).
+
+The channel list is ranked by relevance: starred channels first, then the ones
+you can hear, then muted ones, each by how recently it last tried to speak (a
+muted session that just finished still rises). Muted channels you have not
+starred fold behind one line. Each row shows how long ago the channel spoke,
+and a channel that can brief has a **brief / full** switch beside skip and mute.
 
 Pasted text is an ordinary channel called `gui`: it appears in the list, it can be
 muted on its own, and `hush` reaches it like anything else. The window can do that
