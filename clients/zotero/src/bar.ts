@@ -96,13 +96,15 @@ export function describeBar(input: BarInput): BarView {
   // A verb's failure says so as soon as it happens; once the stream is
   // connected, it is the daemon taking today's token, and the failure is
   // history -- something to try again, not a state to be stuck in.
+  // The stream's own word comes first: it is the newest.
   const connected = input.stream === "connected";
-  if (input.stream === "bad-token" || (!connected && input.problem?.kind === "bad-token")) {
-    return silent("bad-token", "speakd: wrong token — paste the output of speakctl http-token into Settings → speakd reader");
-  }
-  if (input.stream === "no-daemon" || (!connected && input.problem?.kind === "no-daemon")) {
-    return silent("no-daemon", "speakd is not running");
-  }
+  const badToken = () =>
+    silent("bad-token", "speakd: wrong token — paste the output of speakctl http-token into Settings → speakd reader");
+  const noDaemon = () => silent("no-daemon", "speakd is not running");
+  if (input.stream === "bad-token") return badToken();
+  if (input.stream === "no-daemon") return noDaemon();
+  if (!connected && input.problem?.kind === "bad-token") return badToken();
+  if (!connected && input.problem?.kind === "no-daemon") return noDaemon();
   if (input.stream === "connecting") return silent("connecting", "speakd: connecting…");
 
   const speed = input.speed;

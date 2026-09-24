@@ -73,6 +73,11 @@ describe("describeBar", () => {
     expect(fromVerb.play.enabled).toBe(false);
   });
 
+  it("believes the stream over an older failure", () => {
+    expect(describeBar(input({ stream: "no-daemon", problem: { kind: "bad-token", error: "401" } })).kind).toBe("no-daemon");
+    expect(describeBar(input({ stream: "bad-token", problem: { kind: "no-daemon", error: "gone" } })).kind).toBe("bad-token");
+  });
+
   it("lets a read that failed on an old token or a lost daemon be tried again once connected", () => {
     // A connected stream is the daemon, taking the token now in the preferences.
     for (const kind of ["bad-token", "no-daemon"] as const) {
