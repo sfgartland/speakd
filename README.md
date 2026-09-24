@@ -315,6 +315,51 @@ scope itself: a request may read its own owner's settings and `speech`'s, and
 may set only its own owner's keys — `set_setting` on `speech.*` over HTTP is
 always refused, whatever the client asks for.
 
+## Languages
+
+Each utterance is spoken in its own language, with that language's voice.
+Nine codes: `en en-gb es fr hi it pt-br ja zh` (`en` is American English; `pt`
+normalises to `pt-br`). Which one wins, first match:
+
+1. `enqueue`'s own `lang` in the payload.
+2. The channel's pinned language — `speakctl lang <code>`, or `auto` to clear
+   it.
+3. Detection, when `speech.detect_language` is on (the default) and the
+   detector is available and there are at least 20 letters to look at.
+4. `speech.default_language`, default `en`.
+
+```bash
+uv run speakctl lang fr --source claude-code:abc   # pin a channel to French
+uv run speakctl lang auto --source claude-code:abc # clear it; back to detection/default
+uv run speakctl enqueue "Bonjour." --source claude-code:abc  # a one-off lang goes on enqueue's payload
+```
+
+`speech.voices` (a `voice_map`) says which voice speaks each language, with a
+Kokoro voice for every code out of the box. A profile's own voice is kept
+when it already belongs to the resolved language — Kokoro voices are
+prefixed by language (`af_heart` is `en`, `ff_siwis` is `fr`, and so on) — so
+picking a voice on purpose is never second-guessed; otherwise the map's voice
+is used.
+
+```bash
+uv run speakctl set speech.voices "fr=ff_siwis,it=if_sara"
+```
+
+A language nothing can speak is handled by `speech.unsupported_language`:
+`default` (the default) speaks it with `speech.default_language`'s voice
+instead and announces `language {requested, used, reason: "unsupported"}`
+once; `decline` speaks nothing and answers `declined {reason: "no voice for
+<code>"}`. `ja` and `zh` need their own misaki extras (`pyopenjtalk`,
+`ordered_set`) beyond the `kokoro` extra to actually work, and count as
+unsupported without them.
+
+Detection is `lingua-language-detector`, in the `speakd[lang]` extra
+(`uv sync --extra kokoro --extra lang`), imported only on first real use.
+Without the extra, detection is off and speakd says so once, on startup.
+It is built for the nine languages above plus German, Dutch, Swedish,
+Norwegian, Danish and Polish, so a common near-neighbour is recognised as
+itself rather than guessed as English.
+
 ## Measured
 
 On an i7-10510U with Kokoro on CPU (RTF 0.75). **Read the provenance** — some of
