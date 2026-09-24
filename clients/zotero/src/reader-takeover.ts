@@ -519,6 +519,11 @@ class Adopted implements ReaderHandle {
       // Zotero's own voice is reading: end that first, so speakd's read
       // starts from a controller of its own rather than Zotero's `play`.
       if (m.active && !session.live) ir.toggleReadAloudPopup(false);
+      // Pause is global and survives a hush: a read stopped while paused
+      // leaves speakd paused, and a reconnected link cannot know it is (the
+      // daemon's status does not say). Asking for a read is asking to hear
+      // it, and a resume with nothing paused changes nothing.
+      void this.takeover.options.link.call("resume", this.sourceId, {});
       session.want(intent);
       ir.startReadAloudAtPosition(position ?? null);
     });
