@@ -68,6 +68,13 @@ _PING_SECONDS = 15.0
 # stopped reading; the thread is given back rather than parked on it.
 _WRITE_TIMEOUT = 30.0
 
+# `BaseHTTPRequestHandler.timeout` is None by default, so a client that opens
+# a connection and never finishes sending its request line or headers holds a
+# server thread forever. Ten seconds is long enough for any real client on
+# loopback and short enough that a stalled one is freed promptly. A module
+# constant rather than a literal on the class, so a test can shrink it.
+_READ_TIMEOUT = 10.0
+
 
 class _Dropped(Exception):
     """Raised into the bus by a stream that has fallen too far behind."""
@@ -110,6 +117,7 @@ class HttpServer:
         class RequestHandler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
             server_version = "speakd"
+            timeout = _READ_TIMEOUT
 
             def log_message(self, format: str, *args: object) -> None:  # noqa: A002
                 # Every request would otherwise be a line in the journal.

@@ -248,6 +248,34 @@ def test_a_body_nested_too_deep_to_parse_is_a_400(server) -> None:  # type: igno
     assert call(http, "POST", "/v1/status", {})[0] == 200
 
 
+def test_a_client_that_sends_headers_slowly_is_eventually_dropped(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """No `Content-Length`, so nothing blocks the server thread -- except the
+    read timeout: a client that trickles a request line and never finishes it
+    would otherwise hold a server thread forever."""
+    import speakd.transport_http as transport_http
+
+    monkeypatch.setattr(transport_http, "_READ_TIMEOUT", 0.5)
+    daemon = Daemon(
+        FakeEngine(),
+        StreamingPlayer(FakeSink()),
+        lambda n: ProfileView(
+            voice="v", speed=1.0, interrupt_on=(), prepare=lambda p: (list(p), [])
+        ),
+        bus=EventBus(),
+        channels=ChannelTable(),
+    )
+    daemon.start()
+    http = HttpServer(0, daemon.handle, daemon.bus, TOKEN)
+    http.start()
+    try:
+        with socket.create_connection(("127.0.0.1", http.port), timeout=15) as raw:
+            raw.sendall(b"GET /v1/hea")  # never finishes the request line
+            assert raw.recv(64) == b"", "the server must close a stalled connection"
+    finally:
+        http.stop()
+        daemon.stop()
+
+
 def test_a_handler_that_raises_is_answered_not_dropped() -> None:
     """The socket transport answers a failing handler; so must this one."""
     from speakd.protocol import Response
