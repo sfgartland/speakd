@@ -1,0 +1,26 @@
+{
+  "name": "speakd-reader",
+  "version": "0.1.0",
+  "description": "Read PDFs aloud in Zotero 10 through speakd, with Zotero's own sentence highlight",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sfgartland/speakd.git"
+  },
+  "config": {
+    "prefsPrefix": "extensions.speakd-reader"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && zotero-plugin build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1",
+    "zotero-plugin-scaffold": "^0.9.2",
+    "zotero-types": "^4.1.3"
+  }
+}

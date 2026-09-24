@@ -1,0 +1,5 @@
+node_modules/
+# The scaffold's build output: the unpacked addon, the .xpi and update.json.
+.scaffold/
+# Read by the scaffold for its own settings; never committed.
+.env

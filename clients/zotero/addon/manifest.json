@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "speakd reader",
+  "description": "Read PDFs aloud through speakd, with Zotero's own sentence highlight.",
+  "author": "Severin Gartland",
+  "homepage_url": "https://github.com/sfgartland/speakd",
+  "applications": {
+    "zotero": {
+      "id": "speakd-reader@speakd",
+      "update_url": "https://raw.githubusercontent.com/sfgartland/speakd/main/clients/zotero/update.json",
+      "strict_min_version": "10.0",
+      "strict_max_version": "10.0.*"
+    }
+  }
+}
