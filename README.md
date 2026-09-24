@@ -277,6 +277,44 @@ python3 -m http.server 8765 --directory clients/gui   # or a plain tab, on a sim
 The second needs no daemon and no Rust: opened at `/pinned.html` in a browser, the
 page drives itself from a fixture, which is how the frontend is developed.
 
+## Settings
+
+Typed settings — bool, int, float, string, choice, voice, and voice_map (a
+table from language code to voice) — declared by core, by in-process plugins,
+and by clients, and stored in one file: `$XDG_CONFIG_HOME/speakd/settings.toml`.
+A key is always `<owner>.<name>`; core's owners are `speech`, `http` and
+`render`, and a client's is its source id up to the first `:` — `zotero:K`
+declares and sets under `zotero`. A declaration a client sent while offline is
+remembered, in `settings-schema.json` beside the values, so its settings still
+show up before it next connects. A value that fails to validate — hand-edited,
+or left behind by a declaration that changed type — falls back to the
+default, with a warning on stderr, rather than being served broken.
+
+```bash
+uv run speakctl settings              # every owner, as a table: key, value, default, type
+uv run speakctl settings speech       # one owner only
+uv run speakctl set speech.detect_language false
+uv run speakctl set http.port 8642    # some settings only take effect after a restart
+```
+
+`set` parses the value by the setting's declared type: a bool takes
+`true`/`false`, `on`/`off` or `1`/`0`; a `voice_map` takes `fr=ff_siwis,it=if_sara`.
+
+The window's gear opens a Settings panel in place of the text region, grouped
+by owner — core owners first, then everyone else alphabetically — with one
+control per type: a switch for bool, a bounded number field for int and
+float, an input (or a textarea, multiline) for string, a dropdown for choice,
+a voice map's own table of language and voice rows with add and remove. A
+value commits as soon as you leave the field; a refusal is shown under the
+control and the field reverts to what the daemon actually holds, so it never
+claims a setting that did not take. A setting flagged `restart` says so,
+in place, rather than pretending the change is already live.
+
+Zotero's loopback HTTP is scoped the same way the socket trusts a client to
+scope itself: a request may read its own owner's settings and `speech`'s, and
+may set only its own owner's keys — `set_setting` on `speech.*` over HTTP is
+always refused, whatever the client asks for.
+
 ## Measured
 
 On an i7-10510U with Kokoro on CPU (RTF 0.75). **Read the provenance** — some of

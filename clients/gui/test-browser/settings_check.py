@@ -65,6 +65,7 @@ def run(port: int) -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome")
         page = browser.new_page()
+
         def on_console(msg) -> None:
             # The plain `http.server` has no favicon.ico, so Chrome's own
             # auto-request for one 404s on every run; that is the static
@@ -119,11 +120,9 @@ def run(port: int) -> int:
         checks.check(
             page.query_selector("input.switch") is not None, "bool renders as a switch input"
         )
+        checks.check(page.query_selector("table.vmap") is not None, "voice_map renders as a table")
         checks.check(
-            page.query_selector("table.vmap") is not None, "voice_map renders as a table"
-        )
-        checks.check(
-            page.query_selector('.set-restart') is not None,
+            page.query_selector(".set-restart") is not None,
             "the restart-flagged setting shows its note",
         )
 
@@ -172,8 +171,7 @@ def run(port: int) -> int:
 
         # ---- a `setting` event updates an unfocused control ----
         page.evaluate(
-            "document.activeElement && document.activeElement.blur"
-            " && document.activeElement.blur()"
+            "document.activeElement && document.activeElement.blur && document.activeElement.blur()"
         )
         page.evaluate(
             "() => window.__speakdSource.send('set_setting',"
