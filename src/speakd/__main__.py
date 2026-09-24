@@ -24,6 +24,7 @@ from speakd.profiles import Profile, load_profiles, resolve_chain
 from speakd.supervise import Supervisor
 from speakd.transforms.chain import apply_chain
 from speakd.transport import SocketServer
+from speakd.transport_http import HttpServer
 
 
 def _view_of(profile: Profile, host: PluginHost) -> ProfileView:
@@ -193,6 +194,46 @@ def _start_children() -> list[Supervisor]:
     return started
 
 
+# The HTTP transport's default port. `SPEAKD_HTTP_PORT=0` turns it off.
+DEFAULT_HTTP_PORT = 8642
+
+
+def http_port() -> int | None:
+    """The port to serve HTTP on, or None when it is off or misconfigured."""
+    raw = os.environ.get("SPEAKD_HTTP_PORT")
+    if raw is None:
+        return DEFAULT_HTTP_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        sys.stderr.write(f"speakd: SPEAKD_HTTP_PORT={raw!r} is not a port; HTTP is off\n")
+        return None
+    if not 0 < port < 65536:
+        return None
+    return port
+
+
+def start_http(daemon: Daemon) -> HttpServer | None:
+    """Serve the daemon over loopback HTTP too, or say why not and carry on.
+
+    Never fatal: the socket is how everything else reaches the daemon, and a
+    port some other program holds must not cost the user their agents' voice.
+    """
+    port = http_port()
+    if port is None:
+        return None
+    from speakd import http_token
+
+    try:
+        token = http_token.ensure()
+        server = HttpServer(port, daemon.handle, daemon.bus, token)
+    except OSError as exc:
+        sys.stderr.write(f"speakd: no HTTP transport on 127.0.0.1:{port}: {exc}\n")
+        return None
+    server.start()
+    return server
+
+
 def serve(daemon: Daemon, socket_path: Path) -> int:
     """Serve `daemon` on `socket_path` until a signal says to stop."""
     stop = threading.Event()
@@ -232,6 +273,7 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
         return 1
 
     server.start()
+    http = start_http(daemon)
     children = _start_children()
 
     stop.wait()
@@ -246,6 +288,8 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
     # anything could unwedge it.
     daemon.silence()
     server.stop()
+    if http is not None:
+        http.stop()
     # Last, and never above `daemon.stop()`: `close()` is terminal by contract
     # -- the sink refuses every later write and start -- so the speech worker
     # has to be gone before it runs. And asked, not assumed: `stop()` joins

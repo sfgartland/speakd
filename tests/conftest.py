@@ -32,6 +32,9 @@ def _isolated_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # And configuration, now that the daemon writes some: the HTTP transport's
     # token. A test must never mint one in the developer's own ~/.config.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    # Daemons started by the suite serve no HTTP unless a test asks: one bound
+    # to the real port would collide with the developer's running daemon.
+    monkeypatch.setenv("SPEAKD_HTTP_PORT", "0")
     # `tests/test_cli_verbs.py` starts real `python -m speakd` subprocesses,
     # which inherit this. Without it every such test spawns a follower that
     # outlives its daemon's socket and tails the developer's own transcripts.
