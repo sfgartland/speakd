@@ -128,6 +128,25 @@ describe("Channel", () => {
     expect(channel.speaking).toBe(false);
   });
 
+  it("says when a read comes to its end, and only then", async () => {
+    const { daemon, channel } = setup();
+    const ends: number[] = [];
+    channel.onEnd(() => ends.push(channel.generation));
+    await channel.start(SEGMENTS, 5);
+    daemon.started(daemon.enqueued()[0]!);
+    daemon.position(0);
+    expect(ends).toEqual([]);
+    daemon.finished();
+    expect(ends).toEqual([channel.generation]);
+
+    // A stop is not an end: nobody reached the last sentence.
+    await channel.start(SEGMENTS, 5);
+    daemon.started(daemon.enqueued()[1]!);
+    await channel.stop();
+    daemon.finished(true);
+    expect(ends).toHaveLength(1);
+  });
+
   it("maps positions for a read started partway through the document", async () => {
     const { daemon, channel, highlights } = setup();
     await channel.start(SEGMENTS, 5);

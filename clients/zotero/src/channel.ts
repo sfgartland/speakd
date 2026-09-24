@@ -102,6 +102,7 @@ export class Channel {
 
   private readonly highlightListeners = new Set<(index: number | null) => void>();
   private readonly problemListeners = new Set<(problem: Problem) => void>();
+  private readonly endListeners = new Set<() => void>();
 
   constructor(options: ChannelOptions) {
     this.client = options.client;
@@ -152,6 +153,16 @@ export class Channel {
   onProblem(listener: (problem: Problem) => void): () => void {
     this.problemListeners.add(listener);
     return () => this.problemListeners.delete(listener);
+  }
+
+  /**
+   * Hear a read come to its end: the last sentence of its last section
+   * spoken. A stop, a jump or a failure is not an end. Returns an
+   * unsubscribe.
+   */
+  onEnd(listener: () => void): () => void {
+    this.endListeners.add(listener);
+    return () => this.endListeners.delete(listener);
   }
 
   /** Resolves once everything asked of the channel so far has been sent and answered. */
@@ -277,6 +288,7 @@ export class Channel {
       this.read = null;
       this.live = false;
       this.highlight(null);
+      for (const listener of this.endListeners) listener();
     } else if (data.cancelled === true && !seekEnded) {
       // Cut short by something other than this reader -- a hush or cancel
       // from speakctl or the window. The next section may still come, and
