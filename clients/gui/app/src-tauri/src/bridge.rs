@@ -111,10 +111,6 @@ const FORWARDED: &[&str] = &[
 /// this box, and nothing else would look wrong.
 const SAY_SOURCE: &str = "gui";
 
-/// Past this the box refuses. The segmenter will accept a novel; the person
-/// who pasted one did not mean to hear it.
-const SAY_MAX_BYTES: usize = 8192;
-
 /// Matches `speakd.transport._REQUEST_TIMEOUT_SECONDS`. Applied only around
 /// a request's reply and around the subscribe ack — never to the event
 /// stream, where an idle stream is not a stuck one.
@@ -352,11 +348,8 @@ pub async fn speakd_say(text: String) -> Result<Value, String> {
     if trimmed.is_empty() {
         return Err("nothing to say".into());
     }
-    // Bytes rather than characters, matching the cap the frontend enforces so
-    // that the two agree about a paste full of em dashes.
-    if trimmed.len() > SAY_MAX_BYTES {
-        return Err(format!("that is longer than {SAY_MAX_BYTES} bytes"));
-    }
+    // No length cap: a long paste -- a whole article -- is what the box is
+    // for, and the daemon segments and streams it like any other utterance.
     let payload = json!({ "text": trimmed, "kind": "response" });
     tauri::async_runtime::spawn_blocking(move || request_on("enqueue", SAY_SOURCE, payload))
         .await

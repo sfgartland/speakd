@@ -172,17 +172,13 @@
  */
 
 /**
- * The channel pasted text speaks on, and the cap past which the box refuses.
+ * The channel pasted text speaks on.
  *
- * Both mirror `SAY_SOURCE` and `SAY_MAX_BYTES` in
- * clients/gui/app/src-tauri/src/bridge.rs, which is where they are enforced —
- * the shell fixes the channel and would refuse an over-long paste even if
- * this file did not. They are repeated here so the window can say so
- * immediately instead of a round trip away, and so a plain browser tab
- * behaves the same as the shell.
+ * Mirrors `SAY_SOURCE` in clients/gui/app/src-tauri/src/bridge.rs, which is
+ * where it is enforced — the shell fixes the channel whatever this file says.
+ * Repeated here so a plain browser tab behaves the same as the shell.
  */
 export const SAY_SOURCE = "gui";
-export const SAY_MAX_BYTES = 8192;
 
 /** The channel `SimulatedSource`'s fixture text speaks on. */
 const FIXTURE_SOURCE = "sim:phd-articulation";
@@ -453,11 +449,6 @@ export class SimulatedSource {
   say(text) {
     const trimmed = String(text ?? "").trim();
     if (!trimmed) return Promise.resolve({ ok: false, error: "nothing to say" });
-    // Bytes, matching the shell command's own cap so the two agree about a
-    // paste full of em dashes.
-    if (new TextEncoder().encode(trimmed).length > SAY_MAX_BYTES) {
-      return Promise.resolve({ ok: false, error: `that is longer than ${SAY_MAX_BYTES} bytes` });
-    }
     // The pasted speech is an ordinary channel, which is the whole point of
     // the fixed source: it can be muted on its own and it shows in the list.
     if (!this._channels.some((c) => c.source_id === SAY_SOURCE)) {
@@ -1106,9 +1097,6 @@ export class ShellSource {
   async say(text) {
     const trimmed = String(text ?? "").trim();
     if (!trimmed) return { ok: false, error: "nothing to say" };
-    if (new TextEncoder().encode(trimmed).length > SAY_MAX_BYTES) {
-      return { ok: false, error: `that is longer than ${SAY_MAX_BYTES} bytes` };
-    }
     return this._invoke("speakd_say", { text: trimmed }, "speakd refused the text");
   }
 

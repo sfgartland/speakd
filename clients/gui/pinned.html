@@ -487,12 +487,7 @@
     padding: 5px 6px; resize: vertical; min-height: 48px;
   }
   .say textarea:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: -1px; }
-  .say-row { display: flex; align-items: center; gap: 6px; }
-  .say-count {
-    flex: 1 1 auto; font-family: "IBM Plex Mono", monospace; font-size: 9px;
-    color: var(--faint); font-variant-numeric: tabular-nums;
-  }
-  .say-count[data-over="1"] { color: var(--bad); }
+  .say-row { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
   .say button {
     font: inherit; font-size: 11px; font-weight: 500;
     background: var(--ink); color: var(--ground);
@@ -650,7 +645,6 @@
       <div class="say">
         <textarea id="say" rows="3" placeholder="Paste text to speak it — Ctrl+Enter"></textarea>
         <div class="say-row">
-          <span class="say-count" id="say-count"></span>
           <button id="speak">Speak</button>
         </div>
       </div>
@@ -677,7 +671,7 @@
   // below is a thin controller: it turns { kind, data } events into the same
   // DOM writes this script always made, and turns button clicks into
   // source.send(verb, payload) calls.
-  import { resolveSource, SAY_MAX_BYTES } from "./shared/speakd-source.js";
+  import { resolveSource } from "./shared/speakd-source.js";
   import { renderMarkdown, locate, flatText, wrapRange, unwrap, offsetAt } from "./shared/markdown.js";
 
   const el = (id) => document.getElementById(id);
@@ -1858,17 +1852,8 @@
 
   // ---- the paste box ----
 
-  /** Bytes, because that is the unit the cap is in on both sides. */
-  const sayBytes = () => new TextEncoder().encode(el("say").value.trim()).length;
-
-  function renderSayCount() {
-    const bytes = sayBytes();
-    const over = bytes > SAY_MAX_BYTES;
-    // Silent until it is worth saying: a byte counter under an empty box is
-    // noise in a window whose whole argument is that it is small.
-    el("say-count").textContent = bytes > SAY_MAX_BYTES / 2 ? `${bytes} / ${SAY_MAX_BYTES} bytes` : "";
-    el("say-count").dataset.over = over ? "1" : "";
-    el("speak").disabled = over || bytes === 0;
+  function renderSpeakButton() {
+    el("speak").disabled = el("say").value.trim() === "";
   }
 
   async function speakPasted() {
@@ -1876,7 +1861,7 @@
     const res = await source.say(el("say").value);
     if (!res.ok) { message = res.error; render(); return; }
     el("say").value = "";
-    renderSayCount();
+    renderSpeakButton();
     // Accepted and dropped is what a muted or disabled daemon does with an
     // enqueue — it never holds one — so silence after a Speak has a reason,
     // and the window says it rather than looking broken.
@@ -1885,7 +1870,7 @@
     render();
   }
 
-  el("say").addEventListener("input", renderSayCount);
+  el("say").addEventListener("input", renderSpeakButton);
   el("say").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -1929,7 +1914,7 @@
   // ShellSource's first event arrives a round trip later, unlike the
   // simulation's synchronous snapshot. Drawn once here so the window never
   // shows the markup's own placeholder values as though they were readings.
-  renderSayCount();
+  renderSpeakButton();
   renderQueue();
   render();
   // Once, and not awaited: the event stream carries changes, so a window
