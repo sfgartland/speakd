@@ -187,6 +187,25 @@ def _build_parser() -> argparse.ArgumentParser:
     set_cmd.add_argument("key", help="owner.name, e.g. speech.default_language")
     set_cmd.add_argument("value", help="parsed according to the setting's declared type")
 
+    render_cmd = sub.add_parser(
+        "render", parents=[common], help="render a text file to an audio file in the background"
+    )
+    render_cmd.add_argument("textfile", help="a text file, split into parts on form feeds (\\f)")
+    render_cmd.add_argument(
+        "--out", required=True, help="where to write the result; its extension picks the format"
+    )
+    render_cmd.add_argument("--lang", default="", help="a language code for this render")
+    render_cmd.add_argument("--profile", default="default", help="the transform profile to apply")
+    render_cmd.add_argument(
+        "--title", default=None, help="the title tag, and a single part's title"
+    )
+    render_cmd.add_argument("--artist", default=None, help="the artist tag")
+    render_cmd.add_argument("--album", default=None, help="the album tag")
+    render_cmd.add_argument("--date", default=None, help="the date tag")
+    render_cmd.add_argument(
+        "--no-wait", action="store_true", help="print the job id and return at once"
+    )
+
     notify = sub.add_parser("notify", help="the desktop notification connector")
     notify_sub = notify.add_subparsers(dest="notify_command")
     recent = notify_sub.add_parser("recent", help="what arrived, and what was decided about it")
@@ -901,6 +920,130 @@ def _set_setting(args: argparse.Namespace) -> int:
     return 0
 
 
+# `render` and `render_cancel` -----------------------------------------------
+
+# Which format a render's `--out` extension picks. Matches the formats
+# `Daemon._render_verb` accepts; kept here as the one place a bad extension
+# is told apart from a bad daemon-side format.
+_RENDER_FORMATS_BY_EXT = {".mp3": "mp3", ".opus": "opus", ".m4b": "m4b"}
+
+# How often `_wait_for_render` polls `status` for a job's progress. A render
+# is minutes long at the shortest; this is often enough that "still going"
+# reads as live progress rather than a stall, and rare enough not to spam a
+# terminal or the daemon.
+_RENDER_POLL_SECONDS = 0.5
+
+
+def _render_parts(text: str, title: str | None, stem: str) -> list[dict[str, object]]:
+    """One part per form-feed-delimited chunk of `text` (design §1: an
+    article is a single part, a book one per chapter).
+
+    A single part -- no form feed in the file -- takes `--title` if given,
+    falling back to the file's own name; several parts are titled "Part 1",
+    "Part 2", ... since nothing on the command line names each chapter.
+    """
+    chunks = text.split("\f")
+    if len(chunks) == 1:
+        return [{"title": title or stem, "text": chunks[0]}]
+    return [{"title": f"Part {i + 1}", "text": chunk} for i, chunk in enumerate(chunks)]
+
+
+def _render_metadata(args: argparse.Namespace) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    for key in ("title", "artist", "album", "date"):
+        value = getattr(args, key)
+        if value is not None:
+            metadata[key] = value
+    return metadata
+
+
+def _render(args: argparse.Namespace) -> int:
+    textfile = Path(args.textfile)
+    try:
+        text = textfile.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"speakctl: could not read {textfile}: {exc}", file=sys.stderr)
+        return _UNREACHABLE
+    out_path = Path(args.out)
+    fmt = _RENDER_FORMATS_BY_EXT.get(out_path.suffix.lower())
+    if fmt is None:
+        print(
+            f"speakctl: --out must end in .mp3, .opus or .m4b, not {out_path.suffix!r}",
+            file=sys.stderr,
+        )
+        return _UNREACHABLE
+    payload: dict[str, object] = {
+        "parts": _render_parts(text, args.title, textfile.stem),
+        "out": str(out_path.resolve()),
+        "format": fmt,
+        "lang": args.lang,
+        "profile": args.profile,
+        "metadata": _render_metadata(args),
+    }
+    response = _call(args.socket, Request(verb=Verb.RENDER, source_id=args.source, payload=payload))
+    if response is None:
+        return _UNREACHABLE
+    if not response.ok:
+        return _refused(response)
+    job_id = response.data.get("job")
+    if not isinstance(job_id, str):
+        print("speakctl: render did not answer a job id", file=sys.stderr)
+        return _REFUSED
+    if args.no_wait:
+        print(job_id)
+        return 0
+    return _wait_for_render(args, job_id)
+
+
+def _render_job_status(
+    args: argparse.Namespace, job_id: str
+) -> tuple[Response | None, dict[str, object] | None]:
+    """The `status.render.jobs` entry for `job_id`, or `(response, None)`
+    when the daemon could not be asked or does not know it any more."""
+    response = _call(args.socket, Request(verb=Verb.STATUS, source_id=args.source))
+    if response is None or not response.ok:
+        return response, None
+    render_status = response.data.get("render", {})
+    jobs = render_status.get("jobs", []) if isinstance(render_status, dict) else []
+    job = next(
+        (j for j in jobs if isinstance(j, dict) and j.get("job") == job_id),
+        None,
+    )
+    return response, job
+
+
+def _wait_for_render(args: argparse.Namespace, job_id: str) -> int:
+    """Poll `status` until `job_id` reaches a terminal state, printing every
+    change of state or progress along the way -- one JSON line each, like
+    `subscribe`, so a script watching this can tell them apart the same way.
+    """
+    last: tuple[object, object] | None = None
+    while True:
+        response, job = _render_job_status(args, job_id)
+        if response is None:
+            return _UNREACHABLE
+        if not response.ok:
+            return _refused(response)
+        if job is None:
+            print(
+                f"speakctl: render job {job_id} is no longer known to the daemon",
+                file=sys.stderr,
+            )
+            return _REFUSED
+        key = (job.get("state"), job.get("done_seconds"))
+        if key != last:
+            print(json.dumps(job), flush=True)
+            last = key
+        state = job.get("state")
+        if state == "done":
+            return 0
+        if state in ("failed", "cancelled"):
+            if state == "failed" and job.get("error"):
+                print(f"speakctl: render failed: {job['error']}", file=sys.stderr)
+            return _REFUSED
+        time.sleep(_RENDER_POLL_SECONDS)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -942,6 +1085,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _settings_table(args)
     if args.command == "set":
         return _set_setting(args)
+    if args.command == "render":
+        return _render(args)
     if args.command == "http-token":
         from speakd import http_token
 
