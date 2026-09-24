@@ -347,6 +347,19 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check . && uv run mypy src tests
 ```
 
+**Where Kokoro runs** is `SPEAKD_DEVICE`: `auto` (the default), `cpu` or `cuda`.
+`auto` uses the GPU when one starts and the CPU otherwise — which matters
+because the torch build on PyPI for Linux is a CUDA build, and an NVIDIA GPU
+older than its cuDNN supports is *visible* to torch and still fails to run the
+model. On such a machine, set it for the service so the GPU is never tried:
+
+```bash
+mkdir -p ~/.config/systemd/user/speakd.service.d
+printf '[Service]\nEnvironment=SPEAKD_DEVICE=cpu\n' \
+  > ~/.config/systemd/user/speakd.service.d/local-device.conf
+systemctl --user daemon-reload && systemctl --user restart speakd
+```
+
 On a machine whose GPU predates the CUDA wheel's minimum (an MX250 is sm_61),
 install CPU torch explicitly and then use `uv run --no-sync`, because a plain
 `uv sync` resolves `torch` back to the CUDA build:

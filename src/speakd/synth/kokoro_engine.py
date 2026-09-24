@@ -23,6 +23,8 @@ what `trim_silence` below does.
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any
 
 import numpy as np
@@ -106,14 +108,54 @@ def trim_silence(
     return audio[start:end]
 
 
+DEVICES = ("auto", "cpu", "cuda")
+
+
+def _cuda_available() -> bool:
+    import torch
+
+    return bool(torch.cuda.is_available())
+
+
 class KokoroEngine:
+    """Kokoro, on the CPU or a GPU as `SPEAKD_DEVICE` says.
+
+    `auto` (the default) uses CUDA when torch sees a GPU and the GPU actually
+    starts, and the CPU otherwise. "Sees" is not "starts": the PyPI build of
+    torch on Linux is a CUDA build, and on a laptop whose NVIDIA GPU is older
+    than that build's cuDNN supports, `torch.cuda.is_available()` is true and
+    the model still fails to initialise on it. Falling back keeps such a
+    machine speaking instead of leaving the daemon with no voice. `cpu` skips
+    the attempt -- the right local setting for a machine known to have such a
+    GPU -- and `cuda` insists, and fails loudly, for anyone measuring it.
+    """
+
     name = "kokoro"
     sample_rate = 24000
 
     def __init__(self, repo_id: str = "hexgrad/Kokoro-82M", lang_code: str = "a") -> None:
         import kokoro
 
-        self._pipeline: Any = kokoro.KPipeline(lang_code=lang_code, repo_id=repo_id)
+        setting = os.environ.get("SPEAKD_DEVICE", "auto").strip().lower() or "auto"
+        if setting not in DEVICES:
+            raise ValueError(f"SPEAKD_DEVICE={setting!r}: expected cpu, cuda or auto")
+        device = "cpu"
+        if setting == "cuda" or (setting == "auto" and _cuda_available()):
+            device = "cuda"
+        try:
+            self._pipeline: Any = kokoro.KPipeline(
+                lang_code=lang_code, repo_id=repo_id, device=device
+            )
+        except RuntimeError as exc:
+            if setting != "auto" or device != "cuda":
+                raise
+            sys.stderr.write(
+                f"speakd: the GPU would not start ({exc}); using the CPU. "
+                "Set SPEAKD_DEVICE=cpu to skip trying.\n"
+            )
+            device = "cpu"
+            self._pipeline = kokoro.KPipeline(lang_code=lang_code, repo_id=repo_id, device=device)
+        self.device = device
 
     def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
         if not text.strip():
