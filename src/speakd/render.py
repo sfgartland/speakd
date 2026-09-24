@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import struct
+import subprocess
 import threading
 import time
 import uuid
@@ -214,6 +215,127 @@ def _sentences(text: str) -> list[str]:
     return [p.spoken for p in segment([piece])]
 
 
+# --- encoding ------------------------------------------------------------
+#
+# ffmpeg turns the per-part WAVs into the job's actual output. It is always
+# run via `subprocess.run` with an argument list -- text comes from the job's
+# metadata and titles, and a shell would make that an injection vector.
+
+_STDERR_TAIL_CHARS = 4000  # enough for a human to see what failed, no more
+
+
+def ffmpeg_available() -> bool:
+    """Whether `ffmpeg` is on `PATH` -- what `status.render.available` reports."""
+    return shutil.which("ffmpeg") is not None
+
+
+class _EncodeFailed(Exception):
+    """Internal signal: encoding could not produce `out`. Carries the reason
+    (ffmpeg's stderr tail, or a message for a problem ffmpeg never saw, such
+    as it being missing) for `_render` to put in `job.error`."""
+
+
+def _concat_parts(job: RenderJob, work_dir: Path) -> tuple[Path, list[tuple[float, float, str]]]:
+    """Concatenate the parts' WAVs into one file, `chapter_gap_ms` of silence
+    between each, and return the chapters actually produced: `(start, end,
+    title)` in seconds per part, measured from each part's real WAV duration
+    and the gaps just written, never estimated.
+
+    Built by appending raw PCM rather than through ffmpeg's concat demuxer:
+    a part boundary is just a longer version of the gap `_synthesize` already
+    writes between sentences, via the same `append_pcm`, so there is no
+    second concatenation mechanism to keep in sync with the first.
+    """
+    sample_rate, _ = _wav_info(work_dir / "part-0.wav")
+    concat_path = work_dir / "concat.wav"
+    # Rebuilt from the part WAVs every time: a retry after a failed encode
+    # must not append onto a stale concat file left by the attempt before it.
+    concat_path.unlink(missing_ok=True)
+    gap_frames = int(sample_rate * job.chapter_gap_ms / 1000)
+    gap_pcm = b"\x00" * (gap_frames * 2)
+
+    chapters: list[tuple[float, float, str]] = []
+    cursor = 0.0
+    for i, part in enumerate(job.parts):
+        part_path = work_dir / f"part-{i}.wav"
+        duration = wav_duration(part_path)
+        append_pcm(concat_path, part_path.read_bytes()[_HEADER_SIZE:], sample_rate)
+        chapters.append((cursor, cursor + duration, part.title))
+        cursor += duration
+        if i < len(job.parts) - 1 and job.chapter_gap_ms:
+            append_pcm(concat_path, gap_pcm, sample_rate)
+            cursor += job.chapter_gap_ms / 1000
+    return concat_path, chapters
+
+
+def _write_chapters_file(chapters: list[tuple[float, float, str]], path: Path) -> None:
+    """An ffmetadata chapters file, milliseconds since `TIMEBASE=1/1000`."""
+    lines = [";FFMETADATA1"]
+    for start, end, title in chapters:
+        lines += [
+            "[CHAPTER]",
+            "TIMEBASE=1/1000",
+            f"START={round(start * 1000)}",
+            f"END={round(end * 1000)}",
+            f"title={title}",
+        ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _metadata_args(metadata: dict[str, str]) -> list[str]:
+    args: list[str] = []
+    for key in ("title", "artist", "album", "date"):
+        value = metadata.get(key)
+        if value:
+            args += ["-metadata", f"{key}={value}"]
+    return args
+
+
+def _encode(job: RenderJob, work_dir: Path) -> None:
+    """Concatenate and encode the job's parts to `job.out`, tagged from
+    `job.metadata`. Writes to `<out>.partial` and `os.replace`s it onto
+    `out` only once ffmpeg has exited 0, so a reader of `out` never sees a
+    half-written file and a failed attempt never leaves one behind.
+
+    Raises `_EncodeFailed` -- never touches `out` or leaves a `.partial` --
+    if ffmpeg is missing or exits nonzero. `_render` decides what that means
+    for the job's state and work directory.
+    """
+    if not ffmpeg_available():
+        raise _EncodeFailed("ffmpeg not found on PATH")
+
+    concat_path, chapters = _concat_parts(job, work_dir)
+    partial = job.out.with_name(job.out.name + ".partial")
+
+    cmd = ["ffmpeg", "-y", "-i", str(concat_path)]
+    if job.format == "m4b":
+        chapters_path = work_dir / "chapters.txt"
+        _write_chapters_file(chapters, chapters_path)
+        # The chapters file is a second input purely to carry metadata: its
+        # own (silent) audio stream is never mapped into the output.
+        cmd += ["-i", str(chapters_path), "-map_metadata", "1", "-map_chapters", "1"]
+    # Tags after any -map_metadata, so they win over whatever the chapters
+    # file's own (empty) global metadata block would otherwise contribute.
+    cmd += _metadata_args(job.metadata)
+
+    if job.format == "mp3":
+        cmd += ["-c:a", "libmp3lame", "-b:a", job.bitrate, "-ac", "1", "-f", "mp3"]
+    elif job.format == "opus":
+        cmd += ["-c:a", "libopus", "-b:a", job.bitrate, "-f", "opus"]
+    elif job.format == "m4b":
+        cmd += ["-c:a", "aac", "-b:a", job.bitrate, "-f", "mp4"]
+    else:
+        raise _EncodeFailed(f"unknown render format: {job.format!r}")
+    cmd.append(str(partial))
+
+    job.out.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        partial.unlink(missing_ok=True)
+        raise _EncodeFailed(result.stderr[-_STDERR_TAIL_CHARS:])
+    os.replace(partial, job.out)
+
+
 # --- cancellation ------------------------------------------------------
 
 
@@ -360,6 +482,7 @@ class RenderQueue:
         job.state = "running"
         try:
             self._synthesize(job, work_dir)
+            _encode(job, work_dir)
         except _Cancelled:
             self._cancelled.discard(job.id)
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -368,6 +491,15 @@ class RenderQueue:
             # -- a test, or a client cleaning up -- must never see "cancelled"
             # with the files of a cancelled render still on it.
             job.state = "cancelled"
+            return
+        except _EncodeFailed as exc:
+            # The work directory survives a failed encode -- every part WAV
+            # is still on disk, so a retry re-encodes instead of
+            # re-synthesising. `_encode` itself guarantees no `.partial` or
+            # `out` was left behind on this path.
+            job.error = str(exc)
+            save_manifest(job, work_dir)
+            job.state = "failed"
             return
 
         shutil.rmtree(work_dir, ignore_errors=True)
