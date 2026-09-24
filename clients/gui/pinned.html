@@ -1035,6 +1035,12 @@
 
   const isMuted = (channel) => channel.muted || globalMuted;
 
+  // While the pointer is on the list its order holds still: a row that jumps
+  // while someone is aiming at it turns a click on one channel's mute into a
+  // click on another's. Rows are still redrawn -- their times, their buttons
+  // -- in the order last shown, and the list re-ranks when the pointer leaves.
+  let shownOrder = [];
+
   /**
    * Most relevant first: starred, then audible, then muted, and within each
    * the one that last tried to speak. A channel that never has sorts last.
@@ -1084,7 +1090,7 @@
         saveSet("speakd.hidden", hidden);
       }
       saveSet("speakd.stars", stars);
-      renderChannels();
+      renderChannels({ rerank: true });
     });
 
     const isHidden = hidden.has(channel.source_id);
@@ -1101,7 +1107,7 @@
         saveSet("speakd.stars", stars);
       }
       saveSet("speakd.hidden", hidden);
-      renderChannels();
+      renderChannels({ rerank: true });
     });
 
     const dot = document.createElement("span");
@@ -1174,8 +1180,18 @@
    * the ones set aside are what makes the list unreadable, and they are still
    * one click away. Muted ones stay in the list, ranked below the audible.
    */
-  function renderChannels() {
+  function renderChannels({ rerank = false } = {}) {
     const host = el("chans");
+    // Worked out from where the pointer last was, not from `:hover` or
+    // enter/leave events: the rows are rebuilt under a still pointer, and the
+    // browser does not carry hover onto elements that were not there when it
+    // last moved. A deliberate re-rank -- a star, a hide -- is the one change
+    // that should move rows. Measured before the rows are cleared: an empty
+    // list has no height, and the pointer is never inside it. The whole
+    // disclosure rather than the list alone: the queue and the paste box
+    // beside it grow and shrink, and move the list under a pointer that has
+    // not moved.
+    const holding = !rerank && shownOrder.length > 0 && pointerOver(el("more"));
     host.textContent = "";
     el("chan-count").textContent = channels.length ? String(channels.length) : "";
     if (!channels.length) {
@@ -1185,8 +1201,18 @@
       host.append(none);
       return;
     }
+    let ordered = rank(channels);
+    if (holding) {
+      const at = (c) => {
+        const i = shownOrder.indexOf(c.source_id);
+        return i === -1 ? shownOrder.length : i; // newcomers go at the end
+      };
+      ordered = [...channels].sort((a, b) => at(a) - at(b));
+    } else {
+      shownOrder = ordered.map((c) => c.source_id);
+    }
     const folded = [];
-    for (const channel of rank(channels)) {
+    for (const channel of ordered) {
       if (hidden.has(channel.source_id)) folded.push(channel);
       else host.append(channelRow(channel));
     }
@@ -1200,6 +1226,23 @@
     fold.append(summary, ...folded.map(channelRow));
     host.append(fold);
   }
+
+  let pointer = null; // { x, y } in viewport coordinates, or null when outside the window
+  function pointerOver(target) {
+    if (!pointer) return false;
+    const r = target.getBoundingClientRect();
+    return pointer.x >= r.left && pointer.x < r.right && pointer.y >= r.top && pointer.y < r.bottom;
+  }
+  document.addEventListener("pointermove", (e) => {
+    const was = pointerOver(el("more"));
+    pointer = { x: e.clientX, y: e.clientY };
+    // Leaving is when a held order catches up.
+    if (was && !pointerOver(el("more"))) renderChannels();
+  });
+  document.documentElement.addEventListener("pointerleave", () => {
+    pointer = null;
+    renderChannels();
+  });
 
   // The times on the rows are relative, so they are redrawn now and then
   // even when nothing else has changed.
@@ -1327,6 +1370,7 @@
     renderChannels();
   }
 
+  const ROUTINE_DECLINES = new Set(["muted", "brief mode", "full mode", "already briefed"]);
   const ABOUT_A_CHANNEL = new Set(["mute", "mode", "engine", "queued", "declined"]);
 
   function handleEvent(event) {
@@ -1478,11 +1522,12 @@
         break;
       case "declined":
         noteOutput(event.source_id, data.at);
-        // A muted session is the normal state of a Claude Code channel until
-        // it is chosen, so its drops are not news: the error line would
-        // otherwise flash "muted" after every response of every session.
-        // The paste box's own channel still says why it was not heard.
-        if (data.reason !== "muted" || event.source_id === "gui") message = data.reason;
+        // Most drops are the settings doing their job, not news: a session
+        // muted until chosen, a response held back in brief mode, a briefing
+        // in full mode, a "finished" the agent already covered. Shown, they
+        // would sit in the error line after every turn and hide the real
+        // errors. The paste box's own channel still says why it was not heard.
+        if (!ROUTINE_DECLINES.has(data.reason) || event.source_id === "gui") message = data.reason;
         // Refused rather than spoken. Usually it never reached the queue at
         // all, in which case this finds nothing and does nothing; when it was
         // queued and then dropped, this is the event that says so.
