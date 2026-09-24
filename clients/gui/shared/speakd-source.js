@@ -286,16 +286,20 @@ export class SimulatedSource {
     // the list is choosing between sessions. The labels are what §5's
     // SET_LABEL puts on a real channel — a name, not a session UUID — so a
     // browser tab shows the list the daemon will show.
+    // `last_output` staggered so the ranked list has an order to show: the
+    // fixture spoke a moment ago, ReSem an hour ago, and Kronikk never has —
+    // and Kronikk is muted, so the fold has something in it.
+    const now = Date.now() / 1000;
     this._channels = [
-      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation" },
-      { source_id: "sim:resem-paper", role: "background", priority: 0, profile: "default", label: "Claude Code · ReSem paper" },
-      { source_id: "sim:kronikk", role: "background", priority: 0, profile: "default", label: "Claude Code · Kronikk" },
+      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation", last_output: now - 20 },
+      { source_id: "sim:resem-paper", role: "background", priority: 0, profile: "default", label: "Claude Code · ReSem paper", last_output: now - 3600 },
+      { source_id: "sim:kronikk", role: "background", priority: 0, profile: "default", label: "Claude Code · Kronikk", last_output: 0 },
     ];
     // Global and per-channel mute, kept apart exactly as the daemon keeps
     // them: global wins while it is set, and clearing it gives each channel
     // back whatever it had rather than unmuting everything.
     this._muted = false;
-    this._channelMuted = new Map();
+    this._channelMuted = new Map([["sim:kronikk", true]]);
     // The model, and whether it is on its way in. A real load is tens of
     // seconds; this fakes enough of a wait for the window's busy state to be
     // something a person can see.
@@ -455,14 +459,16 @@ export class SimulatedSource {
         priority: 0,
         profile: "default",
         label: "Pasted text",
+        last_output: 0,
       });
     }
+    const at = this._touch(SAY_SOURCE);
     if (this._muted || this._channelMuted.get(SAY_SOURCE)) {
-      this._emit({ kind: "declined", source_id: SAY_SOURCE, data: { text: trimmed, kind: "response", reason: "muted" } });
+      this._emit({ kind: "declined", source_id: SAY_SOURCE, data: { text: trimmed, kind: "response", reason: "muted", at } });
       return Promise.resolve({ ok: true, data: { spoken: false, reason: "muted" } });
     }
     if (!this._engineLoaded) {
-      this._emit({ kind: "declined", source_id: SAY_SOURCE, data: { text: trimmed, kind: "response", reason: "disabled" } });
+      this._emit({ kind: "declined", source_id: SAY_SOURCE, data: { text: trimmed, kind: "response", reason: "disabled", at } });
       return Promise.resolve({ ok: true, data: { spoken: false, reason: "disabled" } });
     }
     // Accepted, and said to be accepted, before a word of it is spoken: that
@@ -473,7 +479,7 @@ export class SimulatedSource {
     this._emit({
       kind: "queued",
       source_id: SAY_SOURCE,
-      data: { text: trimmed.slice(0, QUEUE_PREVIEW_CHARS), pending: this._pending.length + 1 },
+      data: { text: trimmed.slice(0, QUEUE_PREVIEW_CHARS), pending: this._pending.length + 1, at },
     });
     // Pasted text interrupts what is sounding; it does not drain the queue.
     // Keeping those two apart is the whole reason `_silence()` was split.
@@ -496,6 +502,14 @@ export class SimulatedSource {
         text: job.text.slice(0, QUEUE_PREVIEW_CHARS),
       })),
     };
+  }
+
+  /** Record that `source_id` tried to speak, as the daemon does; returns when. */
+  _touch(source_id) {
+    const at = Date.now() / 1000;
+    const channel = this._channels.find((c) => c.source_id === source_id);
+    if (channel) channel.last_output = at;
+    return at;
   }
 
   _doMute(payload, source) {
@@ -745,6 +759,7 @@ export class SimulatedSource {
    * having a simulation is that the two must not diverge.
    */
   _speak(source_id, text) {
+    this._touch(source_id);
     this._speaking = source_id;
     this._hushed = false;
     this._utterance = { source_id, text, remaining: 1800, startedAt: 0 };

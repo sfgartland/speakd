@@ -406,6 +406,29 @@
   .chan-row button.skip { color: var(--lit); border-color: var(--lit-edge); }
   .chans .none { font-size: 10.5px; color: var(--faint); font-style: italic; padding: 3px 0; }
 
+  /* A star keeps a channel at the top and out of the fold. Borderless, so a
+     row of empty ones is quiet; lit when pressed. */
+  .chan-row button.star {
+    border: 0; padding: 0 1px; font-size: 11px; line-height: 1;
+    color: var(--faint); text-transform: none; letter-spacing: 0;
+  }
+  .chan-row button.star[aria-pressed="true"] { background: none; color: var(--lit); }
+  /* How long ago it last tried to speak: what the order is sorted by, shown
+     so the order explains itself. */
+  .chan-row .ago {
+    flex: none; font-family: "IBM Plex Mono", monospace; font-size: 9px;
+    color: var(--faint); font-variant-numeric: tabular-nums; min-width: 22px; text-align: right;
+  }
+  .chans .fold > summary {
+    list-style: none; cursor: pointer; padding: 4px 0 2px;
+    font-family: "IBM Plex Mono", monospace; font-size: 8.5px;
+    text-transform: uppercase; letter-spacing: .1em; color: var(--faint);
+  }
+  .chans .fold > summary::-webkit-details-marker { display: none; }
+  .chans .fold > summary::before { content: "\25B8  "; }
+  .chans .fold[open] > summary::before { content: "\25BE  "; }
+  .chans .fold > summary:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: -2px; }
+
   /* ── up next ──
 
      Queued speech, in play order, next first. It lives inside the same
@@ -967,11 +990,128 @@
     reportState();
   }
 
+  // ---- the channel list: ranked, starred, folded ----
+
+  /**
+   * Stars are the window's own: sessions are short-lived and the daemon need
+   * not know which ones someone is keeping an eye on. Storage can be missing
+   * or refuse (a private window, blocked site data), and a list that fails to
+   * draw over it would be far worse than stars that do not stick.
+   */
+  function loadStars() {
+    try {
+      const raw = JSON.parse(localStorage.getItem("speakd.stars") ?? "[]");
+      return new Set(Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : []);
+    } catch {
+      return new Set();
+    }
+  }
+  function saveStars() {
+    try {
+      localStorage.setItem("speakd.stars", JSON.stringify([...stars]));
+    } catch {
+      /* the star still holds for this window's life */
+    }
+  }
+  const stars = loadStars();
+  // Whether the fold of muted channels is open, kept across rebuilds: the
+  // list is redrawn on every mute and every output, and a fold that snapped
+  // shut each time would be one nobody could read.
+  let foldOpen = false;
+
+  const isMuted = (channel) => channel.muted || globalMuted;
+
+  /**
+   * Most relevant first: starred, then audible, then muted, and within each
+   * the one that last tried to speak. A channel that never has sorts last.
+   */
+  function rank(list) {
+    return [...list].sort(
+      (a, b) =>
+        Number(stars.has(b.source_id)) - Number(stars.has(a.source_id)) ||
+        Number(isMuted(a)) - Number(isMuted(b)) ||
+        (b.last_output || 0) - (a.last_output || 0) ||
+        String(a.label || a.source_id).localeCompare(String(b.label || b.source_id)),
+    );
+  }
+
+  /** "now", "4m", "2h", "3d" — or nothing, for a channel that has never spoken. */
+  function ago(ts) {
+    if (!ts) return "";
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 60) return "now";
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h`;
+    return `${Math.floor(s / 86400)}d`;
+  }
+
+  function channelRow(channel) {
+    const row = document.createElement("div");
+    row.className = "chan-row";
+    // Muted *anywhere*: the row is silent whether it is the channel's own
+    // flag or the global one. Which of the two is showing is the master
+    // button's job to say, not this row's.
+    if (isMuted(channel)) row.dataset.muted = "1";
+    if (channel.source_id === speakingSource) row.dataset.live = "1";
+
+    const starred = stars.has(channel.source_id);
+    const star = document.createElement("button");
+    star.type = "button";
+    star.className = "star";
+    star.textContent = starred ? "\u2605" : "\u2606";
+    star.setAttribute("aria-pressed", starred ? "true" : "false");
+    star.title = starred ? "Starred — kept at the top" : "Keep at the top";
+    star.addEventListener("click", () => {
+      if (stars.has(channel.source_id)) stars.delete(channel.source_id);
+      else stars.add(channel.source_id);
+      saveStars();
+      renderChannels();
+    });
+
+    const dot = document.createElement("span");
+    dot.className = "cdot";
+
+    const name = document.createElement("span");
+    name.className = "nm";
+    // textContent, not innerHTML: a label is whatever a session called
+    // itself, which for a Claude Code channel is text a model wrote.
+    name.textContent = channel.label || channel.source_id;
+    name.title = channel.source_id;
+
+    const when = document.createElement("span");
+    when.className = "ago";
+    when.textContent = ago(channel.last_output);
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.setAttribute("aria-pressed", channel.muted ? "true" : "false");
+    toggle.textContent = channel.muted ? "muted" : "mute";
+    toggle.title = `Mute ${channel.label || channel.source_id} alone`;
+    toggle.addEventListener("click", () => muteChannel(channel));
+
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "skip";
+    skip.textContent = "skip";
+    skip.title = `Stop ${channel.label || channel.source_id} and drop its queued speech`;
+    skip.addEventListener("click", () => skipChannel(channel));
+
+    // Skip before mute so the mute toggles stay in one column down the right
+    // edge: that button's pressed state is a filled block, and a filled block
+    // that moves left and right between rows reads as two different controls.
+    row.append(star, dot, name, when, skip, toggle);
+    return row;
+  }
+
   /**
    * The channel list, rebuilt. Kept out of `render()` deliberately: that runs
    * once per position event — sixty times a second under the simulation —
    * and rebuilding these rows there would take the focus out from under
    * anyone mid-click on a mute toggle.
+   *
+   * Muted channels nobody has starred fold away behind one line: with a
+   * dozen sessions open, the ones set aside are what makes the list
+   * unreadable, and they are still one click away.
    */
   function renderChannels() {
     const host = el("chans");
@@ -984,46 +1124,25 @@
       host.append(none);
       return;
     }
-    for (const channel of channels) {
-      const row = document.createElement("div");
-      row.className = "chan-row";
-      // Muted *anywhere*: the row is silent whether it is the channel's own
-      // flag or the global one. Which of the two is showing is the master
-      // button's job to say, not this row's.
-      if (channel.muted || globalMuted) row.dataset.muted = "1";
-      if (channel.source_id === speakingSource) row.dataset.live = "1";
-
-      const dot = document.createElement("span");
-      dot.className = "cdot";
-
-      const name = document.createElement("span");
-      name.className = "nm";
-      // textContent, not innerHTML: a label is whatever a session called
-      // itself, which for a Claude Code channel is text a model wrote.
-      name.textContent = channel.label || channel.source_id;
-      name.title = channel.source_id;
-
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.setAttribute("aria-pressed", channel.muted ? "true" : "false");
-      toggle.textContent = channel.muted ? "muted" : "mute";
-      toggle.title = `Mute ${channel.label || channel.source_id} alone`;
-      toggle.addEventListener("click", () => muteChannel(channel));
-
-      const skip = document.createElement("button");
-      skip.type = "button";
-      skip.className = "skip";
-      skip.textContent = "skip";
-      skip.title = `Stop ${channel.label || channel.source_id} and drop its queued speech`;
-      skip.addEventListener("click", () => skipChannel(channel));
-
-      // Skip before mute so the mute toggles stay in one column down the right
-      // edge: that button's pressed state is a filled block, and a filled block
-      // that moves left and right between rows reads as two different controls.
-      row.append(dot, name, skip, toggle);
-      host.append(row);
+    const folded = [];
+    for (const channel of rank(channels)) {
+      if (isMuted(channel) && !stars.has(channel.source_id)) folded.push(channel);
+      else host.append(channelRow(channel));
     }
+    if (!folded.length) return;
+    const fold = document.createElement("details");
+    fold.className = "fold";
+    fold.open = foldOpen;
+    fold.addEventListener("toggle", () => { foldOpen = fold.open; });
+    const summary = document.createElement("summary");
+    summary.textContent = `${folded.length} muted`;
+    fold.append(summary, ...folded.map(channelRow));
+    host.append(fold);
   }
+
+  // The times on the rows are relative, so they are redrawn now and then
+  // even when nothing else has changed.
+  setInterval(() => { if (el("more").open) renderChannels(); }, 30000);
 
   /**
    * The "up next" list. Out of `render()` for the same reason the channel rows
@@ -1138,6 +1257,15 @@
     if (upNext.length !== before) renderQueue();
   }
 
+  /** A channel tried to speak: move it up the list. */
+  function noteOutput(source_id, at) {
+    if (typeof at !== "number") return;
+    const channel = channels.find((c) => c.source_id === source_id);
+    if (!channel) return;
+    channel.last_output = at;
+    renderChannels();
+  }
+
   function handleEvent(event) {
     const data = event.data ?? {};
     // The wire names the channel every event belongs to — but `mute`, `engine`
@@ -1160,6 +1288,7 @@
     }
     switch (event.kind) {
       case "queued":
+        noteOutput(event.source_id, data.at);
         // Accepted, not yet begun. The same unknown-channel question `started`
         // asks: a row is not invented for it, the list is asked for.
         if (event.source_id && !channels.some((c) => c.source_id === event.source_id)) refreshStatus();
@@ -1277,6 +1406,7 @@
         message = data.message;
         break;
       case "declined":
+        noteOutput(event.source_id, data.at);
         // A muted session is the normal state of a Claude Code channel until
         // it is chosen, so its drops are not news: the error line would
         // otherwise flash "muted" after every response of every session.
