@@ -177,3 +177,14 @@ def test_a_skip_is_not_a_new_turn() -> None:
         }
     finally:
         d.stop()
+
+
+def test_set_mode_on_a_channel_that_does_not_exist_opens_none() -> None:
+    d, _, _ = build()
+    try:
+        response = req(d, Verb.SET_MODE, source="typo", mode="full")
+        assert not response.ok
+        assert "no channel" in response.error
+        assert [c["source_id"] for c in req(d, Verb.STATUS, source="").data["channels"]] == []
+    finally:
+        d.stop()

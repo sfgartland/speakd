@@ -169,3 +169,25 @@ def test_replay_respects_the_mute() -> None:
         assert [e.data["reason"] for e in b.seen if e.kind == "declined"] == ["muted"]
     finally:
         b.daemon.stop()
+
+
+def test_a_replay_that_loses_the_race_with_the_end_is_queued_instead() -> None:
+    """Speaking when checked, over by the time of the seek: the click still plays."""
+    from speakd.daemon import _Current
+
+    b = Built()
+    try:
+        b.speak()
+        assert b.daemon.wait_idle(timeout=10.0)
+        b.seen.clear()
+        # As the check sees it: something is speaking. As the seek finds it: nothing.
+        b.daemon._current = _Current(units=())
+        b.daemon._seek = lambda payload: Response(ok=False, error="nothing is speaking")  # type: ignore[method-assign]
+        response = b.replay({"index": 1})
+        b.daemon._current = None
+        assert response.ok
+        assert response.data == {"spoken": True, "index": 1}
+        assert b.daemon.wait_idle(timeout=10.0)
+        assert b.positions() == [1, 2, 3]
+    finally:
+        b.daemon.stop()

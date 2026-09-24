@@ -607,7 +607,12 @@ class Daemon:
                 ok=False, error=f"no sentence {index}: the last utterance has {len(last.units)}"
             )
         if speaking:
-            return self._seek({"index": index})
+            moved = self._seek({"index": index})
+            # Speaking when checked, and over by the time of the seek: the
+            # utterance ended in between. Played again from the queue rather
+            # than lost -- the listener asked to hear it.
+            if moved.ok or moved.error != "nothing is speaking":
+                return moved
         channel = self.channels.open(last.source_id)
         at = self.channels.touch(last.source_id)
         refusal = self._refusal(last.source_id, channel.muted, last.text, "replay", at)
@@ -908,7 +913,11 @@ class Daemon:
             return Response(ok=False, error="set_mode needs 'mode': 'full' or 'brief'")
         if not source_id:
             return Response(ok=False, error="set_mode needs a channel")
-        channel = self.channels.open(source_id)
+        # `get`, not `open`: a mode for a channel that does not exist is a typo,
+        # and opening one would leave a row in every monitor for nothing.
+        channel = self.channels.get(source_id)
+        if channel is None:
+            return Response(ok=False, error=f"no channel named {source_id!r}")
         if not channel.briefs:
             return Response(ok=False, error="this channel has no briefer")
         self.channels.set_mode(source_id, str(mode))
