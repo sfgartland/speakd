@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Problem } from "../src/channel";
-import { ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
+import { CONTROLLER_WAIT_MS, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
 import type { CallResult, SpeakdEvent } from "../src/speakd";
 import type { SegmentText } from "../src/sections";
 
@@ -92,9 +92,19 @@ const SEGMENTS: SegmentInfo[] = [
 function setup() {
   const channel = new FakeChannel();
   const tasks: (() => void)[] = [];
+  const timers: { task: () => void; ms: number }[] = [];
+  // Time passing: every timer set so far fires.
+  const elapse = () => {
+    for (const timer of timers.splice(0)) timer.task();
+  };
   const hooks: SessionHooks & { log: string[] } = {
     log: [],
     defer: (task) => tasks.push(task),
+    later: (task, ms) => {
+      const timer = { task, ms };
+      timers.push(timer);
+      return () => timers.splice(timers.indexOf(timer), 1);
+    },
     takeover: (active) => hooks.log.push(active ? "takeover on" : "takeover off"),
     mirrorPause: (paused) => hooks.log.push(paused ? "mirror pause" : "mirror play"),
   };
@@ -111,7 +121,7 @@ function setup() {
     controller.paused = paused;
     return controller;
   };
-  return { channel, hooks, session, emitted, sink, tick, create };
+  return { channel, hooks, session, emitted, sink, tick, create, elapse, timers };
 }
 
 describe("ReaderSession", () => {
@@ -409,5 +419,44 @@ describe("ReaderSession", () => {
     const { channel, session } = setup();
     session.stop();
     expect(channel.log).toEqual(["stop always"]);
+  });
+
+  it("gives the takeover up, and says so, when Zotero builds no controller in time", () => {
+    const { hooks, session, elapse, timers } = setup();
+    session.want({ kind: "here" });
+    expect(timers.map((timer) => timer.ms)).toEqual([CONTROLLER_WAIT_MS]);
+    elapse();
+    expect(session.wanted).toBe(false);
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+    expect(session.problem).toEqual({ kind: "zotero", error: "Zotero's Read Aloud did not start" });
+  });
+
+  it("keeps the takeover when the controller comes in time", () => {
+    const { hooks, session, tick, create, elapse } = setup();
+    session.want({ kind: "here" });
+    create(0);
+    tick();
+    elapse();
+    expect(session.wanted).toBe(true);
+    expect(hooks.log).toEqual(["takeover on"]);
+  });
+
+  it("gives up at once, with the reason, when told Zotero will build none", () => {
+    const { hooks, session, timers } = setup();
+    session.want({ kind: "here" });
+    session.giveUp({ kind: "zotero", error: "no voice" });
+    expect(timers).toEqual([]);
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+    expect(session.problem).toEqual({ kind: "zotero", error: "no voice" });
+  });
+
+  it("does not give up a read whose controller has come: that one is the channel's to end", () => {
+    const { hooks, session, tick, create } = setup();
+    session.want({ kind: "here" });
+    create(0);
+    tick();
+    session.giveUp({ kind: "zotero", error: "no voice" });
+    expect(session.wanted).toBe(true);
+    expect(hooks.log).toEqual(["takeover on"]);
   });
 });

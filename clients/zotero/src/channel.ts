@@ -25,7 +25,7 @@ export interface Caller {
 
 /** Why a read did not happen, for the bar to say. */
 export interface Problem {
-  kind: "bad-token" | "no-daemon" | "http-error" | "refused" | "declined";
+  kind: "bad-token" | "no-daemon" | "http-error" | "refused" | "declined" | "zotero";
   error: string;
 }
 

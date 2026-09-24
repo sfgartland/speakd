@@ -25,6 +25,7 @@ import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import type { Link } from "./link";
 import { ReaderSession, resumesOnStart, type ControllerCore, type Intent, type SegmentInfo } from "./session";
+import { VoicePref } from "./voice-pref";
 import { SPEAKD_VOICE_ID, mergeVoices, silentWav } from "./voices";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -112,7 +113,11 @@ class Adopted implements ReaderHandle {
   private win: Any = null;
   private ir: Any = null;
   private manager: Any = null;
-  private voicesSaved: { value: string | undefined } | null = null;
+  private readonly voicePref = new VoicePref({
+    get: () => Zotero.Prefs.get(VOICES_PREF),
+    set: (value) => Zotero.Prefs.set(VOICES_PREF, value),
+    clear: () => Zotero.Prefs.clear(VOICES_PREF),
+  });
   private granularityForced = false;
   private hooked = false;
   private patchedVoices = new Set<Any>();
@@ -271,6 +276,10 @@ class Adopted implements ReaderHandle {
             .then(task)
             .catch((error) => this.log.warn("a deferred task failed", error));
         },
+        later: (task, ms) => {
+          const timer = setTimeout(() => this.guard("a timed task", task), ms);
+          return () => clearTimeout(timer);
+        },
         takeover: (active) => this.guard("the takeover", () => this.setTakeover(active)),
         mirrorPause: (paused) =>
           this.guard("mirroring the pause", () => {
@@ -321,7 +330,7 @@ class Adopted implements ReaderHandle {
         }
         // Selecting persists the voice for the document's language
         // (B:82286-82300); what was there is put back when the read ends.
-        if (this.voicesSaved === null) this.voicesSaved = { value: Zotero.Prefs.get(VOICES_PREF) as string | undefined };
+        this.voicePref.save();
         // Re-enters `_createController` with speakd's voice (B:82522-82537).
         m.selectVoice(SPEAKD_VOICE_ID);
         return true;
@@ -533,6 +542,10 @@ class Adopted implements ReaderHandle {
       const link = this.takeover.options.link;
       if (resumesOnStart(link.state.speakingChannel, this.sourceId)) void link.call("resume", this.sourceId, {});
       session.want(intent);
+      // A first-time Read Aloud user would get Zotero's first-run dialog,
+      // not the read (internals §5): give the document's language speakd's
+      // voice first, if it has none. Put back when the read ends.
+      this.voicePref.seed(this.language(), SPEAKD_VOICE_ID);
       ir.startReadAloudAtPosition(position ?? null);
     });
   }
@@ -585,13 +598,25 @@ class Adopted implements ReaderHandle {
     }
     root?.classList.remove(TAKEOVER_CLASS);
     this.closeReadAloud();
-    if (this.voicesSaved !== null) {
-      const { value } = this.voicesSaved;
-      this.voicesSaved = null;
-      if (value === undefined) Zotero.Prefs.clear(VOICES_PREF);
-      else Zotero.Prefs.set(VOICES_PREF, value);
-    }
+    this.voicePref.restore();
     this.restoreGranularity();
+  }
+
+  /**
+   * The document's language as Zotero knows it, or, before its text has
+   * been looked at, the language Zotero runs in. Either way what matters is
+   * that the voice map is not empty when the popup opens.
+   */
+  private language(): string {
+    for (const read of [() => this.manager.lang, () => waive(this.ir._state.readAloudState).lang, () => Zotero.locale]) {
+      try {
+        const lang: unknown = read();
+        if (typeof lang === "string" && lang !== "") return lang;
+      } catch {
+        // The next.
+      }
+    }
+    return "en";
   }
 
   /** Close Zotero's Read Aloud: the one way to clear its highlight (B:76434). */

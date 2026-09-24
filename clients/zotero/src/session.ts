@@ -56,9 +56,20 @@ export type Intent =
   /** Read the selection, and stop. */
   | { kind: "selection"; text: string };
 
+/**
+ * How long Zotero may take from a start to building the controller: it
+ * loads voices first, and waits up to 8 s for its own server's catalogue
+ * (reader-takeover.ts `NATIVE_VOICES_TIMEOUT_MS`). A read that has not begun
+ * by then never will -- the first-run dialog, a voice that never resolved --
+ * and the takeover must not stay on, hiding Zotero's popup, for it.
+ */
+export const CONTROLLER_WAIT_MS = 12_000;
+
 export interface SessionHooks {
   /** Run `task` once the synchronous work under way is done: a microtask. */
   defer(task: () => void): void;
+  /** Run `task` after `ms`. Returns a cancel. */
+  later(task: () => void, ms: number): () => void;
   /**
    * The plugin's own read begins (true) or ends (false). Ending closes
    * Zotero's Read Aloud, which clears the highlight, and gives the user's
@@ -265,6 +276,8 @@ export class ReaderSession {
   private closed = false;
   private readonly unsubscribe: (() => void)[];
   private readonly changeListeners = new Set<() => void>();
+  /** Cancels the wait for Zotero's controller, while one is on. */
+  private cancelWait: (() => void) | null = null;
 
   constructor(channel: ChannelLike, hooks: SessionHooks) {
     this.channel = channel;
@@ -312,6 +325,28 @@ export class ReaderSession {
       this._wanted = true;
       this.hooks.takeover(true);
     }
+    this.stopWaiting();
+    if (this.current === null) {
+      this.cancelWait = this.hooks.later(() => {
+        this.cancelWait = null;
+        this.giveUp({ kind: "zotero", error: "Zotero's Read Aloud did not start" });
+      }, CONTROLLER_WAIT_MS);
+    }
+    this.changed();
+  }
+
+  /**
+   * Zotero will build no controller for the read wanted: end the takeover,
+   * and say why. A read whose controller came is left alone: its end is the
+   * channel's to say.
+   */
+  giveUp(problem: Problem): void {
+    if (this.closed || !this._wanted || this.current !== null) return;
+    this.stopWaiting();
+    this.intent = null;
+    this._problem = problem;
+    this._wanted = false;
+    this.hooks.takeover(false);
     this.changed();
   }
 
@@ -344,6 +379,7 @@ export class ReaderSession {
       this.channel.reading &&
       start === previous.position;
     if (rebuild) end = previous.end;
+    this.stopWaiting();
     const core = new ControllerCore(this, segments, start, end, sink, source);
     this.current = this.closed ? null : core;
     if (this.closed) core.destroyed = true;
@@ -403,8 +439,14 @@ export class ReaderSession {
     return () => this.changeListeners.delete(listener);
   }
 
+  private stopWaiting(): void {
+    this.cancelWait?.();
+    this.cancelWait = null;
+  }
+
   private finish(always = false): void {
     if (this.closed) return;
+    this.stopWaiting();
     const core = this.current;
     this.current = null;
     if (core !== null) core.destroyed = true;
