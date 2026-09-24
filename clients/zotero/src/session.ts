@@ -24,7 +24,8 @@ import type { CallResult, SpeakdEvent } from "./speakd";
 /** What the session needs of channel.ts's Channel. */
 export interface ChannelLike {
   start(segments: readonly SegmentText[], startIndex: number): Promise<void>;
-  stop(): Promise<void>;
+  /** `always`: hush the channel even when nothing of its own is known queued. */
+  stop(options?: { always?: boolean }): Promise<void>;
   skip(by: number): Promise<CallResult>;
   pause(): Promise<CallResult>;
   resume(): Promise<CallResult>;
@@ -377,9 +378,9 @@ export class ReaderSession {
     });
   }
 
-  /** The plugin's own stop. */
+  /** The plugin's own stop: the user wants this channel silent, whatever it is known to hold. */
   stop(): void {
-    this.finish();
+    this.finish(true);
   }
 
   /** The reader's tab closed: hush it, once, and hear nothing more. */
@@ -402,13 +403,13 @@ export class ReaderSession {
     return () => this.changeListeners.delete(listener);
   }
 
-  private finish(): void {
+  private finish(always = false): void {
     if (this.closed) return;
     const core = this.current;
     this.current = null;
     if (core !== null) core.destroyed = true;
     this.intent = null;
-    void this.channel.stop();
+    void this.channel.stop({ always });
     if (this._wanted) {
       this._wanted = false;
       this.hooks.takeover(false);

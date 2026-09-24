@@ -420,4 +420,19 @@ describe("Channel", () => {
     channel.streamLost();
     expect(problems).toEqual([]);
   });
+
+  it("hushes its own channel on an explicit stop, even with nothing of its own known queued", async () => {
+    const { daemon, channel } = setup();
+    // Speaking on this channel, from before the plugin knew of it: another
+    // Zotero session's read, or one given up when the stream was lost.
+    daemon.started("A read nobody here started.");
+    await channel.stop({ always: true });
+    expect(daemon.calls).toEqual([{ verb: "hush", sourceId: SOURCE, payload: {} }]);
+  });
+
+  it("sends no hush for a plain stop with nothing of its own queued, as a tab closing is", async () => {
+    const { daemon, channel } = setup();
+    await channel.stop();
+    expect(daemon.calls).toEqual([]);
+  });
 });

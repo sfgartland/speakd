@@ -196,11 +196,17 @@ export class Channel {
     });
   }
 
-  /** Stop this reader's read, and only this reader's: a hush on its own channel. */
-  stop(): Promise<void> {
+  /**
+   * Stop this reader's read, and only this reader's: a hush on its own
+   * channel. The hush goes once, and only when the channel may hold
+   * something -- a tab closing that was not reading sends none -- unless
+   * `always`: the user pressing Stop wants this channel silent whatever the
+   * channel knows of it, a read given up when the stream was lost, say.
+   */
+  stop(options: { always?: boolean } = {}): Promise<void> {
     const generation = this.supersede();
     return this.serially(async () => {
-      await this.hushIfLive(generation);
+      await this.hushIfLive(generation, options.always === true);
     });
   }
 
@@ -324,9 +330,9 @@ export class Channel {
     return this._generation;
   }
 
-  /** Hush this channel if it may be speaking; false when the generation moved on meanwhile. */
-  private async hushIfLive(generation: number): Promise<boolean> {
-    if (this.live) {
+  /** Hush this channel if it may be speaking, or `always`; false when the generation moved on meanwhile. */
+  private async hushIfLive(generation: number, always = false): Promise<boolean> {
+    if (this.live || always) {
       const result = await this.client.call("hush", this.sourceId, {});
       if (result.kind === "ok") this.live = false;
       else this.fail(result);

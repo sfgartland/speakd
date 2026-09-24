@@ -25,8 +25,8 @@ class FakeChannel implements ChannelLike {
     this.reading = true;
   }
   async idle(): Promise<void> {}
-  async stop(): Promise<void> {
-    this.log.push("stop");
+  async stop(options: { always?: boolean } = {}): Promise<void> {
+    this.log.push(options.always === true ? "stop always" : "stop");
     this.reading = false;
   }
   async skip(by: number): Promise<CallResult> {
@@ -362,7 +362,7 @@ describe("ReaderSession", () => {
     session.stop();
     controller.destroy();
     tick();
-    expect(channel.log).toEqual(["start 0", "stop"]);
+    expect(channel.log).toEqual(["start 0", "stop always"]);
     expect(hooks.log).toEqual(["takeover on", "takeover off"]);
   });
 
@@ -403,5 +403,11 @@ describe("ReaderSession", () => {
     // An agent the user paused stays paused.
     expect(resumesOnStart("claude:session", "zotero:A")).toBe(false);
     expect(resumesOnStart("zotero:B", "zotero:A")).toBe(false);
+  });
+
+  it("asks the channel to hush on its own stop even with no read it knows of", () => {
+    const { channel, session } = setup();
+    session.stop();
+    expect(channel.log).toEqual(["stop always"]);
   });
 });
