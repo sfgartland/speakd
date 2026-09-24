@@ -20,6 +20,7 @@ speakctl = "speakd.cli:main"
 speakd-claude-hook = "speakd.clients.claude_code.hook:main"
 speakd-claude-follow = "speakd.clients.claude_code.follow:main"
 speakd-notify-follow = "speakd.clients.notifications.follow:main"
+speakd-mcp = "speakd.clients.mcp.server:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]

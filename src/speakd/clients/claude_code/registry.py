@@ -31,6 +31,10 @@ class Registration:
     transcript: Path
     cwd: str
     touched: float
+    # The Claude Code process the session runs in, so an MCP server it
+    # started can find which session it serves. None for registrations
+    # written before this was recorded.
+    claude_pid: int | None = None
 
 
 def _registration_path(session_id: str) -> Path:
@@ -49,7 +53,7 @@ def _registration_path(session_id: str) -> Path:
     return _path_for(session_id, ".session.json")
 
 
-def register(session_id: str, transcript: Path, cwd: str) -> None:
+def register(session_id: str, transcript: Path, cwd: str, *, claude_pid: int | None = None) -> None:
     """Record that this session is live. Never raises."""
     try:
         _registration_path(session_id).write_text(
@@ -59,6 +63,7 @@ def register(session_id: str, transcript: Path, cwd: str) -> None:
                     "transcript": str(transcript),
                     "cwd": cwd,
                     "touched": time.time(),
+                    "claude_pid": claude_pid,
                 }
             ),
             encoding="utf-8",
@@ -96,6 +101,7 @@ def live(max_idle_seconds: float = DEFAULT_MAX_IDLE_SECONDS) -> list[Registratio
                 transcript=Path(transcript),
                 cwd=str(body.get("cwd") or ""),
                 touched=float(touched),
+                claude_pid=pid if isinstance(pid := body.get("claude_pid"), int) else None,
             )
         )
     return found

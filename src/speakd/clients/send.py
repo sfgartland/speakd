@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from speakd.paths import default_socket_path
-from speakd.protocol import Request, Verb
+from speakd.protocol import Request, Response, Verb
 
 # Claude Code gives a hook a bounded window (three to five seconds in the
 # manifest this client ships). Two seconds is generous for a local socket
@@ -21,7 +21,22 @@ TIMEOUT = 2.0
 
 
 def send(request: Request, *, socket: Path | None = None, timeout: float = TIMEOUT) -> str | None:
-    """Send one request. Return `None` on success, or a one-line reason.
+    """Send one request. Return `None` on success, or a one-line reason."""
+    response = call(request, socket=socket, timeout=timeout)
+    if isinstance(response, str):
+        return response
+    if not response.ok:
+        return f"{request.verb.value} refused: {response.error or 'no reason given'}"
+    return None
+
+
+def call(
+    request: Request, *, socket: Path | None = None, timeout: float = TIMEOUT
+) -> Response | str:
+    """Send one request and return the daemon's answer, or a one-line reason.
+
+    For a caller that needs what the daemon said back and not only whether it
+    agreed -- the MCP server reports the channel's mode to the agent from it.
 
     `timeout` is the budget for the whole call, not for each half of it.
     Connecting and waiting for the reply share one deadline: given one each,
@@ -48,7 +63,7 @@ def send(request: Request, *, socket: Path | None = None, timeout: float = TIMEO
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError(f"the {timeout}s budget went on connecting")
-        response = client.send(request, timeout=remaining)
+        return client.send(request, timeout=remaining)
     except Exception as exc:
         return f"{request.verb.value} failed: {exc}"
     finally:
@@ -56,10 +71,6 @@ def send(request: Request, *, socket: Path | None = None, timeout: float = TIMEO
             client.close()
         except Exception:  # pragma: no cover - closing is best effort
             pass
-
-    if not response.ok:
-        return f"{request.verb.value} refused: {response.error or 'no reason given'}"
-    return None
 
 
 def enqueue(
