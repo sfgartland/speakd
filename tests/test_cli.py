@@ -414,3 +414,11 @@ def test_seek_sends_by_or_index(monkeypatch) -> None:  # type: ignore[no-untyped
     assert main(["seek", "--index", "3"]) == 0
     assert [r.verb for r in sent] == [Verb.SEEK, Verb.SEEK]
     assert [r.payload for r in sent] == [{"by": -1}, {"index": 3}]
+
+
+def test_speed_can_ramp(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"speed": 1.4}))
+    assert main(["speed", "1.4", "--ramp", "1.5"]) == 0
+    assert sent[0].payload == {"speed": 1.4, "ramp": 1.5}

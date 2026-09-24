@@ -197,6 +197,14 @@ listening makes the synthesiser work harder, so watch the rtf number: above 1×
 it can no longer keep ahead. With the window focused, the arrow keys, `-`/`+`
 and space do the same.
 
+**Skimming.** Hold Ctrl+→ and the voice ramps up to 1.4× over about a second;
+let go and it ramps back to where it was. Ctrl+← does the same down to 0.7×, for
+the passage you want to hear carefully. Add Shift to lock it there instead —
+Ctrl+Shift+→ skims until you press it again. Plain ← and → still move a sentence.
+Every speed change is stretched from the audio as it was made, never from an
+earlier stretch, so a ramp does not smear the voice. `speakctl speed 1.4 --ramp 1`
+ramps from the command line.
+
 Both off switches are in it, and they follow `speakctl`: mute one from the CLI and
 the window's button moves, without a reload. Behind a disclosure — closed by
 default, because the window's whole argument is that it is small — are the open

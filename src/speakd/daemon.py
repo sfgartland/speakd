@@ -34,6 +34,9 @@ from speakd.timeline import Timeline
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
 
+# The longest a speed change may take to arrive.
+_MAX_RAMP_SECONDS = 10.0
+
 _NOT_RUNNING = "the daemon is not running: start() it before enqueuing speech"
 
 _METRICS_THREAD_NAME = "speakd-metrics"
@@ -619,7 +622,7 @@ class Daemon:
             response.data["index"] = index
         return response
 
-    def _set_speed(self, raw: object) -> Response:
+    def _set_speed(self, raw: object, ramp: object = 0.0) -> Response:
         """Change the listener's speed, answering with the one applied.
 
         Global, like pause: it is how fast *this person* wants to listen,
@@ -635,9 +638,18 @@ class Daemon:
             or raw <= 0
         ):
             return Response(ok=False, error="set_speed needs a positive number 'speed'")
-        applied = self.tempo.set(float(raw))
+        # Seconds to glide there over. Bounded, because a ramp nobody can
+        # hear the end of is a speed that never arrives.
+        if (
+            not isinstance(ramp, (int, float))
+            or isinstance(ramp, bool)
+            or not math.isfinite(ramp)
+            or not 0 <= ramp <= _MAX_RAMP_SECONDS
+        ):
+            return Response(ok=False, error=f"a ramp is 0 to {_MAX_RAMP_SECONDS:g} seconds")
+        applied = self.tempo.set(float(raw), ramp=float(ramp))
         state.save(replace(state.load(), speed=applied))
-        self._publish("speed", "", {"speed": applied})
+        self._publish("speed", "", {"speed": applied, "ramp": float(ramp)})
         return Response(ok=True, data={"speed": applied})
 
     def wait_idle(self, timeout: float) -> bool:
@@ -718,13 +730,13 @@ class Daemon:
                     # looks identical to one that is muted itself.
                     "muted": self.muted,
                     "engine": self._engine_status(),
-                    "speed": self.tempo.value,
+                    "speed": self.tempo.target,
                 },
             )
         if request.verb in (Verb.PAUSE, Verb.RESUME):
             return self._set_paused(request.verb is Verb.PAUSE)
         if request.verb is Verb.SET_SPEED:
-            return self._set_speed(request.payload.get("speed"))
+            return self._set_speed(request.payload.get("speed"), request.payload.get("ramp", 0.0))
         if request.verb is Verb.SEEK:
             return self._seek(request.payload)
         if request.verb is Verb.REPLAY:

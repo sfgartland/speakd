@@ -297,3 +297,33 @@ def test_clear_interrupt_forgets_a_stop_aimed_at_finished_playback() -> None:
     player.play(audio(250), 24000)
     assert player.interrupted is False
     assert sink.frames_written == 250
+
+
+def test_speed_changes_do_not_compound() -> None:
+    """Every stretch is taken from the audio as it was made, never from an
+    earlier stretch of it: going to 1.5 and back to 1.0 leaves the rest of the
+    segment exactly as synthesised, not a copy of a copy."""
+    tempo = Tempo(1.0)
+    source = tone(24000)
+
+    class Toggling(FakeSink):
+        def write(self, frames: np.ndarray) -> None:
+            super().write(frames)
+            if self.frames_written == 6000:
+                tempo.set(1.5)
+            elif self.frames_written == 8000:
+                tempo.set(1.0)
+
+    sink = Toggling()
+    StreamingPlayer(sink, chunk_frames=1000).play_at(source, 24000, made_at=1.0, tempo=tempo)
+    written = np.concatenate(sink.blocks)
+    # 6000 at 1.0, then 2000 at 1.5 consume 3000 more: 9000 of the source.
+    assert abs(len(written) - (8000 + 15000)) <= 2
+    np.testing.assert_array_equal(written[-14000:], source[-14000:])
+
+
+def test_a_stretch_has_no_dropout_at_its_start() -> None:
+    from speakd.stretch import time_stretch
+
+    out = time_stretch(tone(24000) + 0.5, 1.3, 24000)
+    assert out[0] > 0.1

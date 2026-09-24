@@ -648,10 +648,20 @@ class StreamingPlayer:
     def _play(
         self, audio: np.ndarray, sample_rate: int, made_at: float, tempo: Tempo | None
     ) -> int:
-        """The write loop both entry points share. Returns frames written."""
+        """The write loop both entry points share. Returns frames written.
+
+        Positions are kept in the audio as it was made (`consumed`), and every
+        stretch is cut from there -- never from the previous stretch. A ramp
+        changes the speed every chunk, and stretching a stretch each time
+        would pile the artifacts of one on the next until the voice smeared.
+        """
         self.interrupted = False
-        buffer, effective, pos, written = audio, made_at, 0, 0
-        while pos < len(buffer):
+        consumed = 0.0  # samples of `audio` played so far, at whatever speed
+        buffer: np.ndarray | None = None
+        effective = made_at
+        pos = 0
+        written = 0
+        while True:
             while not self._resume.wait(timeout=0.05):
                 if self._interrupt.is_set():
                     break
@@ -659,14 +669,13 @@ class StreamingPlayer:
                 self._interrupt.clear()
                 self.interrupted = True
                 return written
-            if tempo is not None:
-                wanted = tempo.value
-                if abs(wanted / effective - 1.0) > 1e-3:
-                    rest = time_stretch(buffer[pos:], wanted / effective, sample_rate)
-                    buffer = np.concatenate([buffer[:pos], rest])
-                    effective = wanted
-                    if pos >= len(buffer):
-                        break
+            wanted = tempo.value if tempo is not None else made_at
+            if buffer is None or abs(wanted / effective - 1.0) > 1e-3:
+                buffer = time_stretch(audio[int(round(consumed)) :], wanted / made_at, sample_rate)
+                effective = wanted
+                pos = 0
+            if pos >= len(buffer):
+                break
             # Started here, below the interrupt check, rather than before the
             # loop: a segment that writes nothing — empty, or interrupted at
             # the first chunk — must not open a device stream to write nothing
@@ -678,6 +687,7 @@ class StreamingPlayer:
             self.frames_played += len(block)
             written += len(block)
             pos += len(block)
+            consumed += len(block) * effective / made_at
         # Repeated, not hoisted: a zero-length segment never enters the loop,
         # so without this an interrupt that landed on it stays set and kills
         # the *next* play(). Clearing at entry instead would erase a stop()

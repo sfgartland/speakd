@@ -40,7 +40,11 @@ def time_stretch(audio: np.ndarray, ratio: float, sample_rate: int) -> np.ndarra
     padded = np.concatenate(
         [np.zeros(tol, np.float32), audio.astype(np.float32), np.zeros(pad_end, np.float32)]
     )
-    window = np.hanning(frame).astype(np.float32)
+    # Without its two zero endpoints: the first output sample is covered by
+    # one frame only, and a window that is zero there makes it a dropout --
+    # a click at the start of every stretch, which during a ramp is every
+    # chunk.
+    window = np.hanning(frame + 2)[1:-1].astype(np.float32)
     out = np.zeros(out_len + frame, np.float32)
     norm = np.zeros(out_len + frame, np.float32)
     previous = tol

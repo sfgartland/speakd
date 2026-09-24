@@ -58,7 +58,7 @@ def test_speed_is_announced_reported_and_kept() -> None:
     seen: list[Event] = []
     d.bus.subscribe(seen.append)
     set_speed(d, 1.3)
-    assert [e.data for e in seen if e.kind == "speed"] == [{"speed": 1.3}]
+    assert [e.data for e in seen if e.kind == "speed"] == [{"speed": 1.3, "ramp": 0.0}]
     assert d.handle(Request(verb=Verb.STATUS, source_id="")).data["speed"] == 1.3
     assert build().tempo.value == 1.3
 
@@ -83,3 +83,26 @@ def test_speech_is_synthesised_at_the_multiplied_speed() -> None:
     finally:
         d.stop()
     assert engine.speeds == [pytest.approx(1.65)]
+
+
+def test_set_speed_can_ramp() -> None:
+    d = build()
+    seen: list[Event] = []
+    d.bus.subscribe(seen.append)
+    response = d.handle(
+        Request(verb=Verb.SET_SPEED, source_id="", payload={"speed": 1.4, "ramp": 1.0})
+    )
+    assert response.data == {"speed": 1.4}
+    # Heading there, not there yet; clients are told where it is going.
+    assert d.tempo.value < 1.4
+    assert d.tempo.target == 1.4
+    assert d.handle(Request(verb=Verb.STATUS, source_id="")).data["speed"] == 1.4
+    assert [e.data for e in seen if e.kind == "speed"] == [{"speed": 1.4, "ramp": 1.0}]
+
+
+@pytest.mark.parametrize("bad", ["slow", True, -1, 11, float("inf")])
+def test_a_ramp_must_be_a_sensible_number_of_seconds(bad: object) -> None:
+    response = build().handle(
+        Request(verb=Verb.SET_SPEED, source_id="", payload={"speed": 1.2, "ramp": bad})
+    )
+    assert not response.ok

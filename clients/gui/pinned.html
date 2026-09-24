@@ -264,6 +264,10 @@
     color: var(--ink-soft);
     border-top: 1px solid var(--rule-strong); border-bottom: 1px solid var(--rule-strong);
   }
+  /* Skimming or slowed by the keys rather than set: lit, so a speed that will
+     go back on release (hold) or on a second press (lock) does not read as
+     the one you chose. */
+  .ctls .speed output[data-mode] { color: var(--lit); font-weight: 500; }
 
   /* the two off switches — their own row, and not shaped like the transport
      buttons above, because neither of them resumes by itself. Mute is
@@ -907,6 +911,15 @@
     // answer the daemon can give (it steps in twentieths), 1.20× is noise.
     el("speed").textContent =
       speed == null ? "—" : (Math.abs(speed * 10 - Math.round(speed * 10)) < 1e-6 ? speed.toFixed(1) : speed.toFixed(2)) + "×";
+    const mode = holdFrom !== null ? "hold" : lockFrom !== null ? "lock" : null;
+    if (mode) el("speed").dataset.mode = mode;
+    else delete el("speed").dataset.mode;
+    el("speed").title =
+      mode === "hold"
+        ? "Held — goes back on release"
+        : mode === "lock"
+          ? "Locked — Ctrl+Shift+the same arrow to go back"
+          : "Hold Ctrl+\u2192 to skim, Ctrl+\u2190 to slow; add Shift to lock";
     el("slower").disabled = speed == null || speed <= SPEED_MIN + 1e-6;
     el("faster").disabled = speed == null || speed >= SPEED_MAX - 1e-6;
 
@@ -1293,14 +1306,60 @@
     if (!res.ok) { message = res.error; render(); }
   }
 
-  async function changeSpeed(step) {
-    if (speed == null) return;
-    const res = await source.send("set_speed", { speed: Math.round((speed + step) * 100) / 100 });
+  async function setSpeed(value, ramp = 0) {
+    const res = await source.send("set_speed", { speed: Math.round(value * 100) / 100, ramp });
     if (!res.ok) { message = res.error; render(); return; }
     // The `speed` event says the same; this is the shorter road, for a
     // window whose subscription has fallen behind.
     if (typeof res.data?.speed === "number") speed = res.data.speed;
     render();
+  }
+
+  function changeSpeed(step) {
+    if (speed == null) return;
+    // A speed chosen with the buttons is the new base: any lock or hold
+    // gives way to it, and nothing will ramp away from it on release.
+    lockFrom = null;
+    holdFrom = null;
+    setSpeed(speed + step);
+  }
+
+  // ---- skim and slow: Ctrl+→ / Ctrl+← held, Ctrl+Shift to lock ----
+  const SKIM = 1.4;
+  const SLOW = 0.7;
+  const RAMP_SECONDS = 1.2;
+  // The speed to glide back to when a hold ends, and when a lock is undone.
+  // Null when no hold, or no lock, is in force.
+  let holdFrom = null;
+  let lockFrom = null;
+
+  function startHold(target) {
+    if (speed == null || holdFrom !== null) return;
+    holdFrom = speed;
+    setSpeed(target, RAMP_SECONDS);
+  }
+
+  function endHold() {
+    if (holdFrom === null) return;
+    const back = holdFrom;
+    holdFrom = null;
+    setSpeed(back, RAMP_SECONDS);
+  }
+
+  function toggleLock(target) {
+    if (speed == null) return;
+    // A hold under way is superseded: the lock is where release would have
+    // gone, so the hold's own way back is dropped rather than replayed.
+    const base = holdFrom ?? speed;
+    holdFrom = null;
+    if (lockFrom !== null && Math.abs(speed - target) < 1e-6) {
+      const back = lockFrom;
+      lockFrom = null;
+      setSpeed(back, RAMP_SECONDS);
+      return;
+    }
+    if (lockFrom === null) lockFrom = base;
+    setSpeed(target, RAMP_SECONDS);
   }
 
   // ---- Tauri bridge: no-ops entirely when this page is a plain browser tab ----
@@ -1396,14 +1455,34 @@
     if (e.ctrlKey || e.metaKey) win.dataset.ctrl = "1";
     else delete win.dataset.ctrl;
   };
-  document.addEventListener("keyup", trackCtrl);
-  window.addEventListener("blur", () => delete win.dataset.ctrl);
+  document.addEventListener("keyup", (e) => {
+    trackCtrl(e);
+    // Letting go of either the arrow or Ctrl ends a hold.
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Control" || e.key === "Meta") {
+      endHold();
+    }
+  });
+  // A hold whose key-up lands in another window would otherwise never end:
+  // the speed would stay at skim with nothing on screen holding it there.
+  window.addEventListener("blur", () => {
+    delete win.dataset.ctrl;
+    endHold();
+  });
 
   document.addEventListener("keydown", (e) => {
     trackCtrl(e);
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const t = e.target;
     if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+      e.preventDefault();
+      // Held keys repeat; only the first press starts anything.
+      if (e.repeat) return;
+      const target = e.key === "ArrowRight" ? SKIM : SLOW;
+      if (e.shiftKey) toggleLock(target);
+      else startHold(target);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     // Space on a focused button is that button's own click; leave it.
     if (e.key === " " && t instanceof HTMLButtonElement) return;
     const action = {

@@ -161,6 +161,7 @@ def _build_parser() -> argparse.ArgumentParser:
     speed = sub.add_parser("speed", parents=[common], help="print or set the speaking speed")
     # A string, checked in `_speed`, for the reason `priority` gives above.
     speed.add_argument("value", nargs="?", help="a multiplier, 0.7 to 1.6; omit to print it")
+    speed.add_argument("--ramp", type=float, default=None, help="seconds to glide there over")
     seek = sub.add_parser("seek", parents=[common], help="move within what is being spoken")
     where = seek.add_mutually_exclusive_group(required=True)
     where.add_argument("--by", type=int, help="sentences forward (negative: back)")
@@ -457,7 +458,10 @@ def _speed(args: argparse.Namespace) -> int:
         except ValueError:
             print(f"speakctl: speed must be a number, got {args.value!r}", file=sys.stderr)
             return _UNREACHABLE
-        request = Request(verb=Verb.SET_SPEED, source_id=args.source, payload={"speed": value})
+        payload: dict[str, object] = {"speed": value}
+        if args.ramp is not None:
+            payload["ramp"] = args.ramp
+        request = Request(verb=Verb.SET_SPEED, source_id=args.source, payload=payload)
     response = _call(args.socket, request)
     if response is None:
         return _UNREACHABLE
