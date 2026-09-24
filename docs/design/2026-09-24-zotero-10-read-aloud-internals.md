@@ -834,3 +834,105 @@ spike, prototyping §8 inline, established:
 
 Still unverified live: skip and pause relay through the manager to our
 controller, tab-close teardown, the media-key tone, and two-column PDFs.
+
+---
+
+## Verified live — plugin, 2026-09-24 (Zotero 10.0.3, flatpak, headless)
+
+The built `.xpi` (Tasks 4 and 5), installed through `AddonManager` into the
+same isolated test profile, against a fake-engine speakd daemon on
+`127.0.0.1:8743` that speaks in real time (15 characters a second, silent
+sink). Driven through the test bridge; every verb the plugin sends is written
+to Zotero's debug log (`speakd reader: <verb> <channel> <payload> -> <result>`),
+which, with the daemon's event stream, is the evidence below. Test-only
+patches are named where used.
+
+1. **Loads, adopts, probes pass.** The plugin loads with no error in
+   Zotero's error console (the two entries there are Zotero's own). A reader
+   opened afterwards is adopted (`adopted the reader for zotero:57P9GHFL`),
+   every probe passes, and the bar is drawn in the toolbar. Readers already
+   open stay Zotero's own (shown as "reopen this tab"). Reinstalling runs
+   shutdown: `_readers.push`, `loadVoices`, `_createController` and the
+   instance interface are restored, the style is removed, the popup closed.
+   A forced miss (the highlight-granularity pref hidden from the plugin while
+   a reader opened) refused that reader: logged to the error console, the bar
+   said "speakd cannot read in this Zotero: missing pref …" with every
+   control off, and no hook was installed.
+2. **A read, and the highlight following it.** `startRead(null)` (the bar's
+   play) gave `set_label {"label":"sample"}` (the item's title) and
+   `enqueue {…, "profile":"pdf"}` on `zotero:57P9GHFL`; the stream showed
+   `queued`/`started` on that channel, and the next section was enqueued as
+   the first started. As `position` events came, `manager._activeSegment`
+   was the segment the daemon named (samples: 0, 2, 3, 4, 5, 6, 7), and the
+   PDF view's `_readAloudHighlightedPosition` equalled that segment's
+   `sourcePosition` every time. A daemon sentence spanning two Zotero
+   segments (a title with no full stop, run into the next sentence)
+   highlighted the first.
+3. **Skips.** `manager.skipAhead('sentence')` twice and `skipBack` once sent
+   `seek {"by":1}`, `{"by":1}`, `{"by":-1}`; the highlight went 7 → 8 → 9 → 8.
+   One Zotero sentence can be two daemon sentences (speakd splits at some
+   clauses), so a skip can stay inside the same Zotero segment.
+4. **Pause, stop, close.** Zotero's own pause (`toggleReadAloudPaused`, what
+   Space does) and the bar's each sent one `pause`/`resume`; the daemon's
+   `transport` followed, the bar went "paused"/"reading". A pause from
+   elsewhere (a `pause` on another channel, as `speakctl pause` does) paused
+   Zotero's manager too, with no echo. Stop mid-read: one `hush` on the
+   channel, highlight cleared, popup closed. Closing the tab mid-read: one
+   `hush`, and the reader's handle is gone. A read that reaches its end
+   leaves the last sentence highlighted (`Complete`), with no hush needed.
+   While the plugin's read runs, Zotero's popup is mounted but
+   `display: none`, and the only audio element is Zotero's looping quiet
+   tone.
+5. **Zotero's own voice is left alone.** Test-only patch: the prototype's
+   remote interface replaced by a fake Zotero voice `fakecloud` (silent WAV
+   audio), the user logged in, and `fakecloud` persisted as the user's voice.
+   Zotero's own Read Aloud then used `fakecloud` through Zotero's own
+   `RemoteReadAloudController` (its `getAudio` was called), with no verb
+   sent to speakd and the popup visible. The catalogue offered both voices.
+   The plugin's read started over it switched to speakd (the popup hidden),
+   and stopping it put `reader.readAloudVoices` back exactly as it was; the
+   next Zotero read used `fakecloud` again.
+6. **Bad token, no daemon.** A wrong token in the preferences: the bar said
+   "wrong token — paste the output of speakctl http-token…" within 0.2 s,
+   controls off; a read attempted then failed at `set_label` in 0.1 s. With
+   the token put back the link reconnected and play was offered again. With
+   the daemon stopped the bar said "speakd is not running" at once and a
+   read failed in 0.1 s (on a warm reader), nothing hanging; restarted, the
+   link reconnected by itself. The preference pane showed port and token
+   (masked), and a port typed there reconfigured the link at once. Defaults:
+   port 8642, empty token.
+
+Also checked: "Read selection" through the text selection popup's hook
+(dispatched as Zotero's `CustomSections` does, with a PDF position and the
+selected text) read exactly the selected sentences, one section, and ended
+with the highlight left on the last; the bar's speed −/+ sent `set_speed`
+1.1 and back, shown from the daemon's `speed` event.
+
+Found live, and fixed:
+
+- An idle daemon publishes `started` before its answer to the `enqueue`, so
+  a section must be known to the channel before it is sent.
+- Zotero rebuilds the controller whenever `loadVoices` resolves late
+  (`_resolveVoice` → `_applyVoice` → `_createController`, starting at the
+  active segment); browser voices load slowly, so this happens mid-read. A
+  rebuild over the same `_segments` at the sentence being read now carries
+  the read on. The controller's `segments` argument is wrapped afresh on
+  every call, so identity is taken from `manager._segments`.
+- A selection's position maps (`_findReadAloudStartIndex`) to the first
+  segment ending at or after it, which can be the sentence before the
+  selection; the selected text corrects it.
+- `hush` leaves speakd's global pause on, and `status` does not report
+  pause, so the plugin's own start always sends `resume` (a no-op when not
+  paused).
+
+Observed, not ours: if Zotero's popup is closed before the document's
+language arrives, `readAloudState.lang` is never set for that reader
+(`_updateReadAloudUIState` ignores it while closed, and `_prepareReadAloud`
+only sets it when the manager has none), and the popup never mounts there
+again. The plugin's read still works in such a reader; the media keys and
+quiet tone, which live in the popup, do not.
+
+Still unverified live: a real mouse selection (the hook was driven
+synthetically), a real engine's timing, OS media keys (MPRIS), two-column
+and footnote-heavy PDFs, `ReaderWindow` readers, real Zotero cloud voices
+for a logged-in user, and the preference pane's look.
