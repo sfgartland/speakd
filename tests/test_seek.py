@@ -35,9 +35,9 @@ class CountingEngine(FakeEngine):
         super().__init__()
         self.texts: list[str] = []
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         self.texts.append(text)
-        return super().synthesize(text, voice, speed)
+        return super().synthesize(text, voice, speed, lang)
 
 
 def until(predicate, timeout: float = 5.0) -> bool:  # type: ignore[no-untyped-def]

@@ -25,9 +25,13 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from typing import Any
 
 import numpy as np
+
+from speakd import languages
+from speakd.synth import UnsupportedLanguage
 
 # An empty negative lookahead: zero-width, and fails at every position, so
 # `re.split` with it never finds a boundary. Kokoro therefore treats whatever
@@ -133,7 +137,7 @@ class KokoroEngine:
     name = "kokoro"
     sample_rate = 24000
 
-    def __init__(self, repo_id: str = "hexgrad/Kokoro-82M", lang_code: str = "a") -> None:
+    def __init__(self, repo_id: str = "hexgrad/Kokoro-82M") -> None:
         import kokoro
 
         setting = os.environ.get("SPEAKD_DEVICE", "auto").strip().lower() or "auto"
@@ -143,9 +147,7 @@ class KokoroEngine:
         if setting == "cuda" or (setting == "auto" and _cuda_available()):
             device = "cuda"
         try:
-            self._pipeline: Any = kokoro.KPipeline(
-                lang_code=lang_code, repo_id=repo_id, device=device
-            )
+            model = kokoro.KModel(repo_id=repo_id).to(device).eval()
         except RuntimeError as exc:
             if setting != "auto" or device != "cuda":
                 raise
@@ -154,15 +156,58 @@ class KokoroEngine:
                 "Set SPEAKD_DEVICE=cpu to skip trying.\n"
             )
             device = "cpu"
-            self._pipeline = kokoro.KPipeline(lang_code=lang_code, repo_id=repo_id, device=device)
+            model = kokoro.KModel(repo_id=repo_id).to(device).eval()
+        self.repo_id = repo_id
         self.device = device
+        self._model = model
+        # One KPipeline per Kokoro lang code, built lazily on first use and
+        # shared afterwards: a pipeline carries the G2P for its language,
+        # which is the expensive, language-specific part, while `self._model`
+        # -- the three gigabytes -- is the one thing every pipeline shares.
+        # Keyed by Kokoro's own single-letter code so `_pipeline_for` never
+        # asks the underlying package to redo `ALIASES` lookups it already
+        # did once at each pipeline's construction.
+        self._pipelines: dict[str, Any] = {}
+        self._pipelines_lock = threading.Lock()
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def _pipeline_for(self, lang: str) -> Any:
+        code = languages.KOKORO_CODES.get(lang)
+        if code is None:
+            # Not one of ours at all -- languages.normalise() would already
+            # have caught this upstream, so reaching it here means a caller
+            # bypassed normalisation. Still the right exception: the daemon's
+            # unsupported-language handling is what catches it either way.
+            raise UnsupportedLanguage(lang)
+        with self._pipelines_lock:
+            pipeline = self._pipelines.get(code)
+            if pipeline is not None:
+                return pipeline
+            import kokoro
+
+            try:
+                pipeline = kokoro.KPipeline(
+                    lang_code=code, repo_id=self.repo_id, model=self._model, device=self.device
+                )
+            except Exception as exc:
+                # A missing G2P extra (misaki's ja/zh) is the case this
+                # exists for, but any construction failure gets the same
+                # treatment: the daemon has one thing to catch and one
+                # setting (speech.unsupported_language) to act on, not a
+                # zoo of engine-specific exceptions.
+                raise UnsupportedLanguage(lang) from exc
+            self._pipelines[code] = pipeline
+            return pipeline
+
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         if not text.strip():
             return np.zeros(0, dtype=np.float32)
-        results = self._pipeline(text, voice=voice, speed=speed, split_pattern=NO_SPLIT)
+        pipeline = self._pipeline_for(lang)
+        results = pipeline(text, voice=voice, speed=speed, split_pattern=NO_SPLIT)
         chunks = [audio for _, _, audio in results if audio is not None]
         if not chunks:
             return np.zeros(0, dtype=np.float32)
         audio = np.concatenate([np.asarray(c, dtype=np.float32) for c in chunks])
         return trim_silence(audio, self.sample_rate)
+
+    def supported_languages(self) -> list[str]:
+        return languages.supported_languages()

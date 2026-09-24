@@ -12,6 +12,24 @@ from typing import Protocol
 import numpy as np
 
 
+class UnsupportedLanguage(Exception):
+    """Raised by `synthesize` when an engine cannot make a pipeline for `lang`.
+
+    Not the same thing as a language absent from `supported_languages()` --
+    that is the daemon's static check, made before speaking a word. This is
+    for the case the design calls out separately (§2, and the plan's Review
+    Focus): the *first* pipeline for a language is built lazily, on the
+    synthesis thread, and that build can fail for a language the static
+    check did not already rule out. Pipeline code raises this rather than
+    whatever the underlying failure was, so callers have one thing to catch
+    regardless of engine.
+    """
+
+    def __init__(self, lang: str) -> None:
+        super().__init__(lang)
+        self.lang = lang
+
+
 class Synthesizer(Protocol):
     """Turns one already-segmented unit of text into audio.
 
@@ -22,4 +40,4 @@ class Synthesizer(Protocol):
     name: str
     sample_rate: int
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray: ...
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray: ...

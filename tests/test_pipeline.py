@@ -45,9 +45,9 @@ class TimedEngine(FakeEngine):
         super().__init__(synthesis_cost=synthesis_cost)
         self.started: list[float] = []
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         self.started.append(time.monotonic())
-        return super().synthesize(text, voice, speed)
+        return super().synthesize(text, voice, speed, lang)
 
 
 class ExplodingEngine(FakeEngine):
@@ -57,10 +57,10 @@ class ExplodingEngine(FakeEngine):
         super().__init__()
         self.bad = bad
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         if text == self.bad:
             raise RuntimeError("engine exploded")
-        return super().synthesize(text, voice, speed)
+        return super().synthesize(text, voice, speed, lang)
 
 
 class HoldingEngine(FakeEngine):
@@ -79,13 +79,13 @@ class HoldingEngine(FakeEngine):
         self.reached = reached
         self.release = release
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         idx = self.calls
         self.calls += 1
         if idx == 2:
             self.reached.set()
             assert self.release.wait(timeout=5), "driver never released synthesize()"
-        return super().synthesize(text, voice, speed)
+        return super().synthesize(text, voice, speed, lang)
 
 
 class HoldingPlayer(RecordingPlayer):
@@ -184,6 +184,26 @@ def test_a_failing_segment_does_not_lose_the_others() -> None:
     assert len(player.played) == 2
     assert len(result.errors) == 1
     assert "exploded" in result.errors[0]
+
+
+def test_an_unsupported_language_stops_the_pass_and_names_it() -> None:
+    # Simulates the first pipeline for a language failing to build (the
+    # daemon's own retry, with a different lang, is Task 5's concern -- this
+    # only proves speak() surfaces it distinctly from an ordinary error).
+    engine = FakeEngine(raise_for=["ja"])
+    player = RecordingPlayer()
+    result = speak([piece("One. Two. Three.")], engine, player, lang="ja")
+    assert result.unsupported_language == "ja"
+    assert player.played == []
+    assert result.errors == []
+    assert result.aborted is False
+    assert result.cancelled is False
+
+
+def test_lang_is_passed_through_to_the_engine() -> None:
+    engine = FakeEngine()
+    speak([piece("Bonjour.")], engine, RecordingPlayer(), lang="fr")
+    assert engine.synthesized_langs == ["fr"]
 
 
 def test_cancellation_mid_stream_does_not_leak_the_producer_thread() -> None:
@@ -578,9 +598,9 @@ class CountingEngine(FakeEngine):
         super().__init__()
         self.calls: list[tuple[str, float]] = []
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         self.calls.append((text, speed))
-        return super().synthesize(text, voice, speed)
+        return super().synthesize(text, voice, speed, lang)
 
 
 def test_given_units_are_spoken_as_given() -> None:

@@ -20,8 +20,9 @@ from dataclasses import dataclass, replace
 from traceback import format_exc
 from typing import Protocol, runtime_checkable
 
-from speakd import segmenter, state
+from speakd import languages, segmenter, state
 from speakd.channels import MODES, Channel, ChannelTable, effective_mode
+from speakd.detect import Detector
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
 from speakd.model import Piece, Role, Segment, Span
@@ -40,10 +41,23 @@ from speakd.timeline import Timeline
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
 
 # Kokoro 0.9.4's nine languages (design §2). Declared here as the options for
-# `speech.default_language` even though nothing yet reads that setting --
-# resolving an utterance's language is phase 2 of the settings-and-languages
-# design, and the setting exists now so the window has something to show.
+# `speech.default_language`.
 _LANGUAGE_OPTIONS = ("en", "en-gb", "es", "fr", "hi", "it", "pt-br", "ja", "zh")
+
+# design §2, "Voices". Kept here rather than in `languages.py`: that module
+# knows nothing about Kokoro voice names, only Kokoro lang codes, and these
+# are a default *value* for a setting, not a fact resolution needs.
+_DEFAULT_VOICES: dict[str, str] = {
+    "en": "af_heart",
+    "en-gb": "bf_emma",
+    "es": "ef_dora",
+    "fr": "ff_siwis",
+    "hi": "hf_alpha",
+    "it": "if_sara",
+    "pt-br": "pf_dora",
+    "ja": "jf_alpha",
+    "zh": "zf_xiaobei",
+}
 
 # What core declares at every start. Not persisted (`persist=False` at the
 # call site): core redeclares this on every run, so persisting it would only
@@ -63,6 +77,24 @@ _CORE_SPEECH_SETTINGS: tuple[dict[str, object], ...] = (
         "default": True,
         "label": "Detect language",
         "help": "Guess an utterance's language when nothing else says it.",
+    },
+    {
+        "name": "voices",
+        "type": "voice_map",
+        "default": dict(_DEFAULT_VOICES),
+        "label": "Voices",
+        "help": "Which voice speaks each language.",
+    },
+    {
+        "name": "unsupported_language",
+        "type": "choice",
+        "default": "default",
+        "label": "Unsupported language",
+        "help": (
+            "What to do when the resolved language has no voice: speak it with "
+            "the default language instead, or decline to speak at all."
+        ),
+        "options": ["default", "decline"],
     },
 )
 
@@ -187,6 +219,12 @@ class _Job:
     # Set for a replay: speak this, already prepared, from `start`.
     replay: _Spoken | None = None
     start: int = 0
+    # The payload's own `lang`, normalised, or None when it named none -- the
+    # first candidate in resolution order (design §2). `languages.UNSUPPORTED`
+    # is a real value here, not None: a payload lang the daemon could not
+    # parse must still win resolution and reach speech.unsupported_language,
+    # not fall through to the channel or default as though nothing were given.
+    lang: str | None = None
 
 
 @dataclass
@@ -229,6 +267,10 @@ class Daemon:
         # that can go offline and come back, so there is nothing here for a
         # persisted schema to stand in for.
         self.settings.declare("speech", list(_CORE_SPEECH_SETTINGS), persist=False)
+        # Built once and reused for the daemon's whole life: it imports
+        # lingua lazily on its own first `detect()` call, not here, so
+        # constructing the daemon never pays that cost either.
+        self._detector = Detector()
         # Loaded rather than defaulted: after a reboot, surprising silence is
         # a smaller failure than surprising speech.
         self.muted = state.load().muted
@@ -521,6 +563,62 @@ class Daemon:
             return {"loaded": True, "loading": False}
         return {"loaded": engine.loaded, "loading": engine.loading}
 
+    def _supported_languages(self) -> list[str]:
+        """What `self.engine` can actually speak right now.
+
+        Duck-typed rather than part of `Synthesizer` itself: an engine with
+        nothing to say about it (there is none today, but the protocol makes
+        no promise) is read as speaking everything, since refusing every
+        utterance for a fact no engine here withholds would be the wrong
+        default.
+        """
+        getter = getattr(self.engine, "supported_languages", None)
+        if callable(getter):
+            return list(getter())
+        return list(languages.SUPPORTED)
+
+    def _voice_for(self, lang: str, profile_voice: str) -> str:
+        """The voice to speak `lang` with (design §2, "Voices").
+
+        The profile's own voice wins when it already belongs to `lang` --
+        someone who picked a voice on purpose should keep it for the
+        language it actually speaks. Otherwise `speech.voices[lang]`,
+        falling back to the entry for the default language, and to the
+        profile's own voice if even that is missing (a `voices` map edited
+        by hand need not be exhaustive for every profile to still say
+        something).
+        """
+        if languages.voice_language(profile_voice) == lang:
+            return profile_voice
+        voices = self.settings.get("speech.voices")
+        voice_map = voices if isinstance(voices, dict) else {}
+        if lang in voice_map:
+            return str(voice_map[lang])
+        default_lang = str(self.settings.get("speech.default_language"))
+        return str(voice_map.get(default_lang, profile_voice))
+
+    def _unsupported_language(self, source_id: str, requested: str) -> str | None:
+        """Apply `speech.unsupported_language` for a language nothing can speak.
+
+        Returns the language to speak instead, or None having already
+        published `declined` and `finished` for a caller that must now stop
+        -- the same two-event shape `_refusal` uses elsewhere in this module,
+        kept separate because this decision needs the text prepared and the
+        language resolved, which only `_speak` has.
+        """
+        mode = self.settings.get("speech.unsupported_language")
+        if mode == "decline":
+            self._publish("declined", source_id, {"reason": f"no voice for {requested}"})
+            self._publish("finished", source_id, {"cancelled": False, "aborted": True})
+            return None
+        default_lang = str(self.settings.get("speech.default_language"))
+        self._publish(
+            "language",
+            source_id,
+            {"requested": requested, "used": default_lang, "reason": "unsupported"},
+        )
+        return default_lang
+
     def _set_engine_loaded(self, wanted: bool) -> Response:
         """Load or unload the model, without ever blocking the socket.
 
@@ -774,6 +872,8 @@ class Daemon:
             return Response(ok=True, data={"discarded": discarded, "scope": scope})
         if request.verb is Verb.SET_MODE:
             return self._set_mode(request.source_id, request.payload.get("mode"))
+        if request.verb is Verb.SET_LANGUAGE:
+            return self._set_language(request.source_id, request.payload.get("lang"))
         if request.verb is Verb.SET_CAPABILITIES:
             return self._set_capabilities(request.source_id, request.payload.get("briefs"))
         if request.verb is Verb.STATUS:
@@ -796,6 +896,7 @@ class Daemon:
                             "briefs": c.briefs,
                             "mode": effective_mode(c),
                             "briefed_this_turn": c.briefed_this_turn,
+                            "lang": c.lang,
                         }
                         for c in self.channels.all()
                     ],
@@ -814,6 +915,11 @@ class Daemon:
                     "muted": self.muted,
                     "engine": self._engine_status(),
                     "speed": self.tempo.target,
+                    "languages": {
+                        "supported": self._supported_languages(),
+                        "default": self.settings.get("speech.default_language"),
+                        "detect": bool(self.settings.get("speech.detect_language")),
+                    },
                 },
             )
         if request.verb in (Verb.PAUSE, Verb.RESUME):
@@ -959,6 +1065,8 @@ class Daemon:
             return refusal
         profile_name = str(request.payload.get("profile", channel.profile))
         profile = self.profile_for(profile_name)
+        lang_raw = request.payload.get("lang")
+        job_lang = languages.normalise(lang_raw) if isinstance(lang_raw, str) else None
         decision = decide(
             SpeechRequest(request.source_id, text, kind), channel, profile.interrupt_on
         )
@@ -977,7 +1085,13 @@ class Daemon:
             # know which one is talking before what it says.
             prefix = f"{channel.label}:"
         response = self._accept(
-            _Job(source_id=request.source_id, text=text, profile=profile, prefix=prefix),
+            _Job(
+                source_id=request.source_id,
+                text=text,
+                profile=profile,
+                prefix=prefix,
+                lang=job_lang,
+            ),
             at,
         )
         # A progress note is not the end of the turn: only an outcome, a
@@ -1043,6 +1157,27 @@ class Daemon:
         data = {"mode": effective_mode(channel), "briefs": channel.briefs}
         self._publish("mode", source_id, dict(data))
         return Response(ok=True, data=data)
+
+    def _set_language(self, source_id: str, lang: object) -> Response:
+        """Pin a channel's language, or clear it with `auto`.
+
+        Scoped like `set_mode` -- a channel names itself, since there is no
+        sense in which "the whole daemon's" language is a thing to pin.
+        `auto` and the empty string both clear it, which is the one case
+        `languages.normalise` is not asked to handle: they mean "nothing was
+        chosen," not "something unparseable was."
+        """
+        if not source_id:
+            return Response(ok=False, error="set_language needs a channel")
+        if not isinstance(lang, str):
+            return Response(ok=False, error="set_language needs a string 'lang'")
+        if lang.strip().lower() in ("", "auto"):
+            normalised = None
+        else:
+            normalised = languages.normalise(lang)
+        self.channels.set_lang(source_id, normalised)
+        self._publish("language", source_id, {"lang": normalised})
+        return Response(ok=True, data={"lang": normalised})
 
     def _set_capabilities(self, source_id: str, briefs: object) -> Response:
         """A client declares that it can brief for this channel, or no longer can."""
@@ -1349,6 +1484,32 @@ class Daemon:
             # showing the whole utterance needs them all up front, and a seek
             # addresses them by the index given here.
             units = segmenter.segment(pieces)
+        # Resolution order (design §2): the payload's own lang, the channel's
+        # pinned one, detection, then the default -- first match wins.
+        # Detection is skipped, not merely ignored, when either of the first
+        # two already answered: it is the one candidate expensive enough to
+        # be worth not running unless it would actually be used.
+        channel = self.channels.get(job.source_id)
+        channel_lang = channel.lang if channel is not None else None
+        detected_lang: str | None = None
+        if (
+            job.lang is None
+            and not channel_lang
+            and bool(self.settings.get("speech.detect_language"))
+        ):
+            detected_lang = self._detector.detect(text)
+        default_lang = str(self.settings.get("speech.default_language"))
+        resolution = languages.resolve(job.lang, channel_lang, detected_lang, default_lang)
+        lang = resolution.lang
+        if lang not in self._supported_languages():
+            fallback = self._unsupported_language(job.source_id, lang)
+            if fallback is None:
+                # `_unsupported_language` already published `declined` and
+                # `finished` -- nothing was ever announced as `started`, so
+                # there is nothing left to unwind.
+                return
+            lang = fallback
+        voice = self._voice_for(lang, job.profile.voice)
         with self._idle:
             self._last = _Spoken(
                 source_id=job.source_id,
@@ -1362,6 +1523,7 @@ class Daemon:
             job.source_id,
             {
                 "text": text,
+                "lang": lang,
                 "segments": [
                     {
                         "index": i,
@@ -1435,8 +1597,9 @@ class Daemon:
                         pieces,
                         self.engine,
                         self.player,
-                        voice=job.profile.voice,
+                        voice=voice,
                         speed=job.profile.speed,
+                        lang=lang,
                         cancel=cancel,
                         window=self._synthesis,
                         timeline=timeline,
@@ -1463,6 +1626,32 @@ class Daemon:
                 # bus ahead of whatever comes next.
                 for message in result.errors:
                     self._publish("error", job.source_id, {"message": message})
+                if result.unsupported_language is not None:
+                    # The static check above passed (the language was in
+                    # `_supported_languages()`), but building the engine's
+                    # first pipeline for it still failed -- Review Focus: this
+                    # must fall back per speech.unsupported_language, not
+                    # kill the worker. Nothing has played yet (this can only
+                    # happen on the very first unit synthesised at this
+                    # lang), so retrying from the same `start` loses nothing.
+                    requested = result.unsupported_language
+                    fallback = self._unsupported_language(job.source_id, requested)
+                    if fallback is None:
+                        return
+                    if fallback == lang:
+                        # The fallback is itself the language that just
+                        # failed (a broken default) -- retrying would loop
+                        # forever, so this ends the utterance instead.
+                        self._publish(
+                            "error", job.source_id, {"message": f"no voice for {requested}"}
+                        )
+                        self._publish(
+                            "finished", job.source_id, {"cancelled": False, "aborted": True}
+                        )
+                        return
+                    lang = fallback
+                    voice = self._voice_for(lang, job.profile.voice)
+                    continue
                 with self._idle:
                     target, current.seek_to = current.seek_to, None
                     if target is None or not self._running:

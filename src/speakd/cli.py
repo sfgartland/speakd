@@ -165,6 +165,8 @@ def _build_parser() -> argparse.ArgumentParser:
     mode = sub.add_parser("mode", parents=[common], help="brief or full narration for a channel")
     # Checked in `_mode`, not by argparse `choices`, for the reason `role` gives.
     mode.add_argument("mode", metavar="{brief,full}", help="brief: what the agent chooses to say")
+    lang = sub.add_parser("lang", parents=[common], help="set a channel's language")
+    lang.add_argument("lang", help="a language code (e.g. fr, pt-br), or 'auto' to clear it")
     seek = sub.add_parser("seek", parents=[common], help="move within what is being spoken")
     where = seek.add_mutually_exclusive_group(required=True)
     where.add_argument("--by", type=int, help="sentences forward (negative: back)")
@@ -496,6 +498,17 @@ def _mode(args: argparse.Namespace) -> int:
     response = _call(
         args.socket,
         Request(verb=Verb.SET_MODE, source_id=args.source, payload={"mode": args.mode}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
+def _lang(args: argparse.Namespace) -> int:
+    """Pin a channel's language, or clear it with `auto`. Silent on success."""
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_LANGUAGE, source_id=args.source, payload={"lang": args.lang}),
     )
     if response is None:
         return _UNREACHABLE
@@ -922,6 +935,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _seek(args)
     if args.command == "mode":
         return _mode(args)
+    if args.command == "lang":
+        return _lang(args)
     if args.command == "role":
         return _role(args)
     if args.command == "priority":

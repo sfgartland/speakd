@@ -23,6 +23,9 @@ kokoro = [
     # this extra will mean dropping it and relying on misaki's own download.
     "en-core-web-sm",
 ]
+# Language detection, imported lazily on first use (speakd.detect); without
+# this extra detection is off and speakd says so once, at startup.
+lang = ["lingua-language-detector"]
 llm = ["litellm"]
 
 [project.scripts]
@@ -66,7 +69,7 @@ strict = true
 # imported inside functions and immediately adapted behind our own typed
 # interfaces (Player, Synthesizer), so nothing untyped escapes those modules.
 [[tool.mypy.overrides]]
-module = ["kokoro.*", "sounddevice.*", "torch", "torch.*"]
+module = ["kokoro.*", "misaki.*", "sounddevice.*", "torch", "torch.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

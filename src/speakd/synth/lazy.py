@@ -92,9 +92,25 @@ class LazyEngine:
         # rather than assumed.
         gc.collect()
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         with self._lock:
             engine = self._engine
         if engine is None:
             return np.zeros(0, dtype=np.float32)
-        return engine.synthesize(text, voice, speed)
+        return engine.synthesize(text, voice, speed, lang)
+
+    def supported_languages(self) -> list[str]:
+        """What the underlying engine speaks, or none while unloaded.
+
+        Not "every language we might ever load" -- while unloaded there is no
+        pipeline for any of them, and the daemon's `_refusal` already drops
+        an utterance for "disabled" before this could matter operationally.
+        Delegated rather than hard-coded so a swapped-in engine's own list is
+        always what is reported.
+        """
+        with self._lock:
+            engine = self._engine
+        if engine is None:
+            return []
+        getter = getattr(engine, "supported_languages", None)
+        return list(getter()) if callable(getter) else []
