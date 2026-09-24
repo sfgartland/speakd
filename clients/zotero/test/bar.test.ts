@@ -67,10 +67,19 @@ describe("describeBar", () => {
 
   it("says the token is wrong, from the stream or from a verb", () => {
     expect(describeBar(input({ stream: "bad-token" })).kind).toBe("bad-token");
-    const fromVerb = describeBar(input({ problem: { kind: "bad-token", error: "401" } }));
+    const fromVerb = describeBar(input({ stream: "connecting", problem: { kind: "bad-token", error: "401" } }));
     expect(fromVerb.kind).toBe("bad-token");
     expect(fromVerb.status).toMatch(/speakctl http-token/);
     expect(fromVerb.play.enabled).toBe(false);
+  });
+
+  it("lets a read that failed on an old token or a lost daemon be tried again once connected", () => {
+    // A connected stream is the daemon, taking the token now in the preferences.
+    for (const kind of ["bad-token", "no-daemon"] as const) {
+      const view = describeBar(input({ problem: { kind, error: "then" } }));
+      expect(view.kind).toBe("problem");
+      expect(view.play).toMatchObject({ enabled: true, action: "start" });
+    }
   });
 
   it("says when the daemon declined, and lets the user try again", () => {

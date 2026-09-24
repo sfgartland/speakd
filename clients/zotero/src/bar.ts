@@ -93,10 +93,14 @@ export function describeBar(input: BarInput): BarView {
   if (adoption.kind === "refused") return silent("refused", `speakd cannot read in this Zotero: ${adoption.reason}`);
   if (adoption.kind === "unadopted") return silent("unadopted", "speakd: reopen this tab to read it aloud");
   if (adoption.kind === "pending") return silent("pending", "speakd: getting ready…");
-  if (input.stream === "bad-token" || input.problem?.kind === "bad-token") {
+  // A verb's failure says so as soon as it happens; once the stream is
+  // connected, it is the daemon taking today's token, and the failure is
+  // history -- something to try again, not a state to be stuck in.
+  const connected = input.stream === "connected";
+  if (input.stream === "bad-token" || (!connected && input.problem?.kind === "bad-token")) {
     return silent("bad-token", "speakd: wrong token — paste the output of speakctl http-token into Settings → speakd reader");
   }
-  if (input.stream === "no-daemon" || input.problem?.kind === "no-daemon") {
+  if (input.stream === "no-daemon" || (!connected && input.problem?.kind === "no-daemon")) {
     return silent("no-daemon", "speakd is not running");
   }
   if (input.stream === "connecting") return silent("connecting", "speakd: connecting…");
