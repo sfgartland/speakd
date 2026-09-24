@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from traceback import format_exc
@@ -33,6 +34,9 @@ from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
+
+# How long a channel may go unused before it is forgotten.
+_CHANNEL_IDLE_SECONDS = 12 * 3600.0
 
 # Kinds spoken with the channel's label in front: several sessions share one
 # room, and a briefing or an alert is only useful if it says whose it is.
@@ -551,6 +555,19 @@ class Daemon:
         self._publish("transport", "", {"paused": paused})
         return Response(ok=True, data={"paused": paused})
 
+    def _prune_channels(self) -> None:
+        """Forget channels nobody has used in half a day.
+
+        Sessions come and go and each leaves a channel behind; without this the
+        list grows for the daemon's whole life. Nothing with speech waiting or
+        sounding is forgotten, however long it has been idle.
+        """
+        with self._idle:
+            busy = {job.source_id for job in self._pending_jobs()}
+            if self._current is not None:
+                busy.add(self._speaking)
+        self.channels.prune(time.time() - _CHANNEL_IDLE_SECONDS, keep=busy)
+
     def _seek(self, payload: dict[str, object]) -> Response:
         """Move playback to another segment of the utterance being spoken.
 
@@ -720,6 +737,7 @@ class Daemon:
         if request.verb is Verb.SET_CAPABILITIES:
             return self._set_capabilities(request.source_id, request.payload.get("briefs"))
         if request.verb is Verb.STATUS:
+            self._prune_channels()
             # Read-only, deliberately: asking what the channels are must not
             # open one for the asker. `speakctl status` would otherwise leave
             # a phantom "cli" channel in every listing it printed.

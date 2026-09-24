@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from speakd.model import Role
 
@@ -42,6 +42,10 @@ class Channel:
     # Whether the briefer has spoken since the user last prompted, so the end
     # of a turn can stay quiet when the agent has already said its piece.
     briefed_this_turn: bool = False
+    # When anything last touched this channel -- a request naming it, or an
+    # attempt to speak -- so one nobody has used in a long time can be
+    # forgotten rather than listed for ever.
+    last_used: float = field(default_factory=time.time)
 
 
 MODES = ("full", "brief")
@@ -94,6 +98,7 @@ class ChannelTable:
                     for name, value in self._defaults(source_id).items():
                         setattr(channel, name, value)
                 self._channels[source_id] = channel
+            channel.last_used = time.time()
             if role is not None:
                 channel.role = role
             if priority is not None:
@@ -113,7 +118,20 @@ class ChannelTable:
             channel = self._channels.get(source_id)
             if channel is not None:
                 channel.last_output = now
+                channel.last_used = now
         return now
+
+    def prune(self, before: float, keep: set[str]) -> list[str]:
+        """Forget channels unused since `before`, except those in `keep`."""
+        with self._lock:
+            gone = [
+                source_id
+                for source_id, channel in self._channels.items()
+                if channel.last_used < before and source_id not in keep
+            ]
+            for source_id in gone:
+                del self._channels[source_id]
+        return gone
 
     def set_mode(self, source_id: str, mode: str) -> Channel:
         channel = self.open(source_id)

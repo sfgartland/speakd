@@ -1008,26 +1008,52 @@
    * or refuse (a private window, blocked site data), and a list that fails to
    * draw over it would be far worse than stars that do not stick.
    */
-  function loadSet(key) {
+  // Each marked channel with when the window last saw it listed, so marks for
+  // sessions long gone can be forgotten. Saved as { id: seconds }; an older
+  // save is a plain array of ids, taken as seen now.
+  const nowSeconds = () => Date.now() / 1000;
+  function loadMarks(key) {
     try {
-      const raw = JSON.parse(localStorage.getItem(key) ?? "[]");
-      return new Set(Array.isArray(raw) ? raw.filter((id) => typeof id === "string") : []);
+      const raw = JSON.parse(localStorage.getItem(key) ?? "{}");
+      if (Array.isArray(raw)) {
+        return new Map(raw.filter((id) => typeof id === "string").map((id) => [id, nowSeconds()]));
+      }
+      return new Map(
+        Object.entries(raw && typeof raw === "object" ? raw : {}).filter(
+          ([, seen]) => typeof seen === "number",
+        ),
+      );
     } catch {
-      return new Set();
+      return new Map();
     }
   }
-  function saveSet(key, set) {
+  function saveMarks(key, marks) {
     try {
-      localStorage.setItem(key, JSON.stringify([...set]));
+      localStorage.setItem(key, JSON.stringify(Object.fromEntries(marks)));
     } catch {
       /* it still holds for this window's life */
     }
   }
-  const stars = loadSet("speakd.stars");
+  // A week unseen: long enough to outlast a weekend and a daemon restart,
+  // short enough that a year of sessions does not pile up.
+  const FORGET_MARKS_AFTER = 7 * 86400;
+  /** Note which marked channels are listed now, and forget long-unseen ones. */
+  function tendMarks(listed) {
+    const now = nowSeconds();
+    const ids = new Set(listed.map((c) => c.source_id));
+    for (const [key, marks] of [["speakd.stars", stars], ["speakd.hidden", hidden]]) {
+      for (const id of marks.keys()) {
+        if (ids.has(id)) marks.set(id, now);
+        else if (now - marks.get(id) > FORGET_MARKS_AFTER) marks.delete(id);
+      }
+      saveMarks(key, marks);
+    }
+  }
+  const stars = loadMarks("speakd.stars");
   // Hidden is its own choice, not mute's: a mute is often for a minute, and a
   // channel that vanished from the list every time it was silenced would be
   // hard to find again to unmute. Hiding is how a channel leaves the list.
-  const hidden = loadSet("speakd.hidden");
+  const hidden = loadMarks("speakd.hidden");
   // Whether the fold of hidden channels is open, kept across rebuilds: the
   // list is redrawn on every mute and every output, and a fold that snapped
   // shut each time would be one nobody could read.
@@ -1084,12 +1110,12 @@
     star.addEventListener("click", () => {
       if (stars.has(channel.source_id)) stars.delete(channel.source_id);
       else {
-        stars.add(channel.source_id);
+        stars.set(channel.source_id, nowSeconds());
         // Starred and hidden contradict each other; the newer choice wins.
         hidden.delete(channel.source_id);
-        saveSet("speakd.hidden", hidden);
+        saveMarks("speakd.hidden", hidden);
       }
-      saveSet("speakd.stars", stars);
+      saveMarks("speakd.stars", stars);
       renderChannels({ rerank: true });
     });
 
@@ -1102,11 +1128,11 @@
     hide.addEventListener("click", () => {
       if (hidden.has(channel.source_id)) hidden.delete(channel.source_id);
       else {
-        hidden.add(channel.source_id);
+        hidden.set(channel.source_id, nowSeconds());
         stars.delete(channel.source_id);
-        saveSet("speakd.stars", stars);
+        saveMarks("speakd.stars", stars);
       }
-      saveSet("speakd.hidden", hidden);
+      saveMarks("speakd.hidden", hidden);
       renderChannels({ rerank: true });
     });
 
@@ -1314,6 +1340,7 @@
     const engine = data.engine ?? {};
     engineState = engine.loading ? "loading" : engine.loaded ? "ready" : "unloaded";
     statusKnown = true;
+    tendMarks(channels);
     // The title bar has been showing a source_id since the first event; now
     // that labels are readable it can show the name instead.
     if (speakingSource) el("chan").textContent = labelFor(speakingSource);
