@@ -797,3 +797,40 @@ reader.
 - The full `ReaderWindow` path (separate window) was checked only for push
   and `_open` timing (`X:2953-2966`, `X:2243`), not for the rest of the
   takeover.
+
+---
+
+## Verified live, 2026-09-24 (Zotero 10.0.3, flatpak, headless)
+
+A throwaway profile with its own data directory, driven through a test-only
+bridge plugin that evaluates chrome-scope JavaScript posted to Zotero's local
+server (Marionette cannot be used: its `newSession` waits for a
+`navigator:browser` window Zotero never opens). The bridge runs in a plugin
+bootstrap sandbox, so what holds there holds for the reader plugin. One
+spike, prototyping §8 inline, established:
+
+- `Components.utils` is present in the plugin sandbox (`exportFunction`,
+  `cloneInto`, `waiveXrays`).
+- Replacing `reader._getReadAloudRemoteInterface` on the instance inside a
+  wrapped `Zotero.Reader._readers.push` takes effect: `getVoices` from our
+  interface supplied the only voice (`allVoices` = `["speakd"]`).
+- `manager.loadVoices` and `manager._createController`, replaced with
+  `Cu.exportFunction(fn, win)` on the waived manager, are called by the
+  bundle; the voice at controller creation was ours.
+- `voice.getController` replaced the same way received the live segment
+  array (19 sentence segments for a one-page test PDF, each with
+  `sourcePosition {pageIndex, rects}`) and start index 0 from
+  `startReadAloudAtPosition(null)`.
+- A controller built as `new win.EventTarget()` with exported accessors and
+  methods was accepted by the manager.
+- `new win.Event("ActiveSegmentChange")` with `segment` set through a waiver,
+  dispatched on that controller, made `manager._activeSegment` identical to
+  `segments[1]`, and the PDF view's `_readAloudHighlightedPosition` became
+  segment 1's position (page 0, one rect).
+- `toggleReadAloudPopup(false)` cleared the highlight.
+- Seeding `extensions.zotero.reader.readAloudVoices` with an entry for the
+  document's language avoided the first-run dialog. Segmentation (SDT) runs
+  headless.
+
+Still unverified live: skip and pause relay through the manager to our
+controller, tab-close teardown, the media-key tone, and two-column PDFs.
