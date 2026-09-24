@@ -1,0 +1,22 @@
+<vbox id="speakd-reader-prefs" xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul" xmlns:html="http://www.w3.org/1999/xhtml">
+  <groupbox>
+    <label><html:h2>speakd</html:h2></label>
+    <description>
+      Where the speakd daemon listens on this computer, and the token it asks for.
+    </description>
+    <hbox align="center">
+      <label control="speakd-reader-port" value="Port"/>
+      <html:input id="speakd-reader-port" type="number" min="1" max="65535" size="6"
+                  preference="extensions.speakd-reader.port"/>
+    </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-token" value="Token"/>
+      <html:input id="speakd-reader-token" type="password" size="40" autocomplete="off"
+                  preference="extensions.speakd-reader.token"/>
+    </hbox>
+    <description>
+      Run <html:code>speakctl http-token</html:code> in a terminal and paste what it prints.
+      The port is 8642 unless speakd's config says otherwise.
+    </description>
+  </groupbox>
+</vbox>

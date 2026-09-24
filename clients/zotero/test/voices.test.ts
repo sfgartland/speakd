@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SPEAKD_VOICE_ID, mergeVoices, silentWav, speakdCatalogueEntry } from "../src/voices";
+import { SPEAKD_VOICE_ID, mergeVoices, silentWav, speakdCatalogueEntry, type VoicesAnswer } from "../src/voices";
 
 describe("mergeVoices", () => {
   it("offers speakd alone when Zotero has no voices of its own to offer", () => {
@@ -15,7 +15,7 @@ describe("mergeVoices", () => {
 
   it("adds speakd to Zotero's own voices, keeping them and their credits", () => {
     const zotero = { voices: { en: { label: "Zotero" } }, locales: { en: ["z"] }, segmentGranularity: "sentence" };
-    const merged = mergeVoices(
+    const merged = <VoicesAnswer>mergeVoices(
       {
         voices: { standard: [zotero], premium: [zotero] },
         standardCreditsRemaining: 30,
