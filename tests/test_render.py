@@ -23,8 +23,8 @@ from speakd.render import (
     append_pcm,
     load_manifest,
     new_job_id,
+    pcm_duration,
     save_manifest,
-    wav_duration,
 )
 from speakd.synth.fake import FakeEngine
 
@@ -72,7 +72,14 @@ def _job(tmp_path: Path, **overrides: object) -> RenderJob:
 
 
 def test_manifest_round_trip(tmp_path: Path) -> None:
-    job = _job(tmp_path, part_index=1, sentence_index=2, done_seconds=3.5, state="running")
+    job = _job(
+        tmp_path,
+        part_index=1,
+        sentence_index=2,
+        done_seconds=3.5,
+        state="running",
+        sample_rate=24000,
+    )
     work_dir = tmp_path / "work"
     save_manifest(job, work_dir)
 
@@ -87,17 +94,22 @@ def test_manifest_round_trip(tmp_path: Path) -> None:
     assert loaded.sentence_index == 2
     assert loaded.done_seconds == 3.5
     assert loaded.metadata == job.metadata
+    assert loaded.sample_rate == 24000
 
 
 def test_append_pcm_creates_then_appends(tmp_path: Path) -> None:
-    path = tmp_path / "part-0.wav"
-    append_pcm(path, b"\x00\x01" * 100, sample_rate=1000)
-    first_duration = wav_duration(path)
-    append_pcm(path, b"\x00\x01" * 100, sample_rate=1000)
-    second_duration = wav_duration(path)
+    path = tmp_path / "part-0.pcm"
+    append_pcm(path, b"\x00\x01" * 100)
+    first_duration = pcm_duration(path, sample_rate=1000)
+    append_pcm(path, b"\x00\x01" * 100)
+    second_duration = pcm_duration(path, sample_rate=1000)
 
     assert second_duration == pytest.approx(2 * first_duration)
     assert first_duration == pytest.approx(100 / 1000)
+
+
+def test_pcm_duration_of_a_missing_file_is_zero(tmp_path: Path) -> None:
+    assert pcm_duration(tmp_path / "nope.pcm", sample_rate=1000) == 0.0
 
 
 def test_render_runs_to_done_and_synthesizes_every_sentence(tmp_path: Path) -> None:
@@ -122,7 +134,7 @@ def test_resume_continues_at_the_recorded_sentence_without_resynthesizing(
     save_manifest(job, work_dir)
     # Sentences 0 and 1 ("One.", "Two.") are already on disk, exactly as a
     # real crash would leave them -- resume must not touch them again.
-    append_pcm(work_dir / "part-0.wav", b"\x00\x00" * 10, sample_rate=engine_rate)
+    append_pcm(work_dir / "part-0.pcm", b"\x00\x00" * 10)
 
     engine = CountingEngine(sample_rate=engine_rate)
     queue = RenderQueue(engine, work_root=work_root)

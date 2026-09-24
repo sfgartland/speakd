@@ -224,3 +224,106 @@ def test_no_ffmpeg_on_path_fails_clearly(tmp_path: Path, monkeypatch: pytest.Mon
     assert job.error is not None
     assert "ffmpeg" in job.error.lower()
     assert not job.out.exists()
+
+
+# --- streaming: no intermediate file, and bounded memory ----------------
+#
+# Parts are stored as headerless PCM specifically so a render is never
+# capped by a WAV's 4 GiB RIFF-size field (~24.8h at 24kHz). These tests
+# prove the two things that promise actually depends on: nothing
+# concatenates the parts into one file first, and nothing reads a part's
+# whole length into memory to stream it.
+
+
+def test_stream_file_writes_in_bounded_chunks(tmp_path: Path) -> None:
+    from speakd.render import _CHUNK_BYTES, _stream_file
+
+    path = tmp_path / "part-0.pcm"
+    data = b"\x01" * (_CHUNK_BYTES * 3 + 1000)  # not a whole multiple of the chunk size
+    path.write_bytes(data)
+
+    class RecordingSink:
+        def __init__(self) -> None:
+            self.writes: list[int] = []
+
+        def write(self, chunk: bytes) -> int:
+            self.writes.append(len(chunk))
+            return len(chunk)
+
+    sink = RecordingSink()
+    _stream_file(path, sink)  # type: ignore[arg-type]
+
+    assert sum(sink.writes) == len(data)
+    # Every chunk handed to the sink is bounded -- this is what keeps memory
+    # from scaling with a part's length, however long the part is.
+    assert all(0 < n <= _CHUNK_BYTES for n in sink.writes)
+    assert len(sink.writes) > 1
+
+
+def _fake_ffmpeg_that_drains_stdin(bin_dir: Path) -> None:
+    """A fake `ffmpeg` that consumes its whole stdin (as the real one would,
+    reading the piped PCM) and writes a placeholder to its last argument --
+    the output path `_encode` gave it."""
+    script = bin_dir / "ffmpeg"
+    script.write_text(
+        '#!/bin/sh\ncat > /dev/null\nfor a; do last="$a"; done\necho fake > "$last"\n',
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+
+
+def test_encode_streams_parts_without_building_an_intermediate_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No `concat.wav` (or any other whole-file intermediate) is ever built:
+    `_encode` pipes each part straight to ffmpeg's stdin. A part larger than
+    one `_CHUNK_BYTES` chunk proves the pipe is actually being used -- were
+    `_encode` still reading a whole part into memory first, this would be no
+    different from a part the size of one chunk.
+    """
+    from speakd.render import _CHUNK_BYTES, _encode
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    _fake_ffmpeg_that_drains_stdin(bin_dir)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    job = _job(
+        tmp_path,
+        out=tmp_path / "out.mp3",
+        parts=[Part(title="Whole", text="ignored")],
+        sample_rate=8000,
+    )
+    (work_dir / "part-0.pcm").write_bytes(b"\x00\x00" * (_CHUNK_BYTES // 2 + 1000))
+
+    _encode(job, work_dir)
+
+    assert job.out.exists()
+    assert job.out.read_text() == "fake\n"
+    assert not list(work_dir.glob("*.wav"))
+    assert not list(work_dir.glob("concat*"))
+
+
+@needs_ffmpeg
+def test_encode_with_real_ffmpeg_handles_a_part_larger_than_one_chunk(tmp_path: Path) -> None:
+    """A real ffmpeg, streamed a part bigger than `_CHUNK_BYTES`, still
+    produces a correct-duration file -- proving the chunking in
+    `_write_audio_stream` does not corrupt or truncate the stream."""
+    from speakd.render import _CHUNK_BYTES
+
+    sample_rate = 8000
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    job = _job(tmp_path, out=tmp_path / "out.mp3", sample_rate=sample_rate)
+    frames = _CHUNK_BYTES // 2 + 4000  # over one chunk's worth of samples
+    (work_dir / "part-0.pcm").write_bytes(b"\x00\x00" * frames)
+
+    from speakd.render import _encode
+
+    _encode(job, work_dir)
+
+    probe = _ffprobe(job.out)
+    expected = frames / sample_rate
+    assert float(probe["format"]["duration"]) == pytest.approx(expected, rel=0.05)

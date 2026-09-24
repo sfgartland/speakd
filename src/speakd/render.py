@@ -9,11 +9,19 @@ sentence already synthesising. Synthesis itself runs under a lock shared with
 the live pipeline, so the two never reach the engine at the same time.
 
 Each job's progress survives a crash: a work directory holds a manifest
-(the parts, and the next part and sentence to synthesise) and one WAV per
-part, appended to as each sentence finishes and never rewritten from
-scratch. A daemon that restarts mid-render re-queues the job and picks up
-exactly where the manifest says, without re-synthesising anything already on
-disk.
+(the parts, and the next part and sentence to synthesise) and one headerless
+PCM file per part, appended to as each sentence finishes and never rewritten
+from scratch. A daemon that restarts mid-render re-queues the job and picks
+up exactly where the manifest says, without re-synthesising anything already
+on disk.
+
+Parts are stored as raw s16le mono PCM rather than WAV: a WAV's RIFF size
+fields are 32-bit, capping a part at 4 GiB -- about 24.8 hours at Kokoro's
+24 kHz -- before the header itself starts lying about how much data follows.
+An audiobook is not bounded that way, so nothing here keeps a header that
+could go stale; a part's duration is always its file size divided by the
+sample rate, computed fresh rather than cached anywhere that could drift
+from what is actually on disk.
 """
 
 from __future__ import annotations
@@ -21,7 +29,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import struct
 import subprocess
 import threading
 import time
@@ -29,7 +36,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import numpy as np
 
@@ -83,6 +90,13 @@ class RenderJob:
     lang: str
     voice: str
     speed: float = 1.0
+    # The rate every part's PCM is stored at, in Hz. 0 until `RenderQueue`
+    # sets it (from its engine) the first time this job is submitted or
+    # resumed -- see `RenderQueue._ensure_sample_rate`. Recorded here rather
+    # than re-read from the engine at encode time, because encoding runs
+    # from a manifest that must describe its own PCM regardless of what
+    # engine the daemon currently happens to be running.
+    sample_rate: int = 0
     metadata: dict[str, str] = field(default_factory=dict)
     sentence_gap_ms: int = DEFAULT_SENTENCE_GAP_MS
     chapter_gap_ms: int = DEFAULT_CHAPTER_GAP_MS
@@ -147,58 +161,42 @@ def load_manifest(work_dir: Path) -> RenderJob:
     return RenderJob.from_manifest(data)
 
 
-# --- WAV parts, appended to one sentence at a time ------------------------
+# --- PCM parts, appended to one sentence at a time -------------------------
 #
-# The stdlib `wave` module has no append mode, so it is not used here: every
-# append re-patches a 44-byte canonical header by hand instead. That header
-# is rewritten after every append, so the file on disk is always a valid
-# WAV of exactly the audio actually written -- a crash mid-part leaves a
-# shorter, still-playable file, never a corrupt one with a header that lies
-# about how much data follows.
-
-_HEADER_SIZE = 44
+# Headerless s16le mono PCM: no RIFF size field to keep in sync and no 4 GiB
+# ceiling for it to overflow at. Duration is always computed from the file's
+# own size, so it can never go stale the way a cached or embedded one could.
 
 
-def _wav_header(data_bytes: int, sample_rate: int) -> bytes:
-    channels = 1
-    bits = 16
-    byte_rate = sample_rate * channels * bits // 8
-    block_align = channels * bits // 8
-    return (
-        b"RIFF"
-        + struct.pack("<I", 36 + data_bytes)
-        + b"WAVEfmt "
-        + struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits)
-        + b"data"
-        + struct.pack("<I", data_bytes)
-    )
-
-
-def _wav_info(path: Path) -> tuple[int, int]:
-    """(sample_rate, data_bytes), read from the header written above."""
-    with path.open("rb") as fh:
-        header = fh.read(_HEADER_SIZE)
-    sample_rate = struct.unpack("<I", header[24:28])[0]
-    data_bytes = struct.unpack("<I", header[40:44])[0]
-    return sample_rate, data_bytes
-
-
-def wav_duration(path: Path) -> float:
-    """Seconds of audio in a WAV written by `append_pcm`."""
-    sample_rate, data_bytes = _wav_info(path)
-    return data_bytes / (sample_rate * 2)
-
-
-def append_pcm(path: Path, pcm: bytes, sample_rate: int) -> None:
-    """Append 16-bit mono PCM to `path`, creating it with a fresh header if new."""
-    if not path.exists():
-        path.write_bytes(_wav_header(0, sample_rate))
-    _, existing = _wav_info(path)
-    with path.open("r+b") as fh:
-        fh.seek(0, os.SEEK_END)
+def append_pcm(path: Path, pcm: bytes) -> None:
+    """Append 16-bit mono PCM to `path`, creating it if new."""
+    with path.open("ab") as fh:
         fh.write(pcm)
-        fh.seek(0)
-        fh.write(_wav_header(existing + len(pcm), sample_rate))
+
+
+def pcm_duration(path: Path, sample_rate: int) -> float:
+    """Seconds of audio in a headerless PCM file written by `append_pcm`."""
+    if not path.exists():
+        return 0.0
+    return path.stat().st_size / (sample_rate * 2)
+
+
+def _truncate_to_whole_samples(path: Path) -> None:
+    """Drop a trailing odd byte, if a crash caught `append_pcm` mid-write.
+
+    16-bit mono means every sample is 2 bytes; a process killed between the
+    two writes of `fh.write(pcm)` (POSIX offers no atomicity guarantee for
+    that) can leave one dangling. Called once before resuming a part, so
+    the next `append_pcm` starts on a sample boundary rather than shifting
+    every sample after it by a byte.
+    """
+    if not path.exists():
+        return
+    size = path.stat().st_size
+    remainder = size % 2
+    if remainder:
+        with path.open("r+b") as fh:
+            fh.truncate(size - remainder)
 
 
 def _pcm16(audio: np.ndarray) -> bytes:
@@ -217,11 +215,18 @@ def _sentences(text: str) -> list[str]:
 
 # --- encoding ------------------------------------------------------------
 #
-# ffmpeg turns the per-part WAVs into the job's actual output. It is always
-# run via `subprocess.run` with an argument list -- text comes from the job's
-# metadata and titles, and a shell would make that an injection vector.
+# ffmpeg turns the per-part PCM files into the job's actual output. It is
+# always run via `subprocess.Popen` with an argument list -- text comes from
+# the job's metadata and titles, and a shell would make that an injection
+# vector -- and the audio reaches it over a pipe rather than a file: nothing
+# about a render's length is ever held in memory or written twice.
 
 _STDERR_TAIL_CHARS = 4000  # enough for a human to see what failed, no more
+
+# Bytes moved per read/write while streaming a part to ffmpeg's stdin. Bounds
+# memory use to this regardless of a part's length -- the whole point of
+# storing parts as PCM in the first place.
+_CHUNK_BYTES = 1024 * 1024
 
 
 def ffmpeg_available() -> bool:
@@ -235,37 +240,44 @@ class _EncodeFailed(Exception):
     as it being missing) for `_render` to put in `job.error`."""
 
 
-def _concat_parts(job: RenderJob, work_dir: Path) -> tuple[Path, list[tuple[float, float, str]]]:
-    """Concatenate the parts' WAVs into one file, `chapter_gap_ms` of silence
-    between each, and return the chapters actually produced: `(start, end,
-    title)` in seconds per part, measured from each part's real WAV duration
-    and the gaps just written, never estimated.
+def _stream_file(path: Path, sink: IO[bytes]) -> None:
+    """Write `path` to `sink` in `_CHUNK_BYTES` pieces, never the whole file
+    at once -- the read side of the same bound `_CHUNK_BYTES` names."""
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(_CHUNK_BYTES)
+            if not chunk:
+                return
+            sink.write(chunk)
 
-    Built by appending raw PCM rather than through ffmpeg's concat demuxer:
-    a part boundary is just a longer version of the gap `_synthesize` already
-    writes between sentences, via the same `append_pcm`, so there is no
-    second concatenation mechanism to keep in sync with the first.
-    """
-    sample_rate, _ = _wav_info(work_dir / "part-0.wav")
-    concat_path = work_dir / "concat.wav"
-    # Rebuilt from the part WAVs every time: a retry after a failed encode
-    # must not append onto a stale concat file left by the attempt before it.
-    concat_path.unlink(missing_ok=True)
-    gap_frames = int(sample_rate * job.chapter_gap_ms / 1000)
-    gap_pcm = b"\x00" * (gap_frames * 2)
 
+def _chapter_plan(job: RenderJob, work_dir: Path) -> list[tuple[float, float, str]]:
+    """`(start, end, title)` in seconds per part, from each part's real PCM
+    size on disk and the gaps `_write_audio_stream` writes between them --
+    never estimated, and computed without reading any part's audio."""
     chapters: list[tuple[float, float, str]] = []
     cursor = 0.0
     for i, part in enumerate(job.parts):
-        part_path = work_dir / f"part-{i}.wav"
-        duration = wav_duration(part_path)
-        append_pcm(concat_path, part_path.read_bytes()[_HEADER_SIZE:], sample_rate)
+        duration = pcm_duration(work_dir / f"part-{i}.pcm", job.sample_rate)
         chapters.append((cursor, cursor + duration, part.title))
         cursor += duration
         if i < len(job.parts) - 1 and job.chapter_gap_ms:
-            append_pcm(concat_path, gap_pcm, sample_rate)
             cursor += job.chapter_gap_ms / 1000
-    return concat_path, chapters
+    return chapters
+
+
+def _write_audio_stream(job: RenderJob, work_dir: Path, sink: IO[bytes]) -> None:
+    """Write every part's PCM to `sink`, `chapter_gap_ms` of silence between
+    each -- streamed through `_stream_file`, so a part's whole length is
+    never held in memory at once. A part boundary is just a longer version
+    of the gap `_synthesize` already writes between sentences.
+    """
+    gap_frames = int(job.sample_rate * job.chapter_gap_ms / 1000)
+    gap_pcm = b"\x00" * (gap_frames * 2)
+    for i, _part in enumerate(job.parts):
+        _stream_file(work_dir / f"part-{i}.pcm", sink)
+        if i < len(job.parts) - 1 and job.chapter_gap_ms:
+            sink.write(gap_pcm)
 
 
 def _write_chapters_file(chapters: list[tuple[float, float, str]], path: Path) -> None:
@@ -304,10 +316,14 @@ def _encode(job: RenderJob, work_dir: Path) -> None:
     if not ffmpeg_available():
         raise _EncodeFailed("ffmpeg not found on PATH")
 
-    concat_path, chapters = _concat_parts(job, work_dir)
+    chapters = _chapter_plan(job, work_dir)
     partial = job.out.with_name(job.out.name + ".partial")
+    # ffmpeg's stderr goes to a file, not a pipe: reading a pipe requires
+    # draining it concurrently with writing stdin or the two can deadlock
+    # each other on a full OS buffer, and a file sidesteps that entirely.
+    stderr_path = work_dir / "ffmpeg-stderr.log"
 
-    cmd = ["ffmpeg", "-y", "-i", str(concat_path)]
+    cmd = ["ffmpeg", "-y", "-f", "s16le", "-ar", str(job.sample_rate), "-ac", "1", "-i", "pipe:0"]
     if job.format == "m4b":
         chapters_path = work_dir / "chapters.txt"
         _write_chapters_file(chapters, chapters_path)
@@ -323,16 +339,41 @@ def _encode(job: RenderJob, work_dir: Path) -> None:
     elif job.format == "opus":
         cmd += ["-c:a", "libopus", "-b:a", job.bitrate, "-f", "opus"]
     elif job.format == "m4b":
+        # No `-movflags +faststart`: moving the moov atom to the front is a
+        # second full rewrite of the finished file, which would double disk
+        # use for exactly the long files this streaming path exists for.
+        # It only matters for playback that starts before the file has
+        # fully downloaded, which is not this file's use case -- a podcast
+        # or audiobook app reads an m4b's chapters and tags from the
+        # trailer just as well.
         cmd += ["-c:a", "aac", "-b:a", job.bitrate, "-f", "mp4"]
     else:
         raise _EncodeFailed(f"unknown render format: {job.format!r}")
     cmd.append(str(partial))
 
     job.out.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    with stderr_path.open("wb") as stderr_file:
+        process = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=stderr_file
+        )
+        assert process.stdin is not None
+        try:
+            _write_audio_stream(job, work_dir, process.stdin)
+        except BrokenPipeError:
+            # ffmpeg exited before consuming everything -- a bad codec, a
+            # full disk. The exit code and stderr below say why; this only
+            # stops the write loop from raising past it.
+            pass
+        finally:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        returncode = process.wait()
+    if returncode != 0:
         partial.unlink(missing_ok=True)
-        raise _EncodeFailed(result.stderr[-_STDERR_TAIL_CHARS:])
+        tail = stderr_path.read_bytes()[-_STDERR_TAIL_CHARS:]
+        raise _EncodeFailed(tail.decode("utf-8", errors="replace"))
     os.replace(partial, job.out)
 
 
@@ -415,7 +456,17 @@ class RenderQueue:
         except Exception:
             pass
 
+    def _ensure_sample_rate(self, job: RenderJob) -> None:
+        """Fix the rate a job's PCM is stored at, the first time it is ever
+        queued. Left alone once set: a resumed job's already-written PCM
+        was made at whatever rate this recorded the first time, and nothing
+        may make that field disagree with the bytes already on disk.
+        """
+        if not job.sample_rate:
+            job.sample_rate = self._engine.sample_rate
+
     def submit(self, job: RenderJob) -> str:
+        self._ensure_sample_rate(job)
         save_manifest(job, self._work_dir(job.id))
         with self._lock:
             self._jobs[job.id] = job
@@ -440,6 +491,7 @@ class RenderQueue:
             if job.state in _TERMINAL_STATES:
                 continue
             job.state = "queued"
+            self._ensure_sample_rate(job)
             save_manifest(job, entry)
             with self._lock:
                 self._jobs[job.id] = job
@@ -561,7 +613,11 @@ class RenderQueue:
             part = job.parts[part_i]
             sentences = _sentences(part.text)
             start = job.sentence_index if part_i == job.part_index else 0
-            wav_path = work_dir / f"part-{part_i}.wav"
+            pcm_path = work_dir / f"part-{part_i}.pcm"
+            # Only ever needed when resuming mid-part, but cheap enough (one
+            # stat, and a truncate only on the rare odd-byte crash) to run
+            # unconditionally rather than have a second code path for it.
+            _truncate_to_whole_samples(pcm_path)
             for sent_i in range(start, len(sentences)):
                 if job.id in self._cancelled:
                     raise _Cancelled
@@ -573,12 +629,12 @@ class RenderQueue:
                 # waits on more of the render than this one call.
                 with self._synth_lock:
                     audio = self._engine.synthesize(text, job.voice, job.speed)
-                append_pcm(wav_path, _pcm16(audio), self._engine.sample_rate)
+                append_pcm(pcm_path, _pcm16(audio))
                 job.done_seconds += len(audio) / self._engine.sample_rate
                 is_last_sentence = sent_i == len(sentences) - 1
                 if not is_last_sentence and job.sentence_gap_ms:
                     gap_frames = int(self._engine.sample_rate * job.sentence_gap_ms / 1000)
-                    append_pcm(wav_path, b"\x00" * (gap_frames * 2), self._engine.sample_rate)
+                    append_pcm(pcm_path, b"\x00" * (gap_frames * 2))
                 job.sentence_index = sent_i + 1
                 save_manifest(job, work_dir)
                 self._notify(job)
