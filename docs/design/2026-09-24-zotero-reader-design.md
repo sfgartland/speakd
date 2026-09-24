@@ -94,9 +94,9 @@ handler the Unix socket serves:
 | `GET /v1/events` | `subscribe` as a server-sent-events stream |
 | `GET /v1/health` | cheap liveness for the control bar's "no daemon" state |
 
-Bound to `127.0.0.1`, port in config (default 8642). Trust model is the Unix
-socket's: anything local may speak. A shared-token check is a noted follow-up,
-not v1. The plugin consumes SSE with `fetch` + `ReadableStream`, not
+Bound to `127.0.0.1`, port in config (default 8642). **Every request carries a
+token** — see *Revision, 2026-09-24* below: loopback HTTP is not the Unix
+socket's trust boundary, because any web page the user opens can reach it. The plugin consumes SSE with `fetch` + `ReadableStream`, not
 `EventSource` — `fetch` is on Zotero's plugin-sandbox whitelist; `EventSource`
 is not known to be.
 
@@ -241,3 +241,59 @@ The accepted risk, and how it is contained:
   the span-to-time map, the HTTP transport promise.
 - Zotero plugin dev docs: reader event handlers, preference panes,
   `strict_max_version` requirement.
+
+## Revision, 2026-09-24: review before planning
+
+Reviewed against the daemon as it now stands (briefings, channel modes,
+replay, pruning). Seven changes, all binding on the plan:
+
+1. **The HTTP transport requires a token, from v1.** The Unix socket's trust
+   model does not carry over: a browser tab can reach `127.0.0.1:8642`. A
+   plain-text `POST /v1/enqueue` needs no CORS preflight, so any page could
+   make the machine speak, hush or mute it; DNS rebinding could read
+   `/v1/events`, which carries the text of every agent session. So:
+   - The daemon creates `$XDG_CONFIG_HOME/speakd/http-token` (random,
+     mode 0600) on first start, and every request must carry
+     `Authorization: Bearer <token>`; a missing or wrong token is 401.
+   - The `Host` header must be `127.0.0.1:<port>` or `localhost:<port>`
+     (defeats DNS rebinding); anything else is 421.
+   - No CORS headers are ever sent, so no page can read a response even by
+     accident.
+   - The plugin reads the token from its preference pane (the user pastes it
+     once; `speakctl http-token` prints it). Reading the file directly is not
+     assumed possible from inside the Zotero flatpak.
+   - `set_capabilities` is not exposed over HTTP: nothing on this path
+     briefs.
+2. **The bar's controls act only on the plugin's own channel.** `pause`,
+   `resume` and `seek` are global — they move whatever is speaking — so the
+   bar enables ←/→ and pause only while the speaking channel (from the event
+   stream) is this reader's `zotero:<itemKey>`, and shows "another channel is
+   speaking" otherwise. Stop is `hush` scoped to its own channel. Speed is the
+   listener's single global speed (the window's and `speakctl speed`'s); the
+   plugin has no speed default of its own, and its −/+ change the same
+   setting.
+3. **A built-in `pdf` profile ships in `profiles.py`**, with no transforms, and
+   the plugin enqueues with `profile: "pdf"`. The default profile runs
+   markdown and pronunciation, both rewriting, which would drop every span to
+   its whole piece and the highlight from sentence to page.
+4. **Highlight by index, not arithmetic.** `started.segments` lists every
+   daemon sentence with its span; `position.index` says which is playing.
+   The plugin maps each daemon sentence's span to the Zotero segment(s) it
+   overlaps once, at `started`, and looks positions up by index. A daemon
+   sentence spanning two Zotero segments highlights the first.
+5. **Time to first audio is protected explicitly.** Section 1 is short (the
+   first two Zotero segments) and skips the LLM stage; the LLM cleans from
+   section 2 on, while section 1 speaks. Measured on the reference laptop a
+   first sentence still takes seconds to synthesise at RTF 0.75, so the
+   "two to four seconds" above is a target, not a promise.
+6. **The label is set on every read start**, not once: the daemon forgets
+   channels idle for twelve hours, label and all.
+7. **The LLM stage is off until an endpoint is configured**, and the
+   preference pane says in one line that enabled, it sends the paper's text
+   to that endpoint.
+
+Unchanged: speakd owns the audio; Zotero's Read Aloud machinery supplies
+segments and draws the highlight; sections as jobs; the fragility containment.
+The Zotero-internals details the takeover module is written from live in
+`2026-09-24-zotero-10-read-aloud-internals.md`, verified against 10.0.3's
+source.
