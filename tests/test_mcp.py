@@ -280,3 +280,42 @@ def test_a_notification_is_never_answered(daemon_socket, tmp_path: Path) -> None
     finally:
         proc.stdin.close()
         proc.wait(timeout=5)
+
+
+def test_hook_and_server_meet_at_the_agent_whatever_it_is_called(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """Claude Code from npm runs as `node`, and may run hooks through `sh -c`."""
+    from speakd.clients.claude_code import registry
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    hook_side = fake_proc(
+        tmp_path / "hook",
+        [
+            (400, "python3", 350),
+            (350, "bash", 320),
+            (320, "sh", 200),
+            (200, "node", 100),
+            (100, "zsh", 1),
+        ],
+    )
+    server_side = fake_proc(
+        tmp_path / "server",
+        [(300, "python3", 290), (290, "bash", 200), (200, "node", 100), (100, "zsh", 1)],
+    )
+    assert session.agent_pid(session.ancestors(hook_side)) == 200
+    registry.register("abc", Path("/t.jsonl"), "/work", claude_pid=200)
+    assert session.resolve("claude-code", proc=server_side) == ("claude-code:abc", None)
+
+
+def test_a_terminal_shared_with_a_claude_session_does_not_capture_another_agent(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    from speakd.clients.claude_code import registry
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    registry.register("abc", Path("/t.jsonl"), "/work", claude_pid=200)
+    codex = fake_proc(
+        tmp_path / "proc", [(500, "python3", 450), (450, "codex", 100), (100, "zsh", 1)]
+    )
+    assert session.resolve("codex", proc=codex, cwd="/w/k") == ("agent:codex:450", "codex · k")

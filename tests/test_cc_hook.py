@@ -470,3 +470,9 @@ def test_the_cap_leaves_a_short_log_alone(  # type: ignore[no-untyped-def]
     written = (state_dir() / "hook.log").read_text(encoding="utf-8")
     assert all(f"entry {index}" in written for index in range(20))
     assert "earlier entries dropped" not in written
+
+
+def test_the_hook_finds_the_agent_by_the_same_rule_as_the_server(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    chain = [(400, "python3"), (350, "bash"), (320, "sh"), (200, "node"), (100, "zsh")]
+    monkeypatch.setattr(hook, "ancestors", lambda: chain)
+    assert hook._claude_pid() == 200

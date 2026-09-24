@@ -18,9 +18,13 @@ from pathlib import Path
 
 from speakd.clients.claude_code import registry
 
-# Processes that stand between an agent and this server without being the
-# agent: interpreters and the shells and launchers that start them.
-_LAUNCHERS = frozenset({"python", "python3", "uv", "uvx", "sh", "bash", "zsh", "node", "env"})
+# Processes that stand between an agent and what it starts without being the
+# agent: interpreters, and the shells and launchers that start them. `node` is
+# not one of them -- Claude Code installed from npm runs as `node`, and is the
+# agent.
+_LAUNCHERS = frozenset(
+    {"python", "python3", "uv", "uvx", "sh", "bash", "zsh", "dash", "fish", "env", "timeout"}
+)
 
 
 def ancestors(
@@ -51,6 +55,22 @@ def ancestors(
     return found
 
 
+def agent_pid(chain: list[tuple[int, str]]) -> int | None:
+    """The agent a process was started by: its nearest ancestor that is not a launcher.
+
+    The one rule both sides use -- the prompt hook to record its session's
+    process, this server to find it -- so they meet at the same pid however
+    the agent names itself (`claude`, or `node` from npm) and however it runs
+    what it starts (directly, or through `sh -c`). A looser match on any
+    shared ancestor would be wrong: two agents in one terminal share the
+    terminal.
+    """
+    for pid, comm in chain[1:]:
+        if comm not in _LAUNCHERS:
+            return pid
+    return None
+
+
 def resolve(
     client_name: str, *, proc: Path = Path("/proc"), cwd: str | None = None
 ) -> tuple[str, str | None]:
@@ -63,14 +83,12 @@ def resolve(
     for reg in sorted(registry.live(), key=lambda r: r.touched):
         if reg.claude_pid:
             sessions[reg.claude_pid] = reg.session_id
-    for pid, _comm in chain:
-        if pid in sessions:
-            return f"claude-code:{sessions[pid]}", None
-    # Not a registered Claude Code session: the nearest ancestor that is not a
-    # launcher is the agent, and its pid keeps two agents in one directory apart.
-    parents = chain[1:]
-    agent = next((pid for pid, comm in parents if comm not in _LAUNCHERS), None)
+    agent = agent_pid(chain)
+    if agent is not None and agent in sessions:
+        return f"claude-code:{sessions[agent]}", None
+    # Not a registered Claude Code session: a channel of its own, named for
+    # the agent's pid so two agents in one directory stay apart.
     if agent is None:
-        agent = parents[0][0] if parents else os.getppid()
+        agent = chain[1][0] if len(chain) > 1 else os.getppid()
     directory = Path(cwd or os.getcwd()).name or "/"
     return f"agent:{client_name}:{agent}", f"{client_name} · {directory}"

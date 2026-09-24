@@ -23,7 +23,7 @@ from pathlib import Path
 from speakd.clients.claude_code import registry
 from speakd.clients.claude_code.watermark import state_dir
 from speakd.clients.log import logger_for
-from speakd.clients.mcp.session import ancestors
+from speakd.clients.mcp.session import agent_pid, ancestors
 from speakd.clients.send import enqueue, hush
 
 # A hush goes out on the UserPromptSubmit path, and Claude Code gives that
@@ -53,14 +53,14 @@ def _channel(session_id: str) -> str:
 def _claude_pid() -> int:
     """The Claude Code process this hook runs under, for `speakd-mcp` to find.
 
-    The nearest ancestor named `claude`; failing that, the grandparent, since
-    the hook is `bash wrapper -> python` under whatever started it.
+    Found by `agent_pid`, the same rule the server applies to its own
+    ancestry, so the two meet at the same process whatever it is called.
     """
-    chain = ancestors()
-    for pid, comm in chain[1:]:
-        if comm == "claude":
-            return pid
-    return chain[2][0] if len(chain) > 2 else os.getppid()
+    pid = agent_pid(ancestors())
+    if pid is None:
+        _log("could not find the Claude Code process above this hook; using the parent")
+        return os.getppid()
+    return pid
 
 
 def _dispatch(body: dict[str, object]) -> None:
