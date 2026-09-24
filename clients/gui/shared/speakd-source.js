@@ -95,6 +95,12 @@
  *                   already made is never waited for, so going back a
  *                   sentence sends none.
  *
+ *       "mode"      data: { mode, briefs }
+ *                   A channel's narration moved between "brief" (only what
+ *                   its agent chose to say) and "full" (every response), or it
+ *                   gained or lost a briefer. `set_mode` switches it, scoped
+ *                   by the source it is sent with, as a channel mute is.
+ *
  *       "speed"     data: { speed }
  *                   The listener's speed multiplier moved, here or in
  *                   `speakctl speed`. 1.0 is the profile's own pace; the
@@ -291,7 +297,7 @@ export class SimulatedSource {
     // and Kronikk is muted, so the fold has something in it.
     const now = Date.now() / 1000;
     this._channels = [
-      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation", last_output: now - 20 },
+      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation", last_output: now - 20, briefs: true, mode: "brief" },
       { source_id: "sim:resem-paper", role: "background", priority: 0, profile: "default", label: "Claude Code · ReSem paper", last_output: now - 3600 },
       { source_id: "sim:kronikk", role: "background", priority: 0, profile: "default", label: "Claude Code · Kronikk", last_output: 0 },
     ];
@@ -421,6 +427,8 @@ export class SimulatedSource {
         return this._doSetSpeed(payload);
       case "replay":
         return this._doReplay(payload);
+      case "set_mode":
+        return this._doSetMode(payload, source);
       case "status":
         return Promise.resolve({ ok: true, data: this._status() });
       case "enqueue":
@@ -576,6 +584,19 @@ export class SimulatedSource {
     this._speed = Math.round(Math.min(1.6, Math.max(0.7, raw)) * 20) / 20;
     this._emit({ kind: "speed", source_id: "", data: { speed: this._speed } });
     return Promise.resolve({ ok: true, data: { speed: this._speed } });
+  }
+
+  _doSetMode(payload, source) {
+    if (payload.mode !== "brief" && payload.mode !== "full") {
+      return Promise.resolve({ ok: false, error: "set_mode needs 'mode': 'full' or 'brief'" });
+    }
+    const channel = this._channels.find((c) => c.source_id === source);
+    if (!channel || !channel.briefs) {
+      return Promise.resolve({ ok: false, error: "this channel has no briefer" });
+    }
+    channel.mode = payload.mode;
+    this._emit({ kind: "mode", source_id: source, data: { mode: channel.mode, briefs: true } });
+    return Promise.resolve({ ok: true, data: { mode: channel.mode, briefs: true } });
   }
 
   /** Is the fixture mid-utterance, rather than hushed or run to its end? */

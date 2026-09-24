@@ -404,6 +404,12 @@
      you are in, skip is a thing that happens once — so it never takes the
      filled treatment beside it. */
   .chan-row button.skip { color: var(--lit); border-color: var(--lit-edge); }
+  /* Brief or full: a state, like mute, but not an off switch -- so outlined
+     and lit when brief rather than filled, which stays mute's alone. */
+  .chan-row button.modeswitch { min-width: 38px; }
+  .chan-row button.modeswitch[aria-pressed="true"] {
+    background: none; color: var(--lit); border-color: var(--lit-edge);
+  }
   .chans .none { font-size: 10.5px; color: var(--faint); font-style: italic; padding: 3px 0; }
 
   /* A star keeps a channel at the top and out of the fold. Borderless, so a
@@ -1099,8 +1105,33 @@
     // Skip before mute so the mute toggles stay in one column down the right
     // edge: that button's pressed state is a filled block, and a filled block
     // that moves left and right between rows reads as two different controls.
-    row.append(star, dot, name, when, skip, toggle);
+    row.append(star, dot, name, when, skip);
+    // Only a channel something can brief for has a mode to choose; on any
+    // other the switch would do nothing, so it is not offered.
+    if (channel.briefs) row.append(modeSwitch(channel));
+    row.append(toggle);
     return row;
+  }
+
+  function modeSwitch(channel) {
+    const brief = channel.mode !== "full";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "modeswitch";
+    button.textContent = brief ? "brief" : "full";
+    button.setAttribute("aria-pressed", brief ? "true" : "false");
+    button.title = brief
+      ? "Brief: only what the agent chooses to tell you. Click to hear every response."
+      : "Full: every response read aloud. Click to hear only briefings.";
+    button.addEventListener("click", async () => {
+      const wanted = channel.mode === "full" ? "brief" : "full";
+      const res = await source.send("set_mode", { mode: wanted }, channel.source_id);
+      if (!res.ok) { message = res.error; render(); return; }
+      // The `mode` event says the same; the shorter road, as mute takes.
+      if (typeof res.data?.mode === "string") channel.mode = res.data.mode;
+      renderChannels();
+    });
+    return button;
   }
 
   /**
@@ -1266,20 +1297,22 @@
     renderChannels();
   }
 
+  const ABOUT_A_CHANNEL = new Set(["mute", "mode", "engine", "queued", "declined"]);
+
   function handleEvent(event) {
     const data = event.data ?? {};
-    // The wire names the channel every event belongs to — but `mute`, `engine`
-    // and `queued` name the channel they are *about*, which is not the one
-    // being spoken. Retitling the bar from those would rename the window every
-    // time another session was muted from `speakctl`, or move the live dot onto
-    // a channel that has done nothing yet but join the queue.
+    // The wire names the channel every event belongs to — but some events
+    // name the channel they are *about*, which is not the one being spoken:
+    // `mute`, `mode` and `engine`, `queued` (it has only joined the queue), and
+    // `declined` (it was not spoken at all — and with Claude Code sessions
+    // muted until chosen, every response of every one of them is declined).
+    // Retitling the bar from those would hand the window to whichever session
+    // last said something nobody heard.
     // Written only when it changed: a real `position` carries the channel on
     // every event, and this fires once per segment start.
     if (
       event.source_id &&
-      event.kind !== "mute" &&
-      event.kind !== "engine" &&
-      event.kind !== "queued" &&
+      !ABOUT_A_CHANNEL.has(event.kind) &&
       event.source_id !== speakingSource
     ) {
       speakingSource = event.source_id;
@@ -1353,6 +1386,14 @@
       case "speed":
         if (typeof data.speed === "number") speed = data.speed;
         break;
+      case "mode": {
+        const channel = channels.find((c) => c.source_id === event.source_id);
+        if (!channel) { refreshStatus(); break; }
+        if (typeof data.mode === "string") channel.mode = data.mode;
+        if (typeof data.briefs === "boolean") channel.briefs = data.briefs;
+        renderChannels();
+        break;
+      }
       case "transport":
         // Read rather than inferred: an absence of `position` events is also
         // what a finished utterance sounds like.
