@@ -422,3 +422,17 @@ def test_speed_can_ramp(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     sent = _fake_call(monkeypatch, Response(ok=True, data={"speed": 1.4}))
     assert main(["speed", "1.4", "--ramp", "1.5"]) == 0
     assert sent[0].payload == {"speed": 1.4, "ramp": 1.5}
+
+
+def test_mode_sends_set_mode(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"mode": "full", "briefs": True}))
+    assert main(["mode", "full", "--source", "claude-code:abc"]) == 0
+    assert (sent[0].verb, sent[0].source_id, sent[0].payload) == (
+        Verb.SET_MODE,
+        "claude-code:abc",
+        {"mode": "full"},
+    )
+    assert main(["mode", "loud"]) != 0
+    assert len(sent) == 1

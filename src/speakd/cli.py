@@ -162,6 +162,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # A string, checked in `_speed`, for the reason `priority` gives above.
     speed.add_argument("value", nargs="?", help="a multiplier, 0.7 to 1.6; omit to print it")
     speed.add_argument("--ramp", type=float, default=None, help="seconds to glide there over")
+    mode = sub.add_parser("mode", parents=[common], help="brief or full narration for a channel")
+    # Checked in `_mode`, not by argparse `choices`, for the reason `role` gives.
+    mode.add_argument("mode", metavar="{brief,full}", help="brief: what the agent chooses to say")
     seek = sub.add_parser("seek", parents=[common], help="move within what is being spoken")
     where = seek.add_mutually_exclusive_group(required=True)
     where.add_argument("--by", type=int, help="sentences forward (negative: back)")
@@ -471,6 +474,20 @@ def _speed(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mode(args: argparse.Namespace) -> int:
+    """Switch a channel between brief and full. Silent on success, like mute."""
+    if args.mode not in ("brief", "full"):
+        print(f"speakctl: unknown mode {args.mode!r} (expected brief or full)", file=sys.stderr)
+        return _UNREACHABLE
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_MODE, source_id=args.source, payload={"mode": args.mode}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
 def _seek(args: argparse.Namespace) -> int:
     payload = {"by": args.by} if args.by is not None else {"index": args.index}
     response = _call(args.socket, Request(verb=Verb.SEEK, source_id=args.source, payload=payload))
@@ -771,6 +788,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _speed(args)
     if args.command == "seek":
         return _seek(args)
+    if args.command == "mode":
+        return _mode(args)
     if args.command == "role":
         return _role(args)
     if args.command == "priority":
