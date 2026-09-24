@@ -54,7 +54,7 @@ export class Controls {
         try {
           handler(event);
         } catch (error) {
-          this.options.warn(`speakd reader: ${type} failed`, error);
+          this.options.warn(`${type} failed`, error);
         }
       };
       this.handlers.push([type, safe]);
@@ -181,7 +181,7 @@ export class Controls {
       try {
         render();
       } catch (error) {
-        this.options.warn("speakd reader: drawing the bar failed", error);
+        this.options.warn("drawing the bar failed", error);
       }
     };
     const unsubscribe = [link.onChange(safeRender), handle.onChange(safeRender)];
@@ -211,7 +211,7 @@ export class Controls {
     try {
       action();
     } catch (error) {
-      this.options.warn("speakd reader: a control failed", error);
+      this.options.warn("a control failed", error);
     }
   }
 }

@@ -637,7 +637,7 @@ class Adopted implements ReaderHandle {
 
   private refuse(reason: string): void {
     this._adoption = { kind: "refused", reason };
-    this.log.warn(`speakd reader refuses ${this.sourceId}: ${reason}. It stays Zotero's own.`);
+    this.log.warn(`refusing ${this.sourceId}: ${reason}. It stays Zotero's own.`);
     this.changed();
   }
 
@@ -654,7 +654,7 @@ class Adopted implements ReaderHandle {
     try {
       action();
     } catch (error) {
-      this.log.warn(`speakd reader: ${what} failed`, error);
+      this.log.warn(`${what} failed`, error);
     }
   }
 
@@ -684,7 +684,7 @@ export class Takeover {
   install(): void {
     const readers = (Zotero.Reader as Any)._readers;
     if (!Array.isArray(readers)) {
-      this.options.warn("speakd reader: Zotero.Reader._readers is missing; no reader will be read aloud");
+      this.options.warn("Zotero.Reader._readers is missing; no reader will be read aloud");
       return;
     }
     const takeover = this;
@@ -696,7 +696,7 @@ export class Takeover {
         try {
           takeover.adopt(reader);
         } catch (error) {
-          takeover.options.warn("speakd reader: adopting a reader failed", error);
+          takeover.options.warn("adopting a reader failed", error);
         }
       }
       return original.apply(this, pushed);
