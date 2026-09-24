@@ -23,6 +23,9 @@ kokoro = [
     # this extra will mean dropping it and relying on misaki's own download.
     "en-core-web-sm",
 ]
+# Language detection, imported lazily on first use (speakd.detect); without
+# this extra detection is off and speakd says so once, at startup.
+lang = ["lingua-language-detector"]
 llm = ["litellm"]
 
 [project.scripts]
