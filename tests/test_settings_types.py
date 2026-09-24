@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from speakd.settings.types import Declaration, SettingError, parse_declaration, to_json, validate
+from speakd.settings.types import SettingError, parse_declaration, to_json, validate
 
 
 def _raw(**overrides: object) -> dict[str, object]:
@@ -59,7 +59,9 @@ def test_parse_declaration_refuses_a_default_that_fails_validate() -> None:
 
 
 def test_bool_type_accepts_and_refuses() -> None:
-    decl = parse_declaration("speech", _raw(name="detect_language", type="bool", default=True, options=None))
+    decl = parse_declaration(
+        "speech", _raw(name="detect_language", type="bool", default=True, options=None)
+    )
     assert validate(decl, False) is False
     with pytest.raises(SettingError, match="bool"):
         validate(decl, 1)
@@ -91,9 +93,8 @@ def test_float_type_accepts_an_int_as_a_float() -> None:
 
 
 def test_string_type_with_multiline() -> None:
-    decl = parse_declaration(
-        "claude-code", _raw(name="briefing_guide", type="string", default="hello", options=None, multiline=True)
-    )
+    raw = _raw(name="briefing_guide", type="string", default="hello", options=None, multiline=True)
+    decl = parse_declaration("claude-code", raw)
     assert decl.multiline is True
     assert validate(decl, "a\nb") == "a\nb"
     with pytest.raises(SettingError):
@@ -107,7 +108,8 @@ def test_choice_type_refuses_a_value_outside_options() -> None:
 
 
 def test_voice_type_validates_as_a_non_empty_string() -> None:
-    decl = parse_declaration("speech", _raw(name="voice", type="voice", default="af_heart", options=None))
+    raw = _raw(name="voice", type="voice", default="af_heart", options=None)
+    decl = parse_declaration("speech", raw)
     assert validate(decl, "ff_siwis") == "ff_siwis"
     with pytest.raises(SettingError):
         validate(decl, "")
@@ -120,7 +122,8 @@ def test_voice_map_type_validates_language_codes_and_values() -> None:
         "speech",
         _raw(name="voices", type="voice_map", default={"en": "af_heart"}, options=None),
     )
-    assert validate(decl, {"fr": "ff_siwis", "pt-br": "pf_dora"}) == {"fr": "ff_siwis", "pt-br": "pf_dora"}
+    expected = {"fr": "ff_siwis", "pt-br": "pf_dora"}
+    assert validate(decl, expected) == expected
     with pytest.raises(SettingError):
         validate(decl, {"FR": "ff_siwis"})
     with pytest.raises(SettingError):
@@ -151,5 +154,5 @@ def test_to_json_carries_every_declared_field() -> None:
 
 def test_declaration_is_frozen() -> None:
     decl = parse_declaration("speech", _raw())
-    with pytest.raises(Exception):
+    with pytest.raises(AttributeError):
         decl.key = "speech.other"  # type: ignore[misc]

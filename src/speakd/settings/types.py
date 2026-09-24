@@ -102,7 +102,7 @@ def parse_declaration(owner: str, raw: dict[str, object]) -> Declaration:
         options=options,
         min=minimum if isinstance(minimum, (int, float)) else None,
         max=maximum if isinstance(maximum, (int, float)) else None,
-        step=raw.get("step") if isinstance(raw.get("step"), (int, float)) else None,
+        step=_step if isinstance(_step := raw.get("step"), (int, float)) else None,
         multiline=bool(raw.get("multiline", False)),
         restart=bool(raw.get("restart", False)),
     )
