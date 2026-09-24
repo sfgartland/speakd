@@ -270,6 +270,22 @@ describe("ReaderSession", () => {
     expect(channel.started[1]!.segments).toHaveLength(8);
   });
 
+  it("starts a selection at its own first segment when Zotero lands on the one before", () => {
+    const { channel, session, tick, create } = setup();
+    session.want({ kind: "selection", text: "Two ends a paragraph. Three" });
+    create(1);
+    tick();
+    expect(channel.started[0]!.from).toBe(2);
+    expect(channel.started[0]!.segments).toHaveLength(4);
+
+    // "Read from here" on a selection starts the same way, and reads on.
+    session.want({ kind: "here", text: "Two ends a paragraph. Three" });
+    create(1);
+    tick();
+    expect(channel.started[1]!.from).toBe(2);
+    expect(channel.started[1]!.segments).toHaveLength(8);
+  });
+
   it("hands Zotero the segment being read to annotate", () => {
     const { channel, tick, create } = setup();
     const controller = create(2);

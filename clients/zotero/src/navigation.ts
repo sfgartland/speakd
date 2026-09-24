@@ -77,3 +77,20 @@ export function selectionEnd(segments: readonly { text: string }[], start: numbe
   if (at >= 0) return segmentAt(at + tail.length - 1);
   return segmentAt(begin + wanted.length - 1);
 }
+
+/**
+ * The segment a "Read selection" should start at, given the one Zotero
+ * chose for the selection's position. Zotero takes the first segment that
+ * ends at or after the selection's start (internals §3.3), and a selection
+ * that starts a sentence can land on the sentence before it. When the
+ * selection's first characters are not in Zotero's segment but are in the
+ * next, the next is where it starts.
+ */
+export function selectionStart(segments: readonly { text: string }[], start: number, selected: string): number {
+  const head = squash(selected).slice(0, PROBE);
+  const here = segments[start];
+  const next = segments[start + 1];
+  if (head === "" || here === undefined || next === undefined) return start;
+  if (squash(here.text).includes(head)) return start;
+  return squash(next.text).includes(head) ? start + 1 : start;
+}

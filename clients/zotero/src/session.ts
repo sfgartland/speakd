@@ -17,7 +17,7 @@
 // calls, and supplies the hooks; nothing here touches Zotero.
 
 import type { Problem } from "./channel";
-import { paragraphTarget, selectionEnd } from "./navigation";
+import { paragraphTarget, selectionEnd, selectionStart } from "./navigation";
 import type { SegmentText } from "./sections";
 import type { CallResult, SpeakdEvent } from "./speakd";
 
@@ -45,7 +45,11 @@ export interface SegmentInfo {
 }
 
 /** What the plugin's own UI asked for when it started a read. */
-export type Intent = { kind: "here" } | { kind: "selection"; text: string };
+export type Intent =
+  /** Read to the end; `text` is the selection it starts from, when there is one. */
+  | { kind: "here"; text?: string }
+  /** Read the selection, and stop. */
+  | { kind: "selection"; text: string };
 
 export interface SessionHooks {
   /** Run `task` once the synchronous work under way is done: a microtask. */
@@ -278,11 +282,12 @@ export class ReaderSession {
     sink: ControllerSink,
   ): ControllerCore {
     const last = segments.length - 1;
-    const start = Math.min(Math.max(backwardStopIndex ?? 0, 0), Math.max(last, 0));
-    let end = forwardStopIndex !== null && forwardStopIndex >= start ? Math.min(forwardStopIndex, last) : last;
     const intent = this.intent;
     // The selection bounds the read it started, not the jumps after it.
     this.intent = null;
+    let start = Math.min(Math.max(backwardStopIndex ?? 0, 0), Math.max(last, 0));
+    if (intent?.text !== undefined) start = selectionStart(segments, start, intent.text);
+    let end = forwardStopIndex !== null && forwardStopIndex >= start ? Math.min(forwardStopIndex, last) : last;
     if (intent?.kind === "selection") end = Math.min(end, selectionEnd(segments, start, intent.text));
     const core = new ControllerCore(this, segments, start, end, sink);
     this.current = this.closed ? null : core;

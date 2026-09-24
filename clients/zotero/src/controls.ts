@@ -94,7 +94,7 @@ export class Controls {
     };
     append(
       button("Read selection", () => handle.startRead(position, { kind: "selection", text })),
-      button("Read from here", () => handle.startRead(position, { kind: "here" })),
+      button("Read from here", () => handle.startRead(position, { kind: "here", text })),
     );
   }
 

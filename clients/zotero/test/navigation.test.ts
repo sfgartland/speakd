@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { paragraphTarget, selectionEnd } from "../src/navigation";
+import { paragraphTarget, selectionEnd, selectionStart } from "../src/navigation";
 
 // Seven segments in three paragraphs: [0,1,2] [3,4] [5,6].
 const ANCHORS = ["paragraphStart", null, null, "paragraphStart", null, "paragraphStart", null];
@@ -64,5 +64,22 @@ describe("selectionEnd", () => {
   it("never ends before the start, nor past the document", () => {
     expect(selectionEnd(SEGMENTS, 2, "")).toBe(2);
     expect(selectionEnd(SEGMENTS, 2, "x".repeat(500))).toBe(3);
+  });
+});
+
+describe("selectionStart", () => {
+  it("keeps Zotero's start when the selection begins in that segment", () => {
+    expect(selectionStart(SEGMENTS, 1, "second one follows it. Then")).toBe(1);
+  });
+
+  it("moves on one segment when Zotero lands on the one just before the selection", () => {
+    // Zotero picks the first segment ending at or after the selection's
+    // start, which can be the sentence ending where the selection begins.
+    expect(selectionStart(SEGMENTS, 0, "A second one follows it.")).toBe(1);
+  });
+
+  it("stays put when the selection cannot be found in either", () => {
+    expect(selectionStart(SEGMENTS, 0, "Nothing like the text")).toBe(0);
+    expect(selectionStart(SEGMENTS, 3, "anything")).toBe(3);
   });
 });
