@@ -240,3 +240,43 @@ def test_the_server_follows_its_process_to_a_new_session(
     d.bus.subscribe(seen.append)
     server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": brief})
     assert {e.source_id for e in seen if e.kind in ("queued", "declined")} == {"claude-code:second"}
+
+
+def test_invalid_utf8_is_a_parse_error_not_the_end(daemon_socket, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    socket, _ = daemon_socket
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "speakd.clients.mcp.server", "--socket", str(socket)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        # Strict UTF-8, as under an ordinary UTF-8 locale; with no locale at
+        # all Python would read stdin with surrogateescape and never raise.
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "XDG_CONFIG_HOME": str(tmp_path / "cfg"),
+            "PYTHONIOENCODING": "utf-8",
+        },
+    )
+    try:
+        proc.stdin.write(b"\xff\xfe not utf-8\n")
+        proc.stdin.flush()
+        assert json.loads(proc.stdout.readline())["error"]["code"] == -32700
+        proc.stdin.write(b'{"jsonrpc":"2.0","id":7,"method":"ping"}\n')
+        proc.stdin.flush()
+        assert json.loads(proc.stdout.readline())["id"] == 7
+    finally:
+        proc.stdin.close()
+    assert proc.wait(timeout=5) == 0
+
+
+def test_a_notification_is_never_answered(daemon_socket, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    socket, _ = daemon_socket
+    proc = spawn(socket, tmp_path)
+    try:
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "no/such/thing"}) + "\n")
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "tools/list"}) + "\n")
+        proc.stdin.flush()
+        # The first line out must answer the ping, not either notification.
+        assert rpc(proc, "ping", {}, 9)["id"] == 9
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=5)

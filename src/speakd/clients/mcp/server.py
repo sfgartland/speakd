@@ -94,9 +94,18 @@ class Server:
     # ---- JSON-RPC ----
 
     def handle(self, message: object) -> dict[str, object] | None:
-        """Answer one message, or None for a notification."""
-        if not isinstance(message, dict) or not isinstance(message.get("method"), str):
+        """Answer one message, or None for a notification.
+
+        A message with no `id` is a notification, and JSON-RPC answers none --
+        not even with an error: a reply with nothing to match it to is a
+        stray line a strict client may reject.
+        """
+        if not isinstance(message, dict):
             return _error(None, -32600, "invalid request")
+        if "id" not in message:
+            return None
+        if not isinstance(message.get("method"), str):
+            return _error(message.get("id"), -32600, "invalid request")
         method: str = message["method"]
         ident = message.get("id")
         params = message.get("params")
@@ -260,7 +269,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--socket", type=Path, default=None, help="where speakd listens")
     args = parser.parse_args(argv)
     server = Server(args.socket)
-    for line in sys.stdin:
+    # Bytes, decoded here, rather than text stdin: a line that is not UTF-8
+    # would otherwise raise out of the loop and end the server, and with it
+    # the agent's voice for the rest of the session. Replaced characters then
+    # fail as JSON, which is the error such a line deserves.
+    for raw in sys.stdin.buffer:
+        line = raw.decode("utf-8", errors="replace")
         if not line.strip():
             continue
         try:
