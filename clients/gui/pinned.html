@@ -497,6 +497,76 @@
   .say button:disabled { opacity: .35; cursor: default; }
   .say button:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
 
+  /* ── settings: a panel that takes the text region's place while open ── */
+
+  .gear {
+    border: 0; background: none; padding: 2px; cursor: pointer;
+    color: var(--faint); display: flex; line-height: 0; border-radius: 3px;
+  }
+  .gear:hover, .gear[aria-pressed="true"] { color: var(--lit); }
+  .gear:focus-visible { outline: 2px solid var(--lit-edge); outline-offset: 1px; }
+
+  /* Open settings replace the speech text, not the controls: transport stays
+     under the hand while a voice is being changed, so the change can be
+     heard the moment it lands. */
+  .win[data-settings] .text { display: none; }
+  .settings {
+    flex: 1 1 auto; min-height: 132px; overflow-y: auto;
+    padding: 10px 14px 12px; border-bottom: 1px solid var(--rule);
+    font-size: 11.5px;
+  }
+  .settings[hidden] { display: none; }
+  .shell .settings { min-height: 0; }
+  .set-note { color: var(--faint); font-style: italic; margin: 0; }
+  .set-section + .set-section { margin-top: 12px; }
+  .set-head {
+    font-family: "IBM Plex Mono", monospace; font-size: 9px;
+    text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
+    border-bottom: 1px solid var(--rule); padding-bottom: 3px; margin: 0 0 6px;
+  }
+  .set-row { display: flex; flex-direction: column; gap: 3px; padding: 4px 0; }
+  .set-line { display: flex; align-items: center; gap: 8px; }
+  .set-label { flex: 1 1 auto; min-width: 0; color: var(--ink); font-weight: 500; }
+  .set-help { color: var(--muted); font-size: 10.5px; line-height: 1.35; }
+  .set-restart {
+    font-family: "IBM Plex Mono", monospace; font-size: 9px; color: var(--warn);
+  }
+  .set-error { color: var(--bad); font-size: 10.5px; }
+  .set-error:empty { display: none; }
+  .settings input[type="text"], .settings input[type="number"],
+  .settings select, .settings textarea {
+    font: inherit; font-size: 11px; color: var(--ink); background: var(--ground);
+    border: 1px solid var(--rule-strong); border-radius: 3px; padding: 3px 5px;
+    min-width: 0;
+  }
+  .settings input[type="number"] { width: 84px; font-family: "IBM Plex Mono", monospace; }
+  .settings select { max-width: 150px; }
+  .settings textarea { width: 100%; min-height: 56px; resize: vertical; line-height: 1.4; }
+  .settings .wide { width: 100%; }
+  .settings input:focus-visible, .settings select:focus-visible,
+  .settings textarea:focus-visible, .settings button:focus-visible {
+    outline: 2px solid var(--lit-edge); outline-offset: -1px;
+  }
+  /* A switch rather than a checkbox: the setting is a state, not an item on
+     a list, and a switch reads as one at a glance. */
+  .switch { appearance: none; width: 26px; height: 14px; border-radius: 7px; flex: none;
+            background: var(--rule-strong); position: relative; cursor: pointer; margin: 0; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px;
+                   border-radius: 50%; background: var(--surface); transition: left .12s; }
+  .switch:checked { background: var(--lit); }
+  .switch:checked::after { left: 14px; }
+  .vmap { width: 100%; border-collapse: collapse; }
+  .vmap td { padding: 2px 0; }
+  .vmap td:first-child { width: 64px; padding-right: 4px; }
+  .vmap td:last-child { width: 22px; text-align: right; }
+  .vmap input { width: 100%; font-family: "IBM Plex Mono", monospace; }
+  .settings button.mini {
+    font: inherit; font-size: 10.5px; color: var(--ink-soft); background: var(--surface);
+    border: 1px solid var(--rule); border-radius: 3px; padding: 1px 6px; cursor: pointer;
+  }
+  .settings button.mini.remove { border: 0; color: var(--faint); padding: 1px 3px; }
+  .settings button.mini.remove:hover { color: var(--bad); }
+
   /* error line — present only when there is one */
   .err {
     border-top: 1px solid var(--rule);
@@ -563,6 +633,13 @@
     <span class="chan" id="chan" data-tauri-drag-region>PhD articulation</span>
     <span class="role" data-tauri-drag-region>foreground</span>
     <span class="bar-spacer" data-tauri-drag-region></span>
+    <button class="gear" id="gear" aria-pressed="false" title="Settings">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6z" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6 13 13M3 13l1.4-1.4M11.6 4.4 13 3"
+              stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+    </button>
     <button class="pin" id="pin" aria-pressed="true" title="Always on top">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path d="M6 1.5h4l-.6 4.2 2.6 2.3v1.2H8.7V14L8 15.2 7.3 14V9.2H3v-1.2l2.6-2.3z"
@@ -591,6 +668,8 @@
   <div class="text" id="text">
     <div class="doc" id="doc" title="Ctrl+click a sentence to play from there"><p class="idle">nothing speaking</p></div>
   </div>
+
+  <div class="settings" id="settings" hidden></div>
 
   <div class="scrub" id="scrub"></div>
 
@@ -1481,6 +1560,11 @@
       case "speed":
         if (typeof data.speed === "number") speed = data.speed;
         break;
+      case "setting":
+        // Someone else's change — speakctl, another window — or the echo of
+        // this window's own. Either way the daemon's value is the one shown.
+        if (typeof data.key === "string") settingChanged(data.key, data.value);
+        break;
       case "mode": {
         const channel = channels.find((c) => c.source_id === event.source_id);
         if (!channel) { refreshStatus(); break; }
@@ -1885,6 +1969,276 @@
     if (el("more").open) refreshStatus();
   });
 
+  // ---- settings ----
+
+  // Section order: core owners first, in this order, then everyone else
+  // alphabetically. Names for the owners this window knows; anything else is
+  // shown as its owner id, which is what the daemon calls it too.
+  const CORE_OWNERS = ["speech", "http", "render"];
+  const OWNER_NAMES = {
+    speech: "Speech", http: "HTTP", render: "Audio files",
+    zotero: "Zotero", "claude-code": "Claude Code",
+  };
+  let settingsSchema = []; // declarations, as the `settings` verb returns them
+  let settingsValues = {}; // key -> the daemon's effective value
+  // key -> { set(value), holdsFocus(), error } for every control on screen.
+  const settingControls = new Map();
+
+  function settingsOpen() { return !el("settings").hidden; }
+
+  async function toggleSettings() {
+    const open = !settingsOpen();
+    el("settings").hidden = !open;
+    if (open) win.dataset.settings = ""; else delete win.dataset.settings;
+    el("gear").setAttribute("aria-pressed", open ? "true" : "false");
+    if (open) await loadSettings();
+  }
+
+  async function loadSettings() {
+    const res = await source.send("settings", {});
+    if (!res.ok) {
+      settingsSchema = [];
+      settingsValues = {};
+      renderSettings(res.error || "the daemon could not be reached");
+      return;
+    }
+    const data = res.data ?? {};
+    settingsSchema = Array.isArray(data.schema) ? data.schema : [];
+    settingsValues = data.values && typeof data.values === "object" ? { ...data.values } : {};
+    renderSettings(null);
+  }
+
+  const ownerOf = (key) => key.split(".", 1)[0];
+
+  function orderedOwners() {
+    const owners = [...new Set(settingsSchema.map((d) => ownerOf(d.key)))];
+    const core = CORE_OWNERS.filter((o) => owners.includes(o));
+    const rest = owners.filter((o) => !CORE_OWNERS.includes(o)).sort();
+    return [...core, ...rest];
+  }
+
+  function valueOf(decl) {
+    return Object.prototype.hasOwnProperty.call(settingsValues, decl.key)
+      ? settingsValues[decl.key] : decl.default;
+  }
+
+  function renderSettings(problem) {
+    const host = el("settings");
+    host.replaceChildren();
+    settingControls.clear();
+    if (problem || settingsSchema.length === 0) {
+      const note = document.createElement("p");
+      note.className = "set-note";
+      note.textContent = problem ? `settings unavailable — ${problem}` : "no settings declared";
+      host.append(note);
+      return;
+    }
+    for (const owner of orderedOwners()) {
+      const section = document.createElement("section");
+      section.className = "set-section";
+      const head = document.createElement("h3");
+      head.className = "set-head";
+      head.textContent = OWNER_NAMES[owner] ?? owner;
+      section.append(head);
+      for (const decl of settingsSchema.filter((d) => ownerOf(d.key) === owner)) {
+        section.append(settingRow(decl));
+      }
+      host.append(section);
+    }
+  }
+
+  function settingRow(decl) {
+    const row = document.createElement("div");
+    row.className = "set-row";
+    const line = document.createElement("div");
+    line.className = "set-line";
+    const label = document.createElement("label");
+    label.className = "set-label";
+    label.textContent = decl.label || decl.key;
+    label.title = decl.key;
+    const error = document.createElement("div");
+    error.className = "set-error";
+    const control = buildControl(decl, (value) => commitSetting(decl.key, value));
+    control.set(valueOf(decl));
+    settingControls.set(decl.key, { ...control, error });
+
+    const id = `set-${decl.key.replace(/[^a-z0-9_-]/gi, "-")}`;
+    if (control.field) { control.field.id = id; label.htmlFor = id; }
+    line.append(label);
+    if (control.inline) line.append(control.node);
+    row.append(line);
+    if (!control.inline) row.append(control.node);
+    if (decl.help) {
+      const help = document.createElement("div");
+      help.className = "set-help";
+      help.textContent = decl.help;
+      row.append(help);
+    }
+    if (decl.restart) {
+      const note = document.createElement("div");
+      note.className = "set-restart";
+      note.textContent = "applies after restart";
+      row.append(note);
+    }
+    row.append(error);
+    return row;
+  }
+
+  /**
+   * One control for one declaration: `{ node, field, inline, set, holdsFocus }`.
+   * `commit(value)` is called with a typed value on change or blur (a text
+   * field's `change` fires on both); a value the field cannot even parse is
+   * committed as `undefined`, which the caller turns into an error and a revert.
+   */
+  function buildControl(decl, commit) {
+    const holdsFocus = (node) => () => node.contains(document.activeElement);
+    switch (decl.type) {
+      case "bool": {
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.className = "switch";
+        box.addEventListener("change", () => commit(box.checked));
+        return { node: box, field: box, inline: true,
+                 set: (v) => { box.checked = !!v; }, holdsFocus: () => false };
+      }
+      case "int":
+      case "float": {
+        const input = document.createElement("input");
+        input.type = "number";
+        if (decl.min != null) input.min = String(decl.min);
+        if (decl.max != null) input.max = String(decl.max);
+        input.step = decl.step != null ? String(decl.step) : decl.type === "int" ? "1" : "any";
+        input.addEventListener("change", () => {
+          const raw = input.value.trim();
+          commit(raw === "" || !Number.isFinite(Number(raw)) ? undefined : Number(raw));
+        });
+        return { node: input, field: input, inline: true,
+                 set: (v) => { input.value = v == null ? "" : String(v); }, holdsFocus: holdsFocus(input) };
+      }
+      case "choice": {
+        const select = document.createElement("select");
+        for (const option of decl.options ?? []) {
+          const o = document.createElement("option");
+          o.value = option;
+          o.textContent = option;
+          select.append(o);
+        }
+        select.addEventListener("change", () => commit(select.value));
+        return { node: select, field: select, inline: true,
+                 set: (v) => { select.value = String(v); }, holdsFocus: holdsFocus(select) };
+      }
+      case "voice_map":
+        return voiceMapControl(commit);
+      default: {
+        // string, and voice — a text field until phase 2 can list the
+        // engine's voices.
+        const multiline = decl.type === "string" && decl.multiline;
+        const input = document.createElement(multiline ? "textarea" : "input");
+        if (!multiline) { input.type = "text"; input.className = "wide"; }
+        input.spellcheck = false;
+        input.addEventListener("change", () => commit(input.value));
+        return { node: input, field: input, inline: false,
+                 set: (v) => { input.value = v == null ? "" : String(v); }, holdsFocus: holdsFocus(input) };
+      }
+    }
+  }
+
+  /** Language → voice rows, committed whole whenever any row changes. */
+  function voiceMapControl(commit) {
+    const wrap = document.createElement("div");
+    const table = document.createElement("table");
+    table.className = "vmap";
+    const body = document.createElement("tbody");
+    table.append(body);
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "mini";
+    add.textContent = "Add language";
+    wrap.append(table, add);
+
+    const collect = () => {
+      const map = {};
+      for (const tr of body.rows) {
+        const [lang, voice] = [...tr.querySelectorAll("input")].map((i) => i.value.trim());
+        if (lang || voice) map[lang] = voice;
+      }
+      return map;
+    };
+    const addRow = (lang = "", voice = "") => {
+      const tr = document.createElement("tr");
+      const cells = [lang, voice].map((value, i) => {
+        const td = document.createElement("td");
+        const input = document.createElement("input");
+        input.type = "text";
+        input.spellcheck = false;
+        input.placeholder = i === 0 ? "lang" : "voice";
+        input.value = value;
+        input.addEventListener("change", () => commit(collect()));
+        td.append(input);
+        return td;
+      });
+      const td = document.createElement("td");
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "mini remove";
+      remove.title = "Remove";
+      remove.textContent = "×";
+      remove.addEventListener("click", () => { tr.remove(); commit(collect()); });
+      td.append(remove);
+      tr.append(...cells, td);
+      body.append(tr);
+      return tr;
+    };
+    // A new row is committed once it has something in it, by its inputs'
+    // own change events — an empty row is not a value worth sending.
+    add.addEventListener("click", () => addRow().querySelector("input").focus());
+    const set = (v) => {
+      body.replaceChildren();
+      const map = v && typeof v === "object" ? v : {};
+      for (const [lang, voice] of Object.entries(map)) addRow(lang, String(voice));
+    };
+    return { node: wrap, field: null, inline: false, set, holdsFocus: () => wrap.contains(document.activeElement) };
+  }
+
+  async function commitSetting(key, value) {
+    const control = settingControls.get(key);
+    if (value === undefined) {
+      if (control) {
+        control.error.textContent = "not a number";
+        control.set(settingsValues[key] ?? declFor(key)?.default);
+      }
+      return;
+    }
+    const res = await source.send("set_setting", { key, value });
+    const now = settingControls.get(key);
+    if (!now) return;
+    if (!res.ok) {
+      // Shown under the control, and the control goes back to what the
+      // daemon actually holds — a field showing a value that was refused
+      // would be claiming a setting that is not in effect.
+      now.error.textContent = res.error || "refused";
+      now.set(settingsValues[key] ?? declFor(key)?.default);
+      return;
+    }
+    now.error.textContent = "";
+    settingsValues[key] = res.data?.value ?? value;
+  }
+
+  function declFor(key) { return settingsSchema.find((d) => d.key === key); }
+
+  function settingChanged(key, value) {
+    settingsValues[key] = value;
+    const control = settingControls.get(key);
+    // A field being typed in keeps what is being typed: overwriting it under
+    // the cursor would lose an edit to a change made somewhere else.
+    if (control && !control.holdsFocus()) {
+      control.set(value);
+      control.error.textContent = "";
+    }
+  }
+
+  el("gear").addEventListener("click", toggleSettings);
+
   el("win-min").addEventListener("click", () => invoke("minimize_window"));
   el("win-max").addEventListener("click", async (e) => {
     const button = e.currentTarget;
@@ -1910,6 +2264,11 @@
 
   // ---- the one-line choice the whole interface exists for ----
   const source = await resolveSource();
+  // Exposed for clients/gui/test-browser/settings_check.py alone, which has
+  // no daemon or `speakctl` to raise a `setting` event from — it calls the
+  // sim directly to prove the window updates a control on an event it did
+  // not itself originate. Nothing in the window reads this global.
+  window.__speakdSource = source;
   source.subscribe(handleEvent);
   // ShellSource's first event arrives a round trip later, unlike the
   // simulation's synchronous snapshot. Drawn once here so the window never
