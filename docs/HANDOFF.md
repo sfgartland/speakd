@@ -1,6 +1,6 @@
 # Handoff — resume here
 
-Last updated 2026-09-24. `main` is pushed to https://github.com/sfgartland/speakd and
+Last updated 2026-09-24 (late evening). `main` is pushed to https://github.com/sfgartland/speakd and
 CI is green (Python 3.11–3.13 and the Zotero plugin build).
 
 ## What works now
@@ -32,55 +32,31 @@ Local machine specifics, kept outside the repo:
 
 Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x.
 
-## Next: typed settings and languages (designed, not built)
+## Built on 2026-09-24 (merged, pushed)
 
-**Spec:** `docs/superpowers/specs/2026-09-24-settings-and-languages-design.md`,
-approved in conversation. In short:
+- **Settings core (phase 1):** typed settings, `speakctl settings` / `speakctl set`, the window's gear → Settings view, and HTTP scoping.
+- **Languages (phase 2):** per-utterance language (payload > channel > detection > default), `speech.voices`, `speech.unsupported_language`, and `speakctl lang`. Detection is in the `speakd[lang]` extra.
+- **Audio export Part A (daemon):** `render` / `render_cancel`, and `speakctl render file.txt --out x.mp3|.opus|.m4b`.
+  - Renders are resumable, yield to live speech, and have no length limit (PCM parts streamed into ffmpeg).
+  - The fixes from an Opus whole-branch review are merged as well.
+- **The window's paste box** has no length cap.
 
-1. **Settings core.**
-   - Typed settings declared by core, by in-process plugins (`PluginContext.setting`)
-     and by clients (`declare_settings`).
-   - One `~/.config/speakd/settings.toml`.
-   - The verbs `settings` / `set_setting`, and the event `setting`.
-   - Over HTTP a client can reach only its own owner's keys.
-   - A Settings view in the window, and `speakctl settings` / `speakctl set`.
-2. **Languages in the daemon.**
-   - Language resolution per utterance: payload `lang`, then the channel's
-     language, then detection (lingua, lazy, in a `speakd[lang]` extra), then
-     the default.
-   - Kokoro pipelines per language.
-   - `speech.voices` (language → voice) with defaults for all 9 Kokoro languages.
-   - `speech.unsupported_language` set to `default` or `decline`.
-   - `status.languages`.
-3. **Clients.**
-   - Zotero sends the document's language, steps aside to Zotero's own Read
-     Aloud for unsupported languages (German), and declares `zotero.*` settings.
-   - `brief` gains `lang`.
-   - The briefing guide moves into the setting `claude-code.briefing_guide`,
-     migrated from `briefing.md`.
+## Next, in order
 
-**Then: audio versions of Zotero items.** The spec is
-`docs/superpowers/specs/2026-09-24-audio-export-design.md`, approved. Right-click
-**Create audio version…**; articles become one mp3 that stops before
-References, and books become an m4b with outline chapters. It is rendered by a
-daemon `render` job that yields to live speech and can resume, and the result
-is attached back to the item. It depends on settings and languages, so it is
-built after them.
+1. **Phase 3, language in the clients:** `docs/superpowers/plans/2026-09-24-language-clients.md`.
+   - The Zotero side needs the live harness, so use Opus.
+   - Depends on `status.languages.supported` being right while the model loads. That's fixed.
+2. **Audio export Part B, the Zotero export flow:** `docs/superpowers/plans/2026-09-24-audio-export.md`, Tasks B2–B5.
+   - B1's pure modules are already on main (`clients/zotero/src/export/`).
+3. **Piper beside Kokoro:** spec `docs/superpowers/specs/2026-09-24-piper-engine-design.md`, plan `docs/superpowers/plans/2026-09-24-piper-engine.md`.
+   - Approved, on hold by choice.
+   - Measured here: Piper medium on one thread costs ~0.13 CPU-s per audio-s, against Kokoro's ~2.1.
+   - Supertonic 3 was evaluated and dropped (archived 2026-09-09).
+   - Samples are in `~/Music/speakd-tts-compare/`.
 
-Out of scope for it: Piper (or another engine) for real German speech, which is
-its own project; moving `profiles.toml` / `notifications.toml` into settings.
-
-**To resume:**
-1. Write the implementation plan from the spec (the writing-plans skill), one
-   phase per plan or one plan in three phases.
-2. Execute it. Models that worked well:
-   - **Sonnet** for tasks the plan specifies closely: TDD implementation,
-     typing and lint fixes.
-   - **Opus** for research into undocumented internals, live-tested work on
-     Zotero internals, and the final whole-branch review.
-   - **Haiku** for mechanical sweeps.
-3. Keep phases on separate worktrees when parallel agents commit, so their
-   commits never race.
+**How to run the work:** background subagents, one worktree per phase.
+- Sonnet for closely specified tasks.
+- Opus for live Zotero work and the whole-branch review before a merge.
 
 ## Deferred and known gaps
 
