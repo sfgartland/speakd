@@ -57,6 +57,11 @@ speakd distribution, and the README says so.
 - `speech.piper_voice_dir` (string), default `$XDG_DATA_HOME/piper-voices`
   (where Piper's downloader already put `en_US-ryan-high` on this machine).
 - `speech.piper_threads` (int 1–8, default 1, `restart`).
+- `render.piper_threads` (int 0–16, default 0 meaning every core, `restart`).
+  A render is long and nobody is waiting on each sentence, so it takes the
+  whole machine by default rather than live speech's frugal single thread.
+  It still yields to live speech between sentences, as every render does. On
+  battery, set it to 1.
 
 `de` joins the language codes phase 2 accepts: with Piper there is finally a
 German voice to resolve to. Under Kokoro it is unsupported.
@@ -129,6 +134,10 @@ espeak-ng, which reads "1994" as "one thousand nine hundred ninety four".
 - The `language` event phase 2 publishes on a fallback gains `engine`.
 - The window's metrics row shows which engine made the sentence being spoken,
   beside rtf.
+- **Renders** have no length limit: parts are stored as headerless PCM and
+  streamed into ffmpeg, so neither WAV's 4 GB (~25 h) ceiling nor memory bounds
+  a book, and the HTTP body cap for `render` is 256 MB (1 MB for every other
+  verb). Built in the audio-export work, before this.
 - **Renders** record the engine and voice per part at submission, in the
   manifest, so a resumed render keeps one voice throughout even if the setting
   changed in between.
