@@ -605,7 +605,8 @@ class Daemon:
         if speaking:
             return self._seek({"index": index})
         channel = self.channels.open(last.source_id)
-        refusal = self._refusal(last.source_id, channel.muted, last.text, "replay")
+        at = self.channels.touch(last.source_id)
+        refusal = self._refusal(last.source_id, channel.muted, last.text, "replay", at)
         if refusal is not None:
             return refusal
         response = self._accept(
@@ -616,7 +617,8 @@ class Daemon:
                 prefix="",
                 replay=last,
                 start=index,
-            )
+            ),
+            at,
         )
         if response.ok:
             response.data["index"] = index
@@ -713,6 +715,7 @@ class Daemon:
                             "profile": c.profile,
                             "label": c.label,
                             "muted": c.muted,
+                            "last_output": c.last_output,
                         }
                         for c in self.channels.all()
                     ],
@@ -806,7 +809,8 @@ class Daemon:
             return Response(ok=False, error=_NOT_RUNNING)
         kind = str(request.payload.get("kind", "response"))
         channel = self.channels.open(request.source_id)
-        refusal = self._refusal(request.source_id, channel.muted, text, kind)
+        at = self.channels.touch(request.source_id)
+        refusal = self._refusal(request.source_id, channel.muted, text, kind, at)
         if refusal is not None:
             return refusal
         profile_name = str(request.payload.get("profile", channel.profile))
@@ -820,7 +824,7 @@ class Daemon:
             self._publish(
                 "declined",
                 request.source_id,
-                {"text": text, "kind": kind, "reason": decision.reason},
+                {"text": text, "kind": kind, "reason": decision.reason, "at": at},
             )
             return Response(ok=True, data={"spoken": False, "reason": decision.reason})
         return self._accept(
@@ -829,11 +833,12 @@ class Daemon:
                 text=text,
                 profile=profile,
                 prefix=decision.prefix,
-            )
+            ),
+            at,
         )
 
     def _refusal(
-        self, source_id: str, channel_muted: bool, text: str, kind: str
+        self, source_id: str, channel_muted: bool, text: str, kind: str, at: float
     ) -> Response | None:
         """Why speech on this channel is dropped at the door, or None if it is not."""
         if self.muted or channel_muted:
@@ -841,7 +846,9 @@ class Daemon:
             # minutes of backlog into the room. Nothing reaches the worker,
             # so a muted channel costs no synthesis at all — which is the
             # difference between this and turning the volume down.
-            self._publish("declined", source_id, {"text": text, "kind": kind, "reason": "muted"})
+            self._publish(
+                "declined", source_id, {"text": text, "kind": kind, "reason": "muted", "at": at}
+            )
             return Response(ok=True, data={"spoken": False, "reason": "muted"})
         if isinstance(self.engine, Loadable) and not self.engine.loaded:
             # Disabled, or still loading: either way there is no model to say
@@ -849,11 +856,15 @@ class Daemon:
             # the load as well as the disable deliberately — an enable that
             # queued thirty seconds of arrivals would speak them all at once
             # the moment the model landed.
-            self._publish("declined", source_id, {"text": text, "kind": kind, "reason": "disabled"})
+            self._publish(
+                "declined",
+                source_id,
+                {"text": text, "kind": kind, "reason": "disabled", "at": at},
+            )
             return Response(ok=True, data={"spoken": False, "reason": "disabled"})
         return None
 
-    def _accept(self, job: _Job) -> Response:
+    def _accept(self, job: _Job, at: float) -> Response:
         """Put an accepted job on the queue and say so."""
         # Counted before the put, so the job is never in the queue while the
         # daemon still looks idle. Both under the lock stop() takes, so a
@@ -875,7 +886,9 @@ class Daemon:
         # lock that does not re-enter. A client watching the stream could not
         # otherwise see an utterance until it began speaking, which for a deep
         # queue is minutes after it was accepted.
-        self._publish("queued", job.source_id, {"text": _preview(job.text), "pending": waiting})
+        self._publish(
+            "queued", job.source_id, {"text": _preview(job.text), "pending": waiting, "at": at}
+        )
         return Response(ok=True, data={"spoken": True})
 
     def _run(self) -> None:

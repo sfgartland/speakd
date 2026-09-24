@@ -11,6 +11,7 @@ An unknown source is opened implicitly on first use. An agent shelling out to
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -25,6 +26,11 @@ class Channel:
     profile: str = "default"
     label: str = ""
     muted: bool = False
+    # When this channel last *tried* to speak, as `time.time()`: spoken,
+    # declined or muted alike. It is how a monitor ranks channels by
+    # relevance, and a muted session that just finished has spoken up even
+    # though nobody heard it. Zero means never.
+    last_output: float = 0.0
 
 
 class ChannelTable:
@@ -80,6 +86,15 @@ class ChannelTable:
             if muted is not None:
                 channel.muted = muted
             return channel
+
+    def touch(self, source_id: str) -> float:
+        """Record that `source_id` just tried to speak, and say when."""
+        now = time.time()
+        with self._lock:
+            channel = self._channels.get(source_id)
+            if channel is not None:
+                channel.last_output = now
+        return now
 
     def get(self, source_id: str) -> Channel | None:
         with self._lock:
