@@ -90,14 +90,32 @@ plain TypeScript with tests.
 library (never `~/Zotero`), next to a fake-engine speakd:
 
 ```bash
-test-live/setup-profile.sh        # profile + test bridge + the built plugin
+test-live/setup-profile.sh        # profile + test bridge + its token + the built plugin
 test-live/start-fake-daemon.sh &  # this checkout's daemon, HTTP on 8743
 test-live/run-zotero.sh           # headless Zotero, local server on 23129
 test-live/zeval.sh 'return Zotero.version'
 ```
 
+Each script takes the test directory (default `~/.cache/speakd-zotero-test`;
+`zeval.sh` reads it from `ZOTERO_TEST_DIR`). A second profile can run beside
+the first on its own port:
+
+```bash
+ZOTERO_TEST_PORT=23139 test-live/setup-profile.sh ~/.cache/speakd-zotero-test-fresh
+test-live/run-zotero.sh ~/.cache/speakd-zotero-test-fresh
+ZOTERO_TEST_DIR=~/.cache/speakd-zotero-test-fresh test-live/zeval.sh 'return Zotero.version'
+```
+
+`run-zotero.sh` stops only the instance running on its own profile, never
+another test profile's and never your own Zotero.
+
 `test-live/bridge/` is a **test-only** plugin that evaluates JavaScript posted
 to that Zotero's local server. Marionette can't drive Zotero, because its
 session waits for a browser window Zotero never opens, so this bridge is how
-the reader is driven from outside. Never install it in a real profile: it is
-code execution for anything that can reach the port.
+the reader is driven from outside. What it evaluates runs with chrome
+privileges, so it answers only a request that carries the random token
+`setup-profile.sh` writes to `<dir>/profile/speakd-test-token` (mode 0600)
+in an `X-Speakd-Test-Token` header, with a `Host` of `127.0.0.1:<port>` or
+`localhost:<port>`; anything else gets a 403, and without the token file it
+evaluates nothing. `zeval.sh` sends the token. Still, never install the
+bridge in a real profile.
