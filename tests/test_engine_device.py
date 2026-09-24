@@ -9,21 +9,45 @@ from speakd.synth import kokoro_engine
 
 
 class FakeKokoro(types.ModuleType):
-    """Stands in for `kokoro`, recording the device each pipeline was asked for."""
+    """Stands in for `kokoro`, recording the device the shared model is moved to.
+
+    Device selection now happens once, at `KModel(...).to(device)`, ahead of
+    any pipeline: `KokoroEngine` builds one model and hands it to every
+    `KPipeline` it later creates (`_pipeline_for`), so this only needs to
+    react to `.to()`.
+    """
 
     def __init__(self, cuda_fails: bool) -> None:
         super().__init__("kokoro")
         self.devices: list[str | None] = []
         outer = self
 
-        class KPipeline:
-            def __init__(self, lang_code: str, repo_id: str, device: str | None = None) -> None:
+        class KModel:
+            def __init__(self, repo_id: str | None = None) -> None:
+                self.repo_id = repo_id
+
+            def to(self, device: str | None) -> object:
                 outer.devices.append(device)
                 if device == "cuda" and cuda_fails:
                     raise RuntimeError(
                         "cuDNN version 92400 is not compatible with devices with SM < 7.5"
                     )
+                return self
 
+            def eval(self) -> object:
+                return self
+
+        class KPipeline:
+            def __init__(
+                self,
+                lang_code: str,
+                repo_id: str | None = None,
+                model: object = None,
+                device: str | None = None,
+            ) -> None:
+                pass
+
+        self.KModel = KModel
         self.KPipeline = KPipeline
 
 

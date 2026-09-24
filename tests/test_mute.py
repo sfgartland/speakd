@@ -42,10 +42,10 @@ class CountingEngine(FakeEngine):
         self.calls = 0
         self.texts: list[str] = []
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         self.calls += 1
         self.texts.append(text)
-        return super().synthesize(text, voice, speed)
+        return super().synthesize(text, voice, speed, lang)
 
 
 class HoldingPlayer:

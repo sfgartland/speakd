@@ -23,9 +23,9 @@ class SpeedEngine(FakeEngine):
         super().__init__()
         self.speeds: list[float] = []
 
-    def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         self.speeds.append(speed)
-        return super().synthesize(text, voice, speed)
+        return super().synthesize(text, voice, speed, lang)
 
 
 def build(engine: FakeEngine | None = None) -> Daemon:

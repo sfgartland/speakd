@@ -9,12 +9,16 @@ The tests that need the real model stay gated behind the extra.
 """
 
 import re
+import sys
+import threading
+import types
 from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
 import pytest
 
+from speakd.synth import UnsupportedLanguage
 from speakd.synth.kokoro_engine import (
     LEADING_SILENCE_SECONDS,
     NO_SPLIT,
@@ -41,10 +45,17 @@ class StubPipeline:
 
 
 def engine_with(chunks: list[Any]) -> tuple[KokoroEngine, StubPipeline]:
-    """A KokoroEngine whose __init__ (and its torch-pulling import) is skipped."""
+    """A KokoroEngine whose __init__ (and its torch-pulling import) is skipped.
+
+    The default lang, "en", maps to Kokoro's own code "a" -- pre-populating
+    `_pipelines` with the stub under that key means `_pipeline_for` finds it
+    cached and never needs `self._model` or `self.repo_id`, which this
+    engine was never given.
+    """
     engine = KokoroEngine.__new__(KokoroEngine)
     pipeline = StubPipeline(chunks)
-    engine._pipeline = pipeline
+    engine._pipelines = {"a": pipeline}
+    engine._pipelines_lock = threading.Lock()
     return engine, pipeline
 
 
@@ -153,6 +164,108 @@ def test_a_silent_result_keeps_its_length_rather_than_becoming_empty() -> None:
     engine, _ = engine_with([np.full(4800, 1e-6, dtype=np.float32)])
     audio = engine.synthesize("Hello there.", voice="af_heart", speed=1.1)
     assert len(audio) == 4800
+
+
+class FakeSharedKokoro(types.ModuleType):
+    """Stands in for `kokoro`: records how many models and pipelines it built.
+
+    Distinct from `FakeKokoro` in `test_engine_device.py`, which only cares
+    about device selection -- this one is for proving the shared-model,
+    per-language cache in `_pipeline_for` itself: one `KModel`, one
+    `KPipeline` per language regardless of call count, and every pipeline
+    built from the same model instance.
+    """
+
+    def __init__(self, fail_for: frozenset[str] = frozenset()) -> None:
+        super().__init__("kokoro")
+        self.model_calls = 0
+        self.pipeline_calls: list[tuple[str, object]] = []
+        outer = self
+
+        class KModel:
+            def __init__(self, repo_id: str | None = None) -> None:
+                outer.model_calls += 1
+
+            def to(self, device: str | None) -> object:
+                return self
+
+            def eval(self) -> object:
+                return self
+
+        class KPipeline:
+            def __init__(
+                self,
+                lang_code: str,
+                repo_id: str | None = None,
+                model: object = None,
+                device: str | None = None,
+            ) -> None:
+                outer.pipeline_calls.append((lang_code, model))
+                if lang_code in fail_for:
+                    raise RuntimeError("no such G2P")
+
+            def __call__(self, text: str, **kwargs: Any) -> Iterator[tuple[str, str, Any]]:
+                return iter(())
+
+        self.KModel = KModel
+        self.KPipeline = KPipeline
+
+
+def _install_shared_fake(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> FakeSharedKokoro:
+    monkeypatch.delenv("SPEAKD_DEVICE", raising=False)
+    fake = FakeSharedKokoro(**kwargs)
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kokoro", fake)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return fake
+
+
+def test_one_model_is_shared_across_every_language(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _install_shared_fake(monkeypatch)
+    engine = KokoroEngine()
+    engine.synthesize("Hi.", voice="af_heart", speed=1.0, lang="en")
+    engine.synthesize("Bonjour.", voice="ff_siwis", speed=1.0, lang="fr")
+    assert fake.model_calls == 1
+    models_used = {model for _, model in fake.pipeline_calls}
+    assert len(models_used) == 1
+
+
+def test_a_pipeline_is_built_once_per_language_not_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_shared_fake(monkeypatch)
+    engine = KokoroEngine()
+    engine.synthesize("Hi.", voice="af_heart", speed=1.0, lang="en")
+    engine.synthesize("Hi again.", voice="af_heart", speed=1.0, lang="en")
+    engine.synthesize("Hi a third time.", voice="af_heart", speed=1.0, lang="en")
+    assert [code for code, _ in fake.pipeline_calls] == ["a"]
+
+
+def test_different_languages_get_different_pipelines(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _install_shared_fake(monkeypatch)
+    engine = KokoroEngine()
+    engine.synthesize("Hi.", voice="af_heart", speed=1.0, lang="en")
+    engine.synthesize("Bonjour.", voice="ff_siwis", speed=1.0, lang="fr")
+    engine.synthesize("Hola.", voice="ef_dora", speed=1.0, lang="es")
+    assert [code for code, _ in fake.pipeline_calls] == ["a", "f", "e"]
+
+
+def test_pipeline_creation_failure_raises_unsupported_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_shared_fake(monkeypatch, fail_for=frozenset({"j"}))
+    engine = KokoroEngine()
+    with pytest.raises(UnsupportedLanguage) as excinfo:
+        engine.synthesize("こんにちは", voice="jf_alpha", speed=1.0, lang="ja")
+    assert excinfo.value.lang == "ja"
+    assert fake.model_calls == 1
+
+
+def test_a_language_kokoro_has_no_code_for_raises_unsupported_language() -> None:
+    engine, _ = engine_with([])
+    with pytest.raises(UnsupportedLanguage):
+        engine.synthesize("?", voice="v", speed=1.0, lang="de")
 
 
 @pytest.fixture(scope="module")

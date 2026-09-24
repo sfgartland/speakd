@@ -19,7 +19,7 @@ from speakd.metrics import SynthesisWindow
 from speakd.model import Piece, Segment
 from speakd.player import Player, Stretchable
 from speakd.segmenter import DEFAULT_MAX_CHARS, segment
-from speakd.synth import Synthesizer
+from speakd.synth import Synthesizer, UnsupportedLanguage
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
@@ -41,9 +41,16 @@ class SpeechResult:
     aborted: bool = False
     errors: list[str] = field(default_factory=list)
     units: tuple[Piece, ...] = ()
+    # Set when the engine could not build a pipeline for the language this
+    # call was given -- the first pipeline for a language is built lazily, on
+    # this producer thread, and its failure is distinguished from an
+    # ordinary per-segment synthesis error (which `errors` above already
+    # carries) so the caller can fall back to another language rather than
+    # simply losing the segment. None means nothing of the kind happened.
+    unsupported_language: str | None = None
 
 
-_Item = tuple[Piece, int, np.ndarray, float] | str | None
+_Item = tuple[Piece, int, np.ndarray, float] | str | UnsupportedLanguage | None
 
 # How much made audio an utterance may keep for going back to: about ten
 # minutes of 24 kHz float32.
@@ -192,6 +199,7 @@ def speak(
     *,
     voice: str = "af_heart",
     speed: float = 1.1,
+    lang: str = "en",
     cancel: threading.Event | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
     window: SynthesisWindow | None = None,
@@ -248,6 +256,13 @@ def speak(
     behind. Delivered by the same thread as `on_playing` and in order with
     it, so a monitor always hears "preparing k" before "playing k". Audio
     already to hand is never announced as waited for.
+
+    `lang` is the resolved language for this utterance, passed straight
+    through to `engine.synthesize`. If building the engine's first pipeline
+    for it fails, the producer stops and `SpeechResult.unsupported_language`
+    carries the language rather than `errors` -- nothing already queued is
+    played after that point, so the caller can retry the whole call with a
+    language it knows the engine can speak.
     """
     cancel = cancel or threading.Event()
     # Only when somebody is listening: a caller that passes no callback pays
@@ -278,7 +293,16 @@ def speak(
                 made_at = tempo.value if tempo is not None else 1.0
                 started = time.monotonic()
                 try:
-                    audio = engine.synthesize(unit.spoken, voice, speed * made_at)
+                    audio = engine.synthesize(unit.spoken, voice, speed * made_at, lang)
+                except UnsupportedLanguage as exc:
+                    # Distinct from the except below: this is not "one bad
+                    # segment" but "this engine cannot speak this language at
+                    # all," discovered building the first pipeline for it.
+                    # Nothing already spoken is lost -- the caller decides
+                    # what happens to the rest of the utterance -- but this
+                    # producer has nothing left to usefully make.
+                    work.put(exc)
+                    break
                 except Exception as exc:  # speech must not vanish on one bad segment
                     work.put(f"{unit.spoken[:40]!r}: {exc}")
                     continue
@@ -307,6 +331,7 @@ def speak(
     offset = start_offset
     exhausted = False
     aborted = False
+    unsupported_language: str | None = None
     expected = first
     try:
         while True:
@@ -321,6 +346,14 @@ def speak(
                 item = work.get()
             if item is None:
                 exhausted = True
+                break
+            if isinstance(item, UnsupportedLanguage):
+                # Nothing more is coming for this pass -- the producer broke
+                # out rather than continuing -- so this ends the consumer
+                # loop the same way a player failure does, but without
+                # `aborted`: nothing here failed to play, there was simply
+                # nothing this engine could make.
+                unsupported_language = item.lang
                 break
             if isinstance(item, str):
                 errors.append(item)
@@ -428,4 +461,5 @@ def speak(
         aborted=aborted,
         errors=errors,
         units=tuple(units),
+        unsupported_language=unsupported_language,
     )

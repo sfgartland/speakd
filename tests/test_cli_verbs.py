@@ -228,7 +228,7 @@ def test_the_entry_point_runs_the_daemon_on_that_player(monkeypatch, tmp_path: P
         # a test that used Kokoro's own.
         sample_rate = 12345
 
-        def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+        def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
             return np.zeros(0, dtype=np.float32)
 
     rates: list[int] = []
