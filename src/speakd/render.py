@@ -2,8 +2,11 @@
 
 A render is a queue of `RenderJob`s worked one at a time by a dedicated
 thread. It never shares the live pipeline's queue -- a render must never wait
-behind an agent's utterance -- which the next change makes true the other
-direction too, by teaching the queue to yield to live speech in progress.
+behind an agent's utterance -- and the other direction holds too: the worker
+yields to live speech, waiting before each sentence while any live utterance
+is in flight or queued, so live speech is never delayed by more than the one
+sentence already synthesising. Synthesis itself runs under a lock shared with
+the live pipeline, so the two never reach the engine at the same time.
 
 Each job's progress survives a crash: a work directory holds a manifest
 (the parts, and the next part and sentence to synthesise) and one WAV per
@@ -34,13 +37,20 @@ from speakd.paths import client_state_dir
 from speakd.segmenter import segment
 from speakd.synth import Synthesizer
 
-# The states a job passes through. Terminal ones are never left once entered.
-# `paused` does not appear yet -- it belongs to yielding, added next.
+# The states a job passes through. Terminal ones are never left once entered;
+# `paused` is not among them -- a job yielding to live speech runs on when the
+# speech is over.
 _TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
 
 DEFAULT_SENTENCE_GAP_MS = 250
 DEFAULT_CHAPTER_GAP_MS = 1500
 DEFAULT_BITRATE = "64k"
+
+# How often a paused worker re-checks whether live speech is still going.
+# The bound on delaying live speech is one sentence's synthesis -- this only
+# says how long a *finished* utterance may keep the render waiting past it,
+# and a tenth of a second is inaudible either way.
+DEFAULT_POLL_SECONDS = 0.1
 
 
 @dataclass
@@ -217,18 +227,37 @@ class _Cancelled(Exception):
 class RenderQueue:
     """Runs render jobs on one worker thread, in submission order.
 
-    Nothing here yet knows about live speech -- that arrives with yielding,
-    next -- so for now a render simply runs each part's sentences through
-    the engine back to back, exactly like a very long utterance.
+    Two arguments tie the queue to the live pipeline it shares the engine
+    with. `busy` says whether a live utterance is in flight or queued -- in
+    the daemon it is `daemon.speaking` -- and while it is true the worker
+    waits *before* each sentence, in the state `paused`, checking every
+    `poll_seconds`. Waiting happens between sentences and never inside one,
+    which is what bounds the delay a render can impose on live speech at one
+    sentence's synthesis time. `synth_lock` is the lock the live pipeline's
+    own synthesize calls take: a render sentence and a live sentence never
+    reach the engine at the same time, and the lock the live side holds is
+    held for one sentence, so neither waits on more than that.
+
+    Both are optional because a queue of their own -- in tests, or beside a
+    daemon that is not running one -- has nothing to yield to.
     """
 
     def __init__(
         self,
         engine: Synthesizer,
+        synth_lock: threading.Lock | None = None,
+        busy: Callable[[], bool] | None = None,
         work_root: Path | None = None,
+        poll_seconds: float = DEFAULT_POLL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._engine = engine
+        # One of their own when not shared: the lock has to exist for the
+        # synthesize call to take it, but nothing else can ever contend one
+        # nobody was handed.
+        self._synth_lock = synth_lock if synth_lock is not None else threading.Lock()
+        self._busy = busy
+        self._poll_seconds = poll_seconds
         self._work_root = work_root or client_state_dir("renders")
         self._clock = clock
         self._lock = threading.Lock()
@@ -290,7 +319,12 @@ class RenderQueue:
                 job.state = "cancelled"
                 shutil.rmtree(self._work_dir(job_id), ignore_errors=True)
                 return True
-            if job.state == "running":
+            if job.state in ("running", "paused"):
+                # A paused job is a running job that is yielding: it is in
+                # `_render`'s hands, so it is flagged and unwinds on its own
+                # check, exactly as a mid-sentence one does. Without this a
+                # render could not be cancelled for as long as live speech
+                # went on -- which is most of a busy day.
                 self._cancelled.add(job_id)
                 return True
             return False
@@ -327,13 +361,39 @@ class RenderQueue:
         try:
             self._synthesize(job, work_dir)
         except _Cancelled:
-            job.state = "cancelled"
             self._cancelled.discard(job.id)
             shutil.rmtree(work_dir, ignore_errors=True)
+            # The terminal state is written last, after the work directory is
+            # gone: a watcher that polls the state and then looks at the disk
+            # -- a test, or a client cleaning up -- must never see "cancelled"
+            # with the files of a cancelled render still on it.
+            job.state = "cancelled"
             return
 
-        job.state = "done"
         shutil.rmtree(work_dir, ignore_errors=True)
+        job.state = "done"
+
+    def _yield_to_live(self, job: RenderJob) -> None:
+        """Wait, before a sentence, while live speech is in flight or queued.
+
+        Checked before *every* sentence and never during one: the promise to
+        live speech is that it waits on at most the sentence already being
+        synthesised, and a yield inside a sentence would mean interrupting
+        the engine mid-call, which no engine here can do. The state is the
+        `paused` the render event publishes, so a watcher can tell a render
+        that is yielding from one that is working.
+        """
+        if self._busy is None or not self._busy():
+            return
+        job.state = "paused"
+        # `_stopping` breaks the wait rather than widening it: `stop()` joins
+        # this thread, so a worker paused behind speech that never ends would
+        # hang the join until its timeout with the job no further along.
+        while self._busy() and not self._stopping:
+            if job.id in self._cancelled:
+                raise _Cancelled
+            time.sleep(self._poll_seconds)
+        job.state = "running"
 
     def _synthesize(self, job: RenderJob, work_dir: Path) -> None:
         for part_i in range(job.part_index, len(job.parts)):
@@ -344,8 +404,14 @@ class RenderQueue:
             for sent_i in range(start, len(sentences)):
                 if job.id in self._cancelled:
                     raise _Cancelled
+                self._yield_to_live(job)
                 text = sentences[sent_i]
-                audio = self._engine.synthesize(text, job.voice, job.speed)
+                # The lock, and only the lock, around the engine call: the
+                # live pipeline's producer takes the same one, so a live
+                # sentence never runs against a render sentence -- and never
+                # waits on more of the render than this one call.
+                with self._synth_lock:
+                    audio = self._engine.synthesize(text, job.voice, job.speed)
                 append_pcm(wav_path, _pcm16(audio), self._engine.sample_rate)
                 job.done_seconds += len(audio) / self._engine.sample_rate
                 is_last_sentence = sent_i == len(sentences) - 1

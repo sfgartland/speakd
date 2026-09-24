@@ -186,6 +186,13 @@ class Daemon:
     ) -> None:
         self.engine = engine
         self.player = player
+        # The engine is one object, and it is entered from two threads: the
+        # speech worker's pipeline and, once the render verbs are wired in,
+        # the render queue's. Both take this lock around each synthesize()
+        # call and hold it for exactly one sentence, so neither ever waits on
+        # more of the other than the sentence in flight. Handed to `speak()`
+        # below and to the render queue beside it.
+        self.synth_lock = threading.Lock()
         self.profile_for = profile_for
         self.bus = bus if bus is not None else EventBus()
         self.channels = channels if channels is not None else ChannelTable()
@@ -679,6 +686,20 @@ class Daemon:
         state.save(replace(state.load(), speed=applied))
         self._publish("speed", "", {"speed": applied, "ramp": float(ramp)})
         return Response(ok=True, data={"speed": applied})
+
+    @property
+    def speaking(self) -> bool:
+        """Whether a live utterance is in flight or queued.
+
+        What the render queue polls before each of its sentences: while this
+        is true the renderer waits rather than competing for the engine, and
+        a live enqueue therefore delays a render, never the other way round.
+        `_pending` is exactly the span meant -- from the moment `handle`
+        accepts an utterance to the moment the last one accepted has been
+        spoken -- which is the span `wait_idle` waits out.
+        """
+        with self._idle:
+            return self._pending > 0
 
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
@@ -1345,6 +1366,7 @@ class Daemon:
                         tempo=self.tempo,
                         start_index=start,
                         on_waiting=preparing,
+                        synth_lock=self.synth_lock,
                     )
                 except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
                     # `started` is already out. A subscriber pairing the two

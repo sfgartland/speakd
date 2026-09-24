@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,11 @@ from typing import Any
 import numpy as np
 import pytest
 
+from speakd.channels import ChannelTable
+from speakd.daemon import Daemon, ProfileView
+from speakd.events import Event, EventBus
+from speakd.player import FakeSink, StreamingPlayer
+from speakd.protocol import Request, Verb
 from speakd.render import (
     Part,
     RenderJob,
@@ -179,3 +185,165 @@ def test_cancel_running_job_stops_it_and_removes_its_work_dir(tmp_path: Path) ->
     assert not (tmp_path / "renders" / job.id).exists()
     assert not job.out.exists()
     queue.stop()
+
+
+# --- yielding to live speech -----------------------------------------------
+
+
+def test_render_waits_while_busy_and_resumes_once_free(tmp_path: Path) -> None:
+    engine = CountingEngine()
+    busy_flag = {"value": True}
+    queue = RenderQueue(
+        engine,
+        threading.Lock(),
+        busy=lambda: busy_flag["value"],
+        work_root=tmp_path / "renders",
+        poll_seconds=0.01,
+    )
+    job = _job(tmp_path)
+    queue.submit(job)
+
+    assert until(lambda: state_of(queue, job.id) == "paused")
+    time.sleep(0.1)
+    # Nothing was synthesised while busy: yielding blocks *before* the
+    # sentence, not partway through it.
+    assert engine.calls == []
+
+    busy_flag["value"] = False
+    assert until(lambda: state_of(queue, job.id) in ("done", "failed"))
+    assert state_of(queue, job.id) == "done"
+    assert engine.calls == ["One.", "Two.", "Three.", "Four."]
+    queue.stop()
+
+
+def test_synth_lock_is_held_only_around_synthesize(tmp_path: Path) -> None:
+    lock = threading.Lock()
+    observed: list[bool] = []
+
+    class LockCheckingEngine(FakeEngine):
+        def synthesize(self, text: str, voice: str, speed: float) -> np.ndarray:
+            observed.append(lock.locked())
+            return super().synthesize(text, voice, speed)
+
+    queue = RenderQueue(
+        LockCheckingEngine(), lock, busy=lambda: False, work_root=tmp_path / "renders"
+    )
+    job = _job(tmp_path)
+    queue.submit(job)
+
+    assert until(lambda: state_of(queue, job.id) in ("done", "failed"))
+    assert state_of(queue, job.id) == "done"
+    # Every call happened with the lock held...
+    assert observed == [True, True, True, True]
+    # ...and it was released again afterwards, for the live pipeline to take.
+    assert not lock.locked()
+    queue.stop()
+
+
+def test_a_live_utterance_is_never_delayed_by_more_than_one_sentence(tmp_path: Path) -> None:
+    """Models a slow live utterance the way `tests/test_seek.py`'s `SlowSink`
+    models slow playback: `busy()` flips true mid-render, and the render must
+    reach `paused` almost immediately rather than after several more
+    sentences.
+    """
+    lock = threading.Lock()
+    engine = FakeEngine(synthesis_cost=0.05)
+    busy_flag = {"value": False}
+    queue = RenderQueue(
+        engine,
+        lock,
+        busy=lambda: busy_flag["value"],
+        work_root=tmp_path / "renders",
+        poll_seconds=0.01,
+    )
+    job = _job(tmp_path, parts=[Part(title="C", text="One. Two. Three. Four. Five. Six.")])
+    queue.submit(job)
+
+    assert until(lambda: state_of(queue, job.id) == "running")
+    busy_flag["value"] = True
+    started = time.monotonic()
+    assert until(lambda: state_of(queue, job.id) == "paused", timeout=1.0)
+    # The pause landed well within one sentence's synthesis time of the
+    # request, not after several more sentences.
+    assert time.monotonic() - started < 0.3
+
+    busy_flag["value"] = False
+    assert until(lambda: state_of(queue, job.id) in ("done", "failed"))
+    assert state_of(queue, job.id) == "done"
+    queue.stop()
+
+
+# --- a real live utterance, through a real daemon ---------------------------
+
+
+class SlowSink(FakeSink):
+    """Takes real time per block, as in `tests/test_seek.py`, so the live
+    utterance is still in flight while the render has to yield to it."""
+
+    def write(self, frames: np.ndarray) -> None:
+        super().write(frames)
+        time.sleep(len(frames) / 24000 / 20)  # twenty times real time
+
+
+def profile_for(name: str) -> ProfileView:
+    return ProfileView(
+        voice="af_heart", speed=1.0, interrupt_on=(), prepare=lambda p: (list(p), [])
+    )
+
+
+def test_a_live_enqueue_during_a_render_starts_within_one_sentence(tmp_path: Path) -> None:
+    """The review focus, end to end: one engine, one lock, a real daemon.
+
+    A render is running when a live enqueue arrives. The live utterance must
+    start within one sentence's synthesis time -- it may wait on the render
+    sentence in flight, and on nothing more -- and the render must then yield
+    for as long as the live utterance plays.
+    """
+    engine = FakeEngine(synthesis_cost=0.05)
+    d = Daemon(
+        engine,
+        StreamingPlayer(SlowSink(), chunk_frames=512),
+        profile_for,
+        bus=EventBus(),
+        channels=ChannelTable(),
+    )
+    seen: list[Event] = []
+    d.bus.subscribe(seen.append)
+    d.start()
+    queue = RenderQueue(
+        engine,
+        d.synth_lock,
+        busy=lambda: d.speaking,
+        work_root=tmp_path / "renders",
+        poll_seconds=0.01,
+    )
+    try:
+        long_text = " ".join(f"Sentence{i}." for i in range(12))
+        job = _job(tmp_path, parts=[Part(title="C", text=long_text)])
+        queue.submit(job)
+        assert until(lambda: state_of(queue, job.id) == "running")
+
+        enqueued = time.monotonic()
+        response = d.handle(
+            Request(
+                verb=Verb.ENQUEUE,
+                source_id="live",
+                payload={"text": "Zero. One. Two. Three.", "kind": "response"},
+            )
+        )
+        assert response.ok
+        assert until(lambda: any(e.kind == "position" for e in list(seen)))
+        # One sentence costs 0.05 s here. The live utterance waited on at
+        # most the render sentence already in flight -- never on several,
+        # and never on the render as a whole.
+        assert time.monotonic() - enqueued < 0.3
+
+        # While the live utterance plays, the render yields...
+        assert until(lambda: state_of(queue, job.id) == "paused")
+        assert d.wait_idle(timeout=10.0)
+        # ...and runs on once it is over.
+        assert until(lambda: state_of(queue, job.id) in ("done", "failed"))
+        assert state_of(queue, job.id) == "done"
+    finally:
+        queue.stop()
+        d.stop()
