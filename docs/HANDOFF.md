@@ -59,6 +59,14 @@ approved in conversation. In short:
    - The briefing guide moves into the setting `claude-code.briefing_guide`,
      migrated from `briefing.md`.
 
+**Then: audio versions of Zotero items.** The spec is
+`docs/superpowers/specs/2026-09-24-audio-export-design.md`, approved. Right-click
+**Create audio version…**; articles become one mp3 that stops before
+References, and books become an m4b with outline chapters. It is rendered by a
+daemon `render` job that yields to live speech and can resume, and the result
+is attached back to the item. It depends on settings and languages, so it is
+built after them.
+
 Out of scope for it: Piper (or another engine) for real German speech, which is
 its own project; moving `profiles.toml` / `notifications.toml` into settings.
 
