@@ -327,3 +327,24 @@ def test_a_stretch_has_no_dropout_at_its_start() -> None:
 
     out = time_stretch(tone(24000) + 0.5, 1.3, 24000)
     assert out[0] > 0.1
+
+
+def test_a_stretch_only_ever_covers_a_short_look_ahead(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A ramp changes speed every chunk; re-stretching all of a long sentence
+    each time costs as much CPU as the synthesiser needs."""
+    import speakd.player as player_module
+
+    lengths: list[int] = []
+    real = player_module.time_stretch
+
+    def recording(audio: np.ndarray, ratio: float, sample_rate: int) -> np.ndarray:
+        lengths.append(len(audio))
+        return real(audio, ratio, sample_rate)
+
+    monkeypatch.setattr(player_module, "time_stretch", recording)
+    sink = FakeSink()
+    source = tone(24000 * 20)  # twenty seconds
+    StreamingPlayer(sink, chunk_frames=2048).play_at(source, 24000, made_at=1.0, tempo=Tempo(1.5))
+    assert max(lengths) <= 24000 * player_module.STRETCH_LOOKAHEAD_SECONDS + 1
+    # And still the whole sentence, at the new speed.
+    assert abs(sink.frames_written - len(source) / 1.5) < 24000 * 0.05

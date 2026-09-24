@@ -27,6 +27,12 @@ class Player(Protocol):
     def stop(self) -> None: ...
 
 
+# How much audio a speed change stretches at a time: enough that a window's
+# seams are seconds apart, little enough that a ramp's re-stretching stays a
+# small fraction of real time on a machine that is also synthesising.
+STRETCH_LOOKAHEAD_SECONDS = 2.0
+
+
 @runtime_checkable
 class Stretchable(Protocol):
     """A player that can follow a speed change inside a segment.
@@ -658,9 +664,11 @@ class StreamingPlayer:
         self.interrupted = False
         consumed = 0.0  # samples of `audio` played so far, at whatever speed
         buffer: np.ndarray | None = None
+        window_end = 0  # where in `audio` the current buffer was cut up to
         effective = made_at
         pos = 0
         written = 0
+        window = int(STRETCH_LOOKAHEAD_SECONDS * sample_rate)
         while True:
             while not self._resume.wait(timeout=0.05):
                 if self._interrupt.is_set():
@@ -670,12 +678,34 @@ class StreamingPlayer:
                 self.interrupted = True
                 return written
             wanted = tempo.value if tempo is not None else made_at
-            if buffer is None or abs(wanted / effective - 1.0) > 1e-3:
-                buffer = time_stretch(audio[int(round(consumed)) :], wanted / made_at, sample_rate)
+            spent = buffer is not None and pos >= len(buffer)
+            if buffer is None or spent or abs(wanted / effective - 1.0) > 1e-3:
+                if spent:
+                    # Exactly where the window ended, rather than the running
+                    # estimate, so windows butt up with nothing lost or doubled.
+                    consumed = float(window_end)
+                start = int(round(consumed))
+                if start >= len(audio):
+                    break
+                ratio = wanted / made_at
+                if abs(ratio - 1.0) < 1e-3:
+                    # At the speed it was made: the rest as it is, uncopied.
+                    window_end = len(audio)
+                    buffer = audio[start:]
+                else:
+                    # Only a short look-ahead is stretched. A ramp changes the
+                    # speed every chunk, and stretching the whole rest of a
+                    # long sentence each time costs as much CPU as the
+                    # synthesiser needs; the next window is cut when this one
+                    # runs out.
+                    window_end = min(len(audio), start + window)
+                    buffer = time_stretch(audio[start:window_end], ratio, sample_rate)
                 effective = wanted
                 pos = 0
-            if pos >= len(buffer):
-                break
+                if len(buffer) == 0:
+                    consumed = float(window_end)
+                    buffer = None
+                    continue
             # Started here, below the interrupt check, rather than before the
             # loop: a segment that writes nothing — empty, or interrupted at
             # the first chunk — must not open a device stream to write nothing
