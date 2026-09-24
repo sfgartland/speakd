@@ -1,0 +1,335 @@
+import { describe, expect, it } from "vitest";
+import type { Problem } from "../src/channel";
+import { ReaderSession, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
+import type { CallResult, SpeakdEvent } from "../src/speakd";
+import type { SegmentText } from "../src/sections";
+
+const OK: CallResult = { kind: "ok", data: {} };
+
+// Stands in for channel.ts: records what it was asked, and lets the test
+// say what the daemon is doing.
+class FakeChannel implements ChannelLike {
+  log: string[] = [];
+  reading = false;
+  speaking = false;
+  paused = false;
+  lastIndex: number | null = null;
+  started: { segments: readonly SegmentText[]; from: number }[] = [];
+  private highlightListener: ((index: number | null) => void) | null = null;
+  private endListener: (() => void) | null = null;
+  private problemListener: ((problem: Problem) => void) | null = null;
+
+  async start(segments: readonly SegmentText[], from: number): Promise<void> {
+    this.log.push(`start ${from}`);
+    this.started.push({ segments, from });
+    this.reading = true;
+  }
+  async stop(): Promise<void> {
+    this.log.push("stop");
+    this.reading = false;
+  }
+  async skip(by: number): Promise<CallResult> {
+    this.log.push(`skip ${by}`);
+    return OK;
+  }
+  async pause(): Promise<CallResult> {
+    this.log.push("pause");
+    return OK;
+  }
+  async resume(): Promise<CallResult> {
+    this.log.push("resume");
+    return OK;
+  }
+  handleEvent(event: SpeakdEvent): void {
+    if (event.event === "transport") this.paused = event.data.paused === true;
+  }
+  onHighlight(listener: (index: number | null) => void): () => void {
+    this.highlightListener = listener;
+    return () => (this.highlightListener = null);
+  }
+  onEnd(listener: () => void): () => void {
+    this.endListener = listener;
+    return () => (this.endListener = null);
+  }
+  onProblem(listener: (problem: Problem) => void): () => void {
+    this.problemListener = listener;
+    return () => (this.problemListener = null);
+  }
+
+  highlight(index: number | null): void {
+    if (index !== null) this.lastIndex = index;
+    this.highlightListener?.(index);
+  }
+  end(): void {
+    this.reading = false;
+    this.speaking = false;
+    this.endListener?.();
+  }
+  problem(problem: Problem): void {
+    this.reading = false;
+    this.problemListener?.(problem);
+  }
+}
+
+// Eight segments in three paragraphs: [0,1,2] [3,4,5] [6,7].
+const SEGMENTS: SegmentInfo[] = [
+  "Zero is first.",
+  "One follows.",
+  "Two ends a paragraph.",
+  "Three starts one.",
+  "Four is here.",
+  "Five ends it.",
+  "Six starts the last.",
+  "Seven ends the paper.",
+].map((text, index) => ({ text, anchor: [0, 3, 6].includes(index) ? "paragraphStart" : null }));
+
+function setup() {
+  const channel = new FakeChannel();
+  const tasks: (() => void)[] = [];
+  const hooks: SessionHooks & { log: string[] } = {
+    log: [],
+    defer: (task) => tasks.push(task),
+    takeover: (active) => hooks.log.push(active ? "takeover on" : "takeover off"),
+    mirrorPause: (paused) => hooks.log.push(paused ? "mirror pause" : "mirror play"),
+  };
+  const session = new ReaderSession(channel, hooks);
+  const emitted: string[] = [];
+  const sink = { emit: (type: string, index: number | null) => emitted.push(index === null ? type : `${type} ${index}`) };
+  // What the event loop does between Zotero's synchronous calls.
+  const tick = () => {
+    while (tasks.length) tasks.shift()!();
+  };
+  // Zotero's _createController: the controller, then its paused state.
+  const create = (back: number | null, paused = false) => {
+    const controller = session.createController(SEGMENTS, back, null, sink);
+    controller.paused = paused;
+    return controller;
+  };
+  return { channel, hooks, session, emitted, sink, tick, create };
+}
+
+describe("ReaderSession", () => {
+  it("starts the channel at the controller's start index once Zotero is done building it", () => {
+    const { channel, tick, create } = setup();
+    create(2);
+    expect(channel.log).toEqual([]);
+    tick();
+    expect(channel.log).toEqual(["start 2"]);
+    expect(channel.started[0]!.segments).toHaveLength(8);
+  });
+
+  it("starts at the first segment when Zotero gives no index", () => {
+    const { channel, tick, create } = setup();
+    create(null);
+    tick();
+    expect(channel.log).toEqual(["start 0"]);
+  });
+
+  it("does not start a controller that Zotero built paused, until it is played", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(4, true);
+    tick();
+    expect(channel.log).toEqual([]);
+    controller.paused = false;
+    tick();
+    expect(channel.log).toEqual(["start 4"]);
+  });
+
+  it("highlights the segment the channel names, and ignores the channel's clearing", () => {
+    const { channel, emitted, tick, create } = setup();
+    create(0);
+    tick();
+    channel.highlight(1);
+    channel.highlight(null);
+    channel.highlight(2);
+    expect(emitted).toEqual(["ActiveSegmentChange 1", "ActiveSegmentChange 2"]);
+  });
+
+  it("treats a controller replaced in the same tick as a jump, not a stop", () => {
+    const { channel, hooks, session, tick, create } = setup();
+    session.want({ kind: "here" });
+    const first = create(0);
+    tick();
+    first.destroy();
+    create(5);
+    tick();
+    expect(channel.log).toEqual(["start 0", "start 5"]);
+    expect(hooks.log).toEqual(["takeover on"]);
+    expect(session.wanted).toBe(true);
+  });
+
+  it("stops the channel and ends the takeover when a controller goes with no successor", () => {
+    const { channel, hooks, session, tick, create } = setup();
+    session.want({ kind: "here" });
+    const controller = create(0);
+    tick();
+    controller.destroy();
+    tick();
+    expect(channel.log).toEqual(["start 0", "stop"]);
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+    expect(session.wanted).toBe(false);
+  });
+
+  it("sends a destroyed controller's highlights nowhere", () => {
+    const { channel, emitted, tick, create } = setup();
+    const controller = create(0);
+    tick();
+    controller.destroy();
+    channel.highlight(3);
+    expect(emitted).toEqual([]);
+  });
+
+  it("relays pause and resume only while its own channel is speaking", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(0);
+    tick();
+    controller.paused = true;
+    expect(channel.log).toEqual(["start 0"]);
+
+    channel.speaking = true;
+    controller.paused = true;
+    channel.paused = true;
+    controller.paused = true; // already paused: said once
+    controller.paused = false;
+    expect(channel.log).toEqual(["start 0", "pause", "resume"]);
+  });
+
+  it("plays a finished or failed read again from where it was", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(2);
+    tick();
+    channel.highlight(4);
+    channel.problem({ kind: "no-daemon", error: "refused" });
+    controller.paused = false;
+    expect(channel.log).toEqual(["start 2", "start 4"]);
+  });
+
+  it("tells Zotero a read is complete when the channel comes to its end, and plays it again from its start", () => {
+    const { channel, emitted, tick, create } = setup();
+    const controller = create(2);
+    tick();
+    channel.highlight(7);
+    channel.end();
+    expect(emitted).toEqual(["ActiveSegmentChange 7", "Complete"]);
+    controller.paused = false;
+    expect(channel.log).toEqual(["start 2", "start 2"]);
+  });
+
+  it("says Error on a problem, so Zotero shows the read paused", () => {
+    const { channel, emitted, tick, create } = setup();
+    const controller = create(0);
+    tick();
+    channel.problem({ kind: "no-daemon", error: "refused" });
+    expect(emitted).toEqual(["Error"]);
+    expect(controller.error).toBe("network");
+  });
+
+  it("skips a sentence or five through the channel's seek", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(0);
+    tick();
+    channel.speaking = true;
+    controller.skipAhead("sentence", false);
+    controller.skipBack("sentence", true);
+    expect(channel.log).toEqual(["start 0", "skip 1", "skip -5"]);
+    expect(controller.lastSkipGranularity).toBe("sentence");
+  });
+
+  it("skips a paragraph by starting over at its first segment", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(0);
+    tick();
+    channel.speaking = true;
+    channel.highlight(4);
+    controller.skipAhead("paragraph", false);
+    channel.highlight(6);
+    controller.skipBack("paragraph", false);
+    expect(channel.log).toEqual(["start 0", "start 6", "start 3"]);
+  });
+
+  it("does not skip while another channel is speaking", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(0);
+    tick();
+    controller.skipAhead("sentence", false);
+    controller.skipAhead("paragraph", false);
+    expect(channel.log).toEqual(["start 0"]);
+  });
+
+  it("reads a selection only to the segment where it ends", () => {
+    const { channel, session, tick, create } = setup();
+    session.want({ kind: "selection", text: "One follows. Two ends a" });
+    create(1);
+    tick();
+    expect(channel.started[0]!.segments).toHaveLength(3);
+    expect(channel.started[0]!.from).toBe(1);
+
+    // A jump after it reads on to the end.
+    create(5);
+    tick();
+    expect(channel.started[1]!.segments).toHaveLength(8);
+  });
+
+  it("hands Zotero the segment being read to annotate", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(2);
+    tick();
+    expect(controller.segmentToAnnotate()).toBe(2);
+    channel.highlight(3);
+    expect(controller.segmentToAnnotate()).toBe(3);
+  });
+
+  it("keeps Zotero's speed to itself: the speed is the listener's, set elsewhere", () => {
+    const { channel, tick, create } = setup();
+    const controller = create(0);
+    tick();
+    controller.speed = 1.5;
+    expect(controller.speed).toBe(1.5);
+    expect(channel.log).toEqual(["start 0"]);
+  });
+
+  it("mirrors the daemon's pause into Zotero while its own channel speaks", () => {
+    const { channel, hooks, session, tick, create } = setup();
+    create(0);
+    tick();
+    session.handleEvent({ event: "transport", source_id: "", data: { paused: true } });
+    expect(hooks.log).toEqual([]);
+    channel.speaking = true;
+    session.handleEvent({ event: "transport", source_id: "", data: { paused: true } });
+    session.handleEvent({ event: "transport", source_id: "", data: { paused: false } });
+    expect(hooks.log).toEqual(["mirror pause", "mirror play"]);
+  });
+
+  it("stops once when its own stop is pressed, whatever Zotero then destroys", () => {
+    const { channel, hooks, session, tick, create } = setup();
+    session.want({ kind: "here" });
+    const controller = create(0);
+    tick();
+    session.stop();
+    controller.destroy();
+    tick();
+    expect(channel.log).toEqual(["start 0", "stop"]);
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+  });
+
+  it("stops once when the tab closes, and hears nothing after", () => {
+    const { channel, emitted, session, tick, create } = setup();
+    create(0);
+    tick();
+    session.close();
+    session.close();
+    channel.highlight(2);
+    expect(channel.log).toEqual(["start 0", "stop"]);
+    expect(emitted).toEqual([]);
+  });
+
+  it("reports the last problem, and forgets it on the next start", () => {
+    const { channel, session, tick, create } = setup();
+    create(0);
+    tick();
+    channel.problem({ kind: "bad-token", error: "401" });
+    expect(session.problem?.kind).toBe("bad-token");
+    session.want({ kind: "here" });
+    expect(session.problem).toBeNull();
+  });
+});
