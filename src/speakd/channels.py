@@ -11,6 +11,7 @@ An unknown source is opened implicitly on first use. An agent shelling out to
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from speakd.model import Role
@@ -41,9 +42,13 @@ class ChannelTable:
     the table hands out the live channel, not a copy.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, muted_by_default: Callable[[str], bool] | None = None) -> None:
         self._channels: dict[str, Channel] = {}
         self._lock = threading.Lock()
+        # Which new channels start silent. Applied once, when the channel is
+        # first opened, so a channel someone has since unmuted stays audible
+        # however often its client opens it again.
+        self._muted_by_default = muted_by_default
 
     def open(
         self,
@@ -59,7 +64,10 @@ class ChannelTable:
         with self._lock:
             channel = self._channels.get(source_id)
             if channel is None:
-                channel = Channel(source_id=source_id)
+                starts_muted = self._muted_by_default is not None and self._muted_by_default(
+                    source_id
+                )
+                channel = Channel(source_id=source_id, muted=starts_muted)
                 self._channels[source_id] = channel
             if role is not None:
                 channel.role = role

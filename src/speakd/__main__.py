@@ -88,6 +88,19 @@ def build_profiles() -> Callable[[str], ProfileView]:
     return profile_for
 
 
+def build_channels() -> ChannelTable:
+    """The channel table, with Claude Code sessions starting muted.
+
+    Several sessions run at once, and hearing all of them is noise. So a
+    session is silent until it is chosen -- unmuted in the window's channel
+    list or with `speakctl unmute --source` -- rather than audible until it is
+    silenced. Everything else, the paste box and notifications included,
+    starts audible as before. Held for the daemon's lifetime: after a restart
+    every session starts muted again.
+    """
+    return ChannelTable(muted_by_default=lambda source: source.startswith("claude-code:"))
+
+
 def build_player(*, sample_rate: int, fake: bool = False) -> Player:
     """The player the daemon runs with.
 
@@ -288,7 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         build_player(sample_rate=engine.sample_rate),
         build_profiles(),
         bus=EventBus(),
-        channels=ChannelTable(),
+        channels=build_channels(),
     )
     return serve(daemon, args.socket)
 
