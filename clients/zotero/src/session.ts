@@ -29,6 +29,8 @@ export interface ChannelLike {
   pause(): Promise<CallResult>;
   resume(): Promise<CallResult>;
   handleEvent(event: SpeakdEvent): void;
+  /** Resolves once everything asked of the channel so far has been sent and answered. */
+  idle(): Promise<void>;
   readonly reading: boolean;
   readonly speaking: boolean;
   readonly paused: boolean;
@@ -367,6 +369,11 @@ export class ReaderSession {
     this.closed = true;
     for (const off of this.unsubscribe) off();
     this.changeListeners.clear();
+  }
+
+  /** Resolves once what the channel has been asked so far -- a stop's hush, say -- has been sent. */
+  idle(): Promise<void> {
+    return this.channel.idle();
   }
 
   /** Hear the session's state change, for the bar. Returns an unsubscribe. */

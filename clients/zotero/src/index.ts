@@ -3,6 +3,7 @@
 // disabling it leaves Zotero as it found it.
 
 import { Controls } from "./controls";
+import { dismantle } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
 import { observeConfig, readConfig } from "./prefs";
 import { Takeover } from "./reader-takeover";
@@ -98,14 +99,13 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   log(`loaded (${data.version})`);
 }
 
-export function shutdown(_data: StartupData, _reason: number): void {
+export async function shutdown(_data: StartupData, _reason: number): Promise<void> {
   const current = running;
   running = null;
   delete (Zotero as Any).SpeakdReader;
   if (current === null) return;
-  current.unobserve();
-  current.controls.unregister();
-  current.takeover.uninstall();
-  current.link.close();
+  // Zotero awaits a plugin's shutdown (plugins.js `_callMethod`), so a
+  // read's hush can finish on the link before it closes.
+  await dismantle(current);
   log("unloaded");
 }

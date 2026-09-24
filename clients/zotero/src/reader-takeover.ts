@@ -614,8 +614,12 @@ class Adopted implements ReaderHandle {
     this.changeListeners.clear();
   }
 
-  /** The plugin is shutting down: stop its read, undo every hook, and let go. */
-  uninstall(): void {
+  /**
+   * The plugin is shutting down: stop its read, undo every hook, and let go.
+   * Resolves once the stop's hush has been sent: the link must outlive it.
+   */
+  uninstall(): Promise<void> {
+    const session = this.session;
     this.guard("uninstalling", () => {
       if (this.session?.live || this.session?.wanted) this.stop();
       const win = this.win;
@@ -633,6 +637,7 @@ class Adopted implements ReaderHandle {
       delete this.reader._getReadAloudRemoteInterface;
     });
     this.close();
+    return session?.idle() ?? Promise.resolve();
   }
 
   private refuse(reason: string): void {
@@ -717,7 +722,8 @@ export class Takeover {
     );
   }
 
-  uninstall(): void {
+  /** Undo every hook. Resolves once every reader's stop has been sent to speakd. */
+  uninstall(): Promise<void> {
     if (this.readers && this.originalPush) {
       // The wrapper is an own property over Array.prototype.push.
       delete this.readers.push;
@@ -727,8 +733,16 @@ export class Takeover {
     this.originalPush = null;
     if (this.notifierID !== null) Zotero.Notifier.unregisterObserver(this.notifierID);
     this.notifierID = null;
-    for (const record of [...this.adopted.values()]) record.uninstall();
+    const settled: Promise<void>[] = [];
+    for (const record of [...this.adopted.values()]) {
+      try {
+        settled.push(record.uninstall());
+      } catch (error) {
+        this.options.warn("uninstalling a reader failed", error);
+      }
+    }
     this.adopted.clear();
+    return Promise.all(settled).then(() => {});
   }
 
   /** The handle for a reader, whichever side of Zotero's Proxy it is (X:76-98). */

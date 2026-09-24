@@ -26,8 +26,11 @@ function shutdown(data, reason) {
   if (reason === APP_SHUTDOWN) {
     return;
   }
-  scope?.SpeakdReader.shutdown(data, reason);
+  const current = scope;
   scope = null;
+  // A promise: Zotero waits for it, so a read's hush is sent before the
+  // plugin's code goes away.
+  return current?.SpeakdReader.shutdown(data, reason);
 }
 
 function uninstall() {}

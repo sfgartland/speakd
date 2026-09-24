@@ -24,6 +24,7 @@ class FakeChannel implements ChannelLike {
     this.started.push({ segments, from });
     this.reading = true;
   }
+  async idle(): Promise<void> {}
   async stop(): Promise<void> {
     this.log.push("stop");
     this.reading = false;
