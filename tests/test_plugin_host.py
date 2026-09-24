@@ -1,6 +1,7 @@
 """Tests for plugin activation, deactivation and registration cleanup."""
 
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,8 @@ from speakd.model import Piece
 from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginContext, PluginHost
 from speakd.plugins.registry import ServiceRegistry
+from speakd.settings.registry import Settings
+from speakd.settings.store import SettingsStore
 
 
 def upper(pieces: Sequence[Piece]) -> Sequence[Piece]:
@@ -207,6 +210,31 @@ def test_a_failing_setup_is_attempted_once_however_many_services_it_requires() -
     host.register("multi", boom, requires=["A", "B"])
     assert attempts == ["tried"]
     assert [e for e in host.errors() if "setup failed" in e] == ["multi: setup failed"]
+
+
+def test_a_plugin_can_declare_a_setting_undone_on_dispose(tmp_path: Path) -> None:
+    settings = Settings(
+        SettingsStore(tmp_path / "settings.toml", tmp_path / "settings-schema.json")
+    )
+    host = PluginHost(ServiceRegistry(), settings=settings)
+
+    def setup(ctx: PluginContext) -> None:
+        ctx.setting("summarize", "bool", True, label="Summarize", help="h")
+
+    host.register("markdown", setup)
+    assert settings.get("markdown.summarize") is True
+    host.unregister("markdown")
+    assert settings.schema("markdown") == []
+
+
+def test_a_plugin_without_a_settings_host_cannot_declare_one() -> None:
+    """`setup` raising is the host's ordinary failure path (see the tests
+    above): the plugin fails to activate and the reason is recorded, exactly
+    as it would be for a setup that raised any other RuntimeError."""
+    host = PluginHost(ServiceRegistry())
+    host.register("markdown", lambda ctx: ctx.setting("summarize", "bool", True))
+    assert host.active() == set()
+    assert any("has no Settings" in e for e in host.errors())
 
 
 def test_a_plugin_with_two_requirements_waits_for_both() -> None:

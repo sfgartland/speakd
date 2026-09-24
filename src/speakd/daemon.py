@@ -25,15 +25,46 @@ from speakd.channels import MODES, Channel, ChannelTable, effective_mode
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
 from speakd.model import Piece, Role, Segment, Span
+from speakd.paths import default_settings_paths
 from speakd.pipeline import AudioCache, speak
 from speakd.player import Pausable, Player
 from speakd.protocol import Request, Response, Verb
 from speakd.scheduler import SpeechRequest, decide
+from speakd.settings.registry import Settings
+from speakd.settings.store import SettingsStore
+from speakd.settings.types import SettingError
 from speakd.synth import Synthesizer
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
+
+# Kokoro 0.9.4's nine languages (design §2). Declared here as the options for
+# `speech.default_language` even though nothing yet reads that setting --
+# resolving an utterance's language is phase 2 of the settings-and-languages
+# design, and the setting exists now so the window has something to show.
+_LANGUAGE_OPTIONS = ("en", "en-gb", "es", "fr", "hi", "it", "pt-br", "ja", "zh")
+
+# What core declares at every start. Not persisted (`persist=False` at the
+# call site): core redeclares this on every run, so persisting it would only
+# be a slower way of saying the same thing every time -- see `Settings.declare`.
+_CORE_SPEECH_SETTINGS: tuple[dict[str, object], ...] = (
+    {
+        "name": "default_language",
+        "type": "choice",
+        "default": "en",
+        "label": "Default language",
+        "help": "Used when nothing else says what language an utterance is in.",
+        "options": list(_LANGUAGE_OPTIONS),
+    },
+    {
+        "name": "detect_language",
+        "type": "bool",
+        "default": True,
+        "label": "Detect language",
+        "help": "Guess an utterance's language when nothing else says it.",
+    },
+)
 
 # How long a channel may go unused before it is forgotten.
 _CHANNEL_IDLE_SECONDS = 12 * 3600.0
@@ -183,12 +214,21 @@ class Daemon:
         bus: EventBus | None = None,
         channels: ChannelTable | None = None,
         metrics_interval: float = _METRICS_INTERVAL_SECONDS,
+        settings: Settings | None = None,
     ) -> None:
         self.engine = engine
         self.player = player
         self.profile_for = profile_for
         self.bus = bus if bus is not None else EventBus()
         self.channels = channels if channels is not None else ChannelTable()
+        if settings is None:
+            values_path, schema_path = default_settings_paths()
+            settings = Settings(SettingsStore(values_path, schema_path))
+        self.settings = settings
+        # Redeclared on every start, never persisted: core is not a client
+        # that can go offline and come back, so there is nothing here for a
+        # persisted schema to stand in for.
+        self.settings.declare("speech", list(_CORE_SPEECH_SETTINGS), persist=False)
         # Loaded rather than defaulted: after a reboot, surprising silence is
         # a smaller failure than surprising speech.
         self.muted = state.load().muted
@@ -836,7 +876,68 @@ class Daemon:
             if not isinstance(loaded, bool):
                 return Response(ok=False, error="set_engine needs a boolean 'loaded'")
             return self._set_engine_loaded(loaded)
+        if request.verb is Verb.SETTINGS:
+            return self._settings(request.payload.get("owner"))
+        if request.verb is Verb.SET_SETTING:
+            return self._set_setting(request.payload.get("key"), request.payload.get("value"))
+        if request.verb is Verb.DECLARE_SETTINGS:
+            return self._declare_settings(request.source_id, request.payload.get("settings"))
         return Response(ok=False, error=f"{request.verb.value} is not handled here")
+
+    def _settings(self, owner: object) -> Response:
+        """`settings {owner?}`: this owner's declarations and values, or every
+        owner's when none is named.
+
+        Unscoped here on purpose (see "Global Constraints" and "Scoping" in
+        the settings-core plan): every owner is reachable over the Unix
+        socket, since that is the user's own CLI and window. A transport
+        that is not that trust boundary narrows this before it ever reaches
+        `handle` -- see `transport_http.py`.
+        """
+        if owner is not None and not isinstance(owner, str):
+            return Response(ok=False, error="settings needs 'owner' to be a string, if given")
+        return Response(
+            ok=True,
+            data={"schema": self.settings.schema(owner), "values": self.settings.values(owner)},
+        )
+
+    def _set_setting(self, key: object, value: object) -> Response:
+        """`set_setting {key, value}`: validate, persist, and announce it.
+
+        Nothing is published on a refusal -- a client watching `setting`
+        events must never see one for a value that was never actually
+        stored, which is what `Settings.set` already guarantees by
+        validating before it writes or notifies.
+        """
+        if not isinstance(key, str) or not key:
+            return Response(ok=False, error="set_setting needs a non-empty string 'key'")
+        try:
+            applied = self.settings.set(key, value)
+        except SettingError as exc:
+            return Response(ok=False, error=str(exc))
+        self._publish("setting", "", {"key": key, "value": applied})
+        return Response(ok=True, data={"value": applied})
+
+    def _declare_settings(self, source_id: str, raw_settings: object) -> Response:
+        """`declare_settings {settings}`: always under the source's own owner.
+
+        The one exception to this method's unscoped neighbours above: a
+        client can only ever declare its own settings, whichever transport
+        it arrived on, so the owner is derived from `source_id` here rather
+        than trusted from the payload -- there is no `owner` field to trust.
+        """
+        owner = source_id.split(":", 1)[0]
+        if not owner:
+            return Response(
+                ok=False, error="declare_settings needs a channel to derive an owner from"
+            )
+        if not isinstance(raw_settings, list) or not all(isinstance(s, dict) for s in raw_settings):
+            return Response(ok=False, error="declare_settings needs a list 'settings'")
+        try:
+            declared = self.settings.declare(owner, raw_settings, persist=True)
+        except SettingError as exc:
+            return Response(ok=False, error=str(exc))
+        return Response(ok=True, data={"declared": declared})
 
     def _enqueue(self, request: Request) -> Response:
         text = request.payload.get("text")

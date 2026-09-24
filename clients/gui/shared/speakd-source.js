@@ -311,6 +311,60 @@ export class SimulatedSource {
     // clock runs this much faster; its durations stay what they were made at.
     this._speed = 1.0;
 
+    // A small schema for the Settings panel: one of each type, split across
+    // a core owner (`speech`) and a client owner (`zotero`), plus one
+    // `restart` setting under `http` — enough for a browser tab to exercise
+    // every control the window builds without a daemon behind it. Shaped
+    // exactly as `settings/types.py`'s `to_json` returns a declaration, so
+    // the same rendering code drives both.
+    this._settingSchema = [
+      {
+        key: "speech.detect_language", type: "bool", default: true,
+        label: "Detect language",
+        help: "Guess each sentence's language before speaking it, rather than assuming one.",
+        options: null, min: null, max: null, step: null, multiline: false, restart: false,
+      },
+      {
+        key: "speech.rate", type: "float", default: 1.0,
+        label: "Rate", help: "The listener's speed multiplier.",
+        options: null, min: 0.5, max: 2.0, step: 0.05, multiline: false, restart: false,
+      },
+      {
+        key: "speech.preamble", type: "string", default: "",
+        label: "Preamble", help: "Spoken once before an article begins, if set.",
+        options: null, min: null, max: null, step: null, multiline: true, restart: false,
+      },
+      {
+        key: "zotero.max_snippet", type: "int", default: 400,
+        label: "Max snippet length", help: "How many characters of a note to read before stopping.",
+        options: null, min: 0, max: 4000, step: 50, multiline: false, restart: false,
+      },
+      {
+        key: "zotero.citation_style", type: "choice", default: "chicago",
+        label: "Citation style", help: "How citations are read aloud.",
+        options: ["chicago", "apa", "mla"], min: null, max: null, step: null,
+        multiline: false, restart: false,
+      },
+      {
+        key: "zotero.default_voice", type: "voice", default: "if_sara",
+        label: "Default voice", help: "Used when a language has no mapped voice.",
+        options: null, min: null, max: null, step: null, multiline: false, restart: false,
+      },
+      {
+        key: "zotero.voice_by_language", type: "voice_map", default: {},
+        label: "Voice by language", help: "Which voice reads each language's notes.",
+        options: null, min: null, max: null, step: null, multiline: false, restart: false,
+      },
+      {
+        key: "http.port", type: "int", default: 8080,
+        label: "HTTP port", help: "Where the daemon listens for scoped clients.",
+        options: null, min: 1024, max: 65535, step: 1, multiline: false, restart: true,
+      },
+    ];
+    // key -> stored value, only for keys that have ever been set; a key
+    // absent here reads as its declaration's default, same as the registry.
+    this._settingValues = {};
+
     this._listeners = new Set();
     this._raf = null;
     this._last = 0;
@@ -427,6 +481,10 @@ export class SimulatedSource {
         return this._doSetMode(payload, source);
       case "status":
         return Promise.resolve({ ok: true, data: this._status() });
+      case "settings":
+        return Promise.resolve({ ok: true, data: this._settingsData(payload.owner) });
+      case "set_setting":
+        return this._doSetSetting(payload);
       case "enqueue":
       case "set_role":
       case "set_priority":
@@ -501,6 +559,114 @@ export class SimulatedSource {
         text: job.text.slice(0, QUEUE_PREVIEW_CHARS),
       })),
     };
+  }
+
+  /** `settings {owner?}`: this owner's declarations and values, or every owner's. */
+  _settingsData(owner) {
+    const schema = owner
+      ? this._settingSchema.filter((d) => this._ownerOf(d.key) === owner)
+      : this._settingSchema;
+    const values = {};
+    for (const decl of schema) values[decl.key] = this._settingValue(decl);
+    return { schema, values };
+  }
+
+  _ownerOf(key) {
+    return key.split(".", 1)[0];
+  }
+
+  _declFor(key) {
+    return this._settingSchema.find((d) => d.key === key);
+  }
+
+  _settingValue(decl) {
+    return Object.prototype.hasOwnProperty.call(this._settingValues, decl.key)
+      ? this._settingValues[decl.key]
+      : decl.default;
+  }
+
+  /**
+   * `set_setting {key, value}`: the same rules `settings/types.py`'s
+   * `validate` enforces, in miniature — a browser tab has no daemon to ask,
+   * so this is the only place a bad value is ever caught. Refused with the
+   * key and the rule, same as the real thing, and nothing is stored or
+   * emitted on a refusal.
+   */
+  _doSetSetting(payload) {
+    const key = payload.key;
+    if (typeof key !== "string" || !key) {
+      return Promise.resolve({ ok: false, error: "set_setting needs a non-empty string 'key'" });
+    }
+    const decl = this._declFor(key);
+    if (!decl) return Promise.resolve({ ok: false, error: `${key}: no such setting` });
+    let applied;
+    try {
+      applied = this._validateSetting(decl, payload.value);
+    } catch (err) {
+      return Promise.resolve({ ok: false, error: err.message });
+    }
+    this._settingValues[key] = applied;
+    this._emit({ kind: "setting", source_id: "", data: { key, value: applied } });
+    return Promise.resolve({ ok: true, data: { value: applied } });
+  }
+
+  _validateSetting(decl, value) {
+    const key = decl.key;
+    const fail = (msg) => {
+      throw new Error(`${key}: ${msg}`);
+    };
+    switch (decl.type) {
+      case "bool":
+        if (typeof value !== "boolean") fail(`expected a bool, got ${JSON.stringify(value)}`);
+        return value;
+      case "int":
+        if (typeof value !== "number" || !Number.isInteger(value)) {
+          fail(`expected an int, got ${JSON.stringify(value)}`);
+        }
+        return this._boundedSetting(key, value, decl.min, decl.max);
+      case "float":
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          fail(`expected a number, got ${JSON.stringify(value)}`);
+        }
+        return this._boundedSetting(key, value, decl.min, decl.max);
+      case "string":
+        if (typeof value !== "string") fail(`expected a string, got ${JSON.stringify(value)}`);
+        return value;
+      case "choice":
+        if (typeof value !== "string" || !(decl.options || []).includes(value)) {
+          fail(`${JSON.stringify(value)} is not one of ${JSON.stringify(decl.options || [])}`);
+        }
+        return value;
+      case "voice":
+        // Checking against the engine's real voice list is phase 2; any
+        // non-empty string is accepted here, matching `types.py`.
+        if (typeof value !== "string" || !value) fail("a voice must be a non-empty string");
+        return value;
+      case "voice_map": {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+          fail("expected a map from language code to voice");
+        }
+        const result = {};
+        for (const [lang, voice] of Object.entries(value)) {
+          if (!/^[a-z]{2}(-[a-z]{2})?$/.test(lang)) {
+            fail(`${JSON.stringify(lang)} is not a language code (^[a-z]{2}(-[a-z]{2})?$)`);
+          }
+          if (typeof voice !== "string" || !voice) {
+            fail(`the voice for ${JSON.stringify(lang)} must be a non-empty string`);
+          }
+          result[lang] = voice;
+        }
+        return result;
+      }
+      default:
+        return fail(`unknown type ${decl.type}`);
+    }
+  }
+
+  _boundedSetting(key, value, min, max) {
+    if (min != null && value < min) throw new Error(`${key}: ${value} is below the minimum ${min}`);
+    if (max != null && value > max) throw new Error(`${key}: ${value} is above the maximum ${max}`);
+    return value;
   }
 
   /** Record that `source_id` tried to speak, as the daemon does; returns when. */

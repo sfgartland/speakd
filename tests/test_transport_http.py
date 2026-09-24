@@ -93,6 +93,123 @@ def test_status_and_enqueue_reach_the_daemon(server) -> None:  # type: ignore[no
     assert [c["source_id"] for c in listed] == ["zotero:K"]
 
 
+def _declare(http: HttpServer, source_id: str, raws: list[dict[str, object]]) -> None:
+    status, _, body = call(
+        http,
+        "POST",
+        "/v1/declare_settings",
+        {"source_id": source_id, "payload": {"settings": raws}},
+    )
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+
+
+def test_zotero_over_http_can_set_its_own_key(server) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    _declare(
+        http,
+        "zotero:K",
+        [{"name": "x", "type": "string", "default": "", "label": "l", "help": "h"}],
+    )
+    status, _, body = call(
+        http,
+        "POST",
+        "/v1/set_setting",
+        {"source_id": "zotero:K", "payload": {"key": "zotero.x", "value": "hi"}},
+    )
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is True
+    assert answer["data"]["value"] == "hi"
+
+
+def test_zotero_over_http_setting_speech_default_language_is_refused(server) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    status, _, body = call(
+        http,
+        "POST",
+        "/v1/set_setting",
+        {"source_id": "zotero:K", "payload": {"key": "speech.default_language", "value": "fr"}},
+    )
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is False
+
+
+def test_zotero_over_http_declaring_a_setting_named_for_another_owner_is_refused(
+    server: tuple[HttpServer, Daemon],
+) -> None:
+    """`zotero:K` tries to declare `claude-code.y`. A declaration's owner is
+    always the source id's own, and a name carries no dots or dashes, so the
+    declaration is refused: nothing comes into existence as `claude-code.y`,
+    and nothing is smuggled in as `zotero.y` either. The verb itself still
+    answers ok -- one bad declaration is skipped, not a hard error, so a
+    client with nine good settings and a tenth of these loses only the tenth.
+    """
+    http, _ = server
+    raw = {"name": "claude-code.y", "type": "bool", "default": True, "label": "l", "help": "h"}
+    status, _, body = call(
+        http,
+        "POST",
+        "/v1/declare_settings",
+        {"source_id": "zotero:K", "payload": {"settings": [raw]}},
+    )
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is True
+    assert answer["data"]["declared"] == 0
+    status, _, body = call(
+        http,
+        "POST",
+        "/v1/settings",
+        {"source_id": "zotero:K", "payload": {"owner": "zotero"}},
+    )
+    assert json.loads(body)["data"]["values"] == {}
+
+
+def test_settings_over_http_with_no_owner_answers_only_the_clients_own_and_speech(
+    server: tuple[HttpServer, Daemon],
+) -> None:
+    http, _ = server
+    _declare(
+        http,
+        "zotero:K",
+        [{"name": "x", "type": "string", "default": "", "label": "l", "help": "h"}],
+    )
+    status, _, body = call(http, "POST", "/v1/settings", {"source_id": "zotero:K", "payload": {}})
+    assert status == 200
+    values = json.loads(body)["data"]["values"]
+    assert "zotero.x" in values
+    assert "speech.default_language" in values
+
+
+def test_settings_over_http_naming_a_different_owner_is_narrowed_to_own_and_speech(
+    server: tuple[HttpServer, Daemon],
+) -> None:
+    http, _ = server
+    _declare(
+        http,
+        "zotero:K",
+        [{"name": "x", "type": "string", "default": "", "label": "l", "help": "h"}],
+    )
+    _declare(
+        http,
+        "other:K",
+        [{"name": "z", "type": "string", "default": "", "label": "l", "help": "h"}],
+    )
+    status, _, body = call(
+        http,
+        "POST",
+        "/v1/settings",
+        {"source_id": "zotero:K", "payload": {"owner": "other"}},
+    )
+    assert status == 200
+    values = json.loads(body)["data"]["values"]
+    assert "other.z" not in values
+    assert "zotero.x" in values
+    assert "speech.default_language" in values
+
+
 def test_only_the_readers_verbs_are_served(server) -> None:  # type: ignore[no-untyped-def]
     http, _ = server
     assert (

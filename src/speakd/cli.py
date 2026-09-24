@@ -176,6 +176,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("subscribe", parents=[common], help="stream events as JSON lines")
     sub.add_parser("status", parents=[common], help="print the daemon's channels as JSON")
 
+    settings_cmd = sub.add_parser(
+        "settings", parents=[common], help="print settings and their values as a table"
+    )
+    settings_cmd.add_argument("owner", nargs="?", default=None, help="only this owner's settings")
+
+    set_cmd = sub.add_parser(
+        "set", parents=[common], help="set one setting; the value is parsed by its declared type"
+    )
+    set_cmd.add_argument("key", help="owner.name, e.g. speech.default_language")
+    set_cmd.add_argument("value", help="parsed according to the setting's declared type")
+
     notify = sub.add_parser("notify", help="the desktop notification connector")
     notify_sub = notify.add_subparsers(dest="notify_command")
     recent = notify_sub.add_parser("recent", help="what arrived, and what was decided about it")
@@ -772,6 +783,124 @@ def _notify_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def _settings_table(args: argparse.Namespace) -> int:
+    """`speakctl settings [owner]`: a readable table of key, value, default, type."""
+    payload: dict[str, object] = {"owner": args.owner} if args.owner else {}
+    response = _call(
+        args.socket, Request(verb=Verb.SETTINGS, source_id=args.source, payload=payload)
+    )
+    if response is None:
+        return _UNREACHABLE
+    if not response.ok:
+        return _refused(response)
+    schema = response.data.get("schema", [])
+    values = response.data.get("values", {})
+    if not isinstance(schema, list) or not schema:
+        print("no settings declared" + (f" for {args.owner!r}" if args.owner else ""))
+        return 0
+    if not isinstance(values, dict):
+        values = {}
+    header = ("key", "value", "default", "type")
+    rows = [
+        (
+            str(decl["key"]),
+            str(values.get(decl["key"], decl["default"])),
+            str(decl["default"]),
+            str(decl["type"]),
+        )
+        for decl in schema
+    ]
+    widths = [max(len(row[i]) for row in (header, *rows)) for i in range(4)]
+    for row in (header, *rows):
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)))
+    return 0
+
+
+def _parse_setting_value(setting_type: str, raw: str) -> object:
+    """`raw` as `setting_type` would validate it, or raise `ValueError`.
+
+    Mirrors, in miniature, the same reading a person typing `true` or `off`
+    at a shell expects -- `speakd.settings.types.validate` is stricter than
+    this on purpose (a real `bool` from JSON, never the string `"true"`),
+    since it also has to guard against a program passing the wrong Python
+    type by accident, which is not a risk a string typed at a terminal has.
+    """
+    if setting_type == "bool":
+        lowered = raw.strip().lower()
+        if lowered in ("true", "on", "1"):
+            return True
+        if lowered in ("false", "off", "0"):
+            return False
+        raise ValueError(f"not a boolean (true/false, on/off, 1/0): {raw!r}")
+    if setting_type == "int":
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"not an integer: {raw!r}") from None
+    if setting_type == "float":
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError(f"not a number: {raw!r}") from None
+    if setting_type == "voice_map":
+        result: dict[str, str] = {}
+        for pair in raw.split(","):
+            pair = pair.strip()
+            if not pair:
+                continue
+            lang, sep, voice = pair.partition("=")
+            if not sep:
+                raise ValueError(f"expected lang=voice, got {pair!r}")
+            result[lang.strip()] = voice.strip()
+        return result
+    # string, choice, voice: the string as given, and the daemon's own
+    # validation says whether it is one of the right ones.
+    return raw
+
+
+def _set_setting(args: argparse.Namespace) -> int:
+    """`speakctl set <key> <value>`.
+
+    The daemon does not tell a client what type a value should parse as --
+    `set_setting` takes an already-typed JSON value -- so this asks
+    `settings` first, for the one declaration it needs, and parses the
+    command-line string against that before sending it on.
+    """
+    owner = args.key.split(".", 1)[0]
+    lookup = _call(
+        args.socket, Request(verb=Verb.SETTINGS, source_id=args.source, payload={"owner": owner})
+    )
+    if lookup is None:
+        return _UNREACHABLE
+    if not lookup.ok:
+        return _refused(lookup)
+    schema = lookup.data.get("schema", [])
+    decls = schema if isinstance(schema, list) else []
+    decl = next((d for d in decls if isinstance(d, dict) and d.get("key") == args.key), None)
+    if decl is None:
+        print(f"speakctl: no such setting {args.key!r}", file=sys.stderr)
+        return _UNREACHABLE
+    try:
+        value = _parse_setting_value(str(decl["type"]), args.value)
+    except ValueError as exc:
+        print(f"speakctl: {exc}", file=sys.stderr)
+        return _UNREACHABLE
+    response = _call(
+        args.socket,
+        Request(
+            verb=Verb.SET_SETTING,
+            source_id=args.source,
+            payload={"key": args.key, "value": value},
+        ),
+    )
+    if response is None:
+        return _UNREACHABLE
+    if not response.ok:
+        return _refused(response)
+    print(response.data.get("value"))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -809,6 +938,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _set_engine(args, True)
     if args.command == "status":
         return _status(args)
+    if args.command == "settings":
+        return _settings_table(args)
+    if args.command == "set":
+        return _set_setting(args)
     if args.command == "http-token":
         from speakd import http_token
 

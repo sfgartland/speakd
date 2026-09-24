@@ -87,9 +87,14 @@ const CONTROL_SOURCE_ID: &str = "gui";
 /// `replay` plays the daemon's last utterance again from a chosen sentence.
 /// It carries an index and nothing else, so it can only repeat words a channel
 /// has already spoken — never put new ones on it.
+///
+/// `settings` and `set_setting` are the Settings view's two verbs (§1 of the
+/// settings-and-languages design). `declare_settings` is deliberately never
+/// forwarded: it is how a *client* — the Zotero plugin, a Claude Code
+/// session — declares the settings it owns, and this window is neither.
 const FORWARDED: &[&str] = &[
     "pause", "resume", "hush", "cancel", "seek", "replay", "mute", "set_mode", "set_engine",
-    "set_speed", "status",
+    "set_speed", "status", "settings", "set_setting",
 ];
 
 /// The one way the window originates speech.
