@@ -87,7 +87,9 @@ nothing is added.
 hushes on every `UserPromptSubmit`, so a turn begins with it clear. An
 `attention` enqueue carrying `"unless_briefed": true` is declined with reason
 `already briefed` when it is set. This lets the Stop hook stay silent when
-the agent has already said its piece.
+the agent has already said its piece. An enqueue carrying `"only_in_mode":
+"brief"` (or `"full"`) is declined with reason `<mode> mode` when the
+channel's effective mode differs.
 
 **Defaults.** A channel whose id starts with `claude-code:` and has no
 further `:` (so the session's main channel, not its old `:notify` channel)
