@@ -66,7 +66,7 @@ def run(monkeypatch, stdin: str, sent: list[tuple[str, str]]) -> int:  # type: i
         return None
 
     def fake_hush(source: str, **kw: object) -> str | None:
-        sent.append((source, "<hush>"))
+        sent.append((source, "<hush>" if kw.get("new_turn") else "<hush, not a new turn>"))
         return None
 
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin))

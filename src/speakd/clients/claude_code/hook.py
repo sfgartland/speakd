@@ -108,7 +108,7 @@ def _dispatch(body: dict[str, object]) -> None:
                 str(body.get("cwd") or ""),
                 claude_pid=_claude_pid(),
             )
-        reason = hush(channel, timeout=HUSH_TIMEOUT)
+        reason = hush(channel, new_turn=True, timeout=HUSH_TIMEOUT)
         if reason is not None:
             _log(reason)
         return

@@ -97,6 +97,19 @@ def enqueue(
     )
 
 
-def hush(source: str, *, socket: Path | None = None, timeout: float = TIMEOUT) -> str | None:
-    """Stop `source` talking and drop what it had queued."""
-    return send(Request(verb=Verb.HUSH, source_id=source), socket=socket, timeout=timeout)
+def hush(
+    source: str,
+    *,
+    new_turn: bool = False,
+    socket: Path | None = None,
+    timeout: float = TIMEOUT,
+) -> str | None:
+    """Stop `source` talking and drop what it had queued.
+
+    `new_turn` says the user has just prompted, which is what resets whether
+    the agent has briefed this turn.
+    """
+    payload: dict[str, object] = {"new_turn": True} if new_turn else {}
+    return send(
+        Request(verb=Verb.HUSH, source_id=source, payload=payload), socket=socket, timeout=timeout
+    )

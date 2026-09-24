@@ -119,7 +119,7 @@ def test_a_fallback_is_silent_once_the_agent_has_briefed() -> None:
         say(d, "brief", "Done.")
         again = say(d, "attention", "finished", unless_briefed=True)
         assert again.data == {"spoken": False, "reason": "already briefed"}
-        req(d, Verb.HUSH)  # the next prompt
+        req(d, Verb.HUSH, new_turn=True)  # the next prompt
         assert say(d, "attention", "finished", unless_briefed=True).data["spoken"] is True
     finally:
         d.stop()
@@ -156,6 +156,21 @@ def test_a_progress_brief_does_not_stand_in_for_the_end_of_the_turn() -> None:
         say(d, "brief", "Halfway through.", brief_kind="progress")
         assert say(d, "attention", "finished", unless_briefed=True).data["spoken"] is True
         say(d, "brief", "All done.", brief_kind="done")
+        assert say(d, "attention", "finished", unless_briefed=True).data == {
+            "spoken": False,
+            "reason": "already briefed",
+        }
+    finally:
+        d.stop()
+
+
+def test_a_skip_is_not_a_new_turn() -> None:
+    """Skipping a briefing mid-sentence must not bring back the end-of-turn alert."""
+    d, _, _ = build()
+    try:
+        req(d, Verb.SET_CAPABILITIES, briefs=True)
+        say(d, "brief", "Tests pass.", brief_kind="done")
+        req(d, Verb.HUSH)  # the window's per-row skip
         assert say(d, "attention", "finished", unless_briefed=True).data == {
             "spoken": False,
             "reason": "already briefed",

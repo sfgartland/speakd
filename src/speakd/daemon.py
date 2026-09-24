@@ -700,9 +700,11 @@ class Daemon:
             # request it sent. A client that assumed the two matched is what
             # this answer exists to catch.
             scope = "channel" if request.source_id else "all"
-            if request.source_id:
-                # A new turn for this channel: the prompt hook hushes on every
-                # prompt, so this is where "has the agent briefed yet" resets.
+            if request.source_id and request.payload.get("new_turn") is True:
+                # A new turn for this channel. Only the prompt hook's hush says
+                # so: a skip from the window stops a briefing mid-sentence, and
+                # treating that as a new turn would bring back the "finished"
+                # the briefing stood in for.
                 self.channels.mark_briefed(request.source_id, False)
             discarded = self._stop_speaking(
                 request.source_id, drain=request.verb is Verb.HUSH, reason=_DISCARDED_HUSHED
