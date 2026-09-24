@@ -112,9 +112,17 @@ class _Announcer:
     in practice is the utterance: a few dozen segments, each a sentence.
     """
 
-    def __init__(self, callback: Callable[[Segment], None]) -> None:
+    def __init__(
+        self,
+        callback: Callable[[Segment], None] | None,
+        on_waiting: Callable[[int], None] | None = None,
+    ) -> None:
         self._callback = callback
-        self._pending: queue.Queue[Segment | None] = queue.Queue()
+        self._on_waiting = on_waiting
+        # A segment that started playing, or the index of one playback is
+        # waiting on synthesis for. One queue for both, so a monitor is told
+        # "preparing" and "playing" in the order they happened.
+        self._pending: queue.Queue[Segment | int | None] = queue.Queue()
         self._errors: list[str] = []
         self._thread = threading.Thread(target=self._deliver, daemon=True)
         self._thread.start()
@@ -123,13 +131,22 @@ class _Announcer:
         """Hand over one segment. Never blocks, never raises."""
         self._pending.put(segment)
 
+    def announce_waiting(self, index: int) -> None:
+        """Say playback is waiting on segment `index`. Never blocks, never raises."""
+        self._pending.put(index)
+
     def _deliver(self) -> None:
         while True:
             segment = self._pending.get()
             if segment is None:
                 return
             try:
-                self._callback(segment)
+                if isinstance(segment, int):
+                    if self._on_waiting is not None:
+                        self._on_waiting(segment)
+                    continue
+                if self._callback is not None:
+                    self._callback(segment)
             except BaseException as exc:  # noqa: B036 - re-raising would end delivery
                 # Recorded like a failed synthesis rather than raised, and
                 # delivery carries on: a callback that trips over one
@@ -138,7 +155,12 @@ class _Announcer:
                 # something outside `Exception` would otherwise kill this
                 # thread and take the rest of the utterance's reports with
                 # it, silently, which is the one thing this daemon must not do.
-                self._errors.append(f"position callback for {segment.text[:40]!r}: {exc!r}")
+                what = (
+                    f"waiting notice for segment {segment}"
+                    if isinstance(segment, int)
+                    else f"position callback for {segment.text[:40]!r}"
+                )
+                self._errors.append(f"{what}: {exc!r}")
 
     def close(self, timeout: float) -> list[str]:
         """Deliver what is queued, then leave, saying what went wrong.
@@ -180,6 +202,7 @@ def speak(
     units: Sequence[Piece] | None = None,
     cache: AudioCache | None = None,
     tempo: Tempo | None = None,
+    on_waiting: Callable[[int], None] | None = None,
 ) -> SpeechResult:
     """Speak `pieces`, returning the timeline of what was actually played.
 
@@ -218,11 +241,22 @@ def speak(
     new audio is synthesised at `speed * tempo.value`, and a `Stretchable`
     player holds every segment to the tempo as it changes. Without a tempo,
     `speed` is used as it is.
+
+    `on_waiting` is called with a segment's index when playback has to wait
+    for that segment to be synthesised -- the silence before the first
+    sound, after a seek to audio not yet made, or when synthesis falls
+    behind. Delivered by the same thread as `on_playing` and in order with
+    it, so a monitor always hears "preparing k" before "playing k". Audio
+    already to hand is never announced as waited for.
     """
     cancel = cancel or threading.Event()
     # Only when somebody is listening: a caller that passes no callback pays
     # neither a thread nor a queue for a report nobody asked for.
-    announcer = _Announcer(on_playing) if on_playing is not None else None
+    announcer = (
+        _Announcer(on_playing, on_waiting)
+        if on_playing is not None or on_waiting is not None
+        else None
+    )
     # Internal teardown flag. Distinct from `cancel` so the caller's Event
     # stays untouched and `speak()` is a pure function of its arguments.
     stop = threading.Event()
@@ -273,9 +307,18 @@ def speak(
     offset = start_offset
     exhausted = False
     aborted = False
+    expected = first
     try:
         while True:
-            item = work.get()
+            try:
+                item = work.get_nowait()
+            except queue.Empty:
+                # Nothing ready: the listener is about to hear silence until
+                # this segment is made. Past the last segment is not a wait,
+                # only the producer about to say it is done.
+                if announcer is not None and expected < len(units):
+                    announcer.announce_waiting(expected)
+                item = work.get()
             if item is None:
                 exhausted = True
                 break
@@ -286,6 +329,7 @@ def speak(
                 player.stop()
                 break
             unit, index, audio, made_at = item
+            expected = index + 1
             if cache is not None:
                 cache.near = index
             duration = len(audio) / engine.sample_rate

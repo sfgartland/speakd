@@ -87,6 +87,14 @@
  *                   why this is a separate switch from mute and why
  *                   "loading" is a state a window has to be able to show.
  *
+ *       "preparing" data: { index }
+ *                   Playback is waiting for sentence `index` to be
+ *                   synthesised: before the first sound of a message, after a
+ *                   seek or replay to audio not yet made, and whenever
+ *                   synthesis falls behind. The next `position` ends it. Audio
+ *                   already made is never waited for, so going back a
+ *                   sentence sends none.
+ *
  *       "speed"     data: { speed }
  *                   The listener's speed multiplier moved, here or in
  *                   `speakctl speed`. 1.0 is the profile's own pace; the
@@ -584,11 +592,17 @@ export class SimulatedSource {
     this._index = i;
     this._within = 0;
     this._emit({ kind: "started", source_id: FIXTURE_SOURCE, data: this._startedData() });
-    this._playing = true;
-    this._last = performance.now();
-    this._raf = requestAnimationFrame((t) => this._tick(t));
-    this._emit(this._positionEvent());
-    this._emit(this._metricsEvent());
+    // A pretend synthesis, so a browser tab shows the "preparing" mark the
+    // daemon sends while the first sentence of a replay is being made.
+    this._emit({ kind: "preparing", source_id: FIXTURE_SOURCE, data: { index: i } });
+    setTimeout(() => {
+      if (this._hushed || this._speaking !== FIXTURE_SOURCE || this._index !== i) return;
+      this._playing = true;
+      this._last = performance.now();
+      this._raf = requestAnimationFrame((t) => this._tick(t));
+      this._emit(this._positionEvent());
+      this._emit(this._metricsEvent());
+    }, 900);
     return Promise.resolve({ ok: true, data: { spoken: true, index: i } });
   }
 

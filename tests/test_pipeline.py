@@ -637,3 +637,34 @@ def test_the_cache_evicts_furthest_from_where_playback_is() -> None:
         cache.put(i, np.zeros(100, np.float32), 1.0)
     assert cache.get(0) is None
     assert cache.get(3) is not None
+
+
+def test_waiting_for_synthesis_is_announced_before_the_segment_plays() -> None:
+    events: list[tuple[str, int]] = []
+    speak(
+        [piece("One. Two.")],
+        FakeEngine(synthesis_cost=0.05),
+        RecordingPlayer(),
+        on_playing=lambda seg: events.append(("playing", seg.index)),
+        on_waiting=lambda index: events.append(("waiting", index)),
+    )
+    assert events[:2] == [("waiting", 0), ("playing", 0)]
+    assert ("playing", 1) in events
+    # Never announced for a segment past the end, however the last one ended.
+    assert all(i < 2 for kind, i in events if kind == "waiting")
+
+
+def test_audio_already_made_is_not_waited_for() -> None:
+    cache = AudioCache()
+    pieces = [piece("One.")]
+    speak(pieces, FakeEngine(), RecordingPlayer(), cache=cache)
+    waits: list[int] = []
+    speak(
+        pieces,
+        FakeEngine(synthesis_cost=0.05),
+        SleepingPlayer(0.05),
+        cache=cache,
+        on_playing=lambda seg: None,
+        on_waiting=waits.append,
+    )
+    assert waits == []

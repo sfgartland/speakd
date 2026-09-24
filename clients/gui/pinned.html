@@ -223,6 +223,24 @@
   }
   .win[data-transport="hushed"] .doc .lit { background: none; box-shadow: none; }
 
+  /* Being made, not yet heard: the same mark at half strength, breathing, so
+     the sentence that is coming is on screen before a sound of it exists.
+     Never mistaken for the lit sentence, which is solid. */
+  .doc .preparing {
+    background: color-mix(in srgb, var(--lit-mark) 55%, transparent);
+    border-radius: 2px;
+    color: var(--ink);
+  }
+  /* The fill breathes, not the element: fading the element would fade the
+     words with it, and they are the part being read. */
+  @media (prefers-reduced-motion: no-preference) {
+    .doc .preparing { animation: preparing 1.4s ease-in-out infinite; }
+  }
+  @keyframes preparing {
+    0%, 100% { background-color: color-mix(in srgb, var(--lit-mark) 70%, transparent); }
+    50% { background-color: color-mix(in srgb, var(--lit-mark) 20%, transparent); }
+  }
+
   /* scrubber */
   /* 15px, not 5px: `box-sizing: border-box` counts the 10px of padding
      below the strip against the height, so a 5px box left the ticks
@@ -781,11 +799,13 @@
   }
 
   /** Move the lit sentence to segment `index`, and follow it if the reader is. */
-  function highlight(index) {
-    if (index === litIndex) return;
+  function highlight(index, cls = "lit") {
+    if (index === litIndex && cls === "lit") return;
     unwrap(litSpans);
     litSpans = [];
-    litIndex = index;
+    // A sentence being prepared is not the lit one: the `position` that
+    // follows for the same index has to re-mark it, not skip it as unchanged.
+    litIndex = cls === "lit" ? index : null;
     const range = ranges.get(index);
     const seg = segs.find((s) => s.index === index);
     for (const block of blocks) {
@@ -794,8 +814,8 @@
     if (!range) return;
     const el_ = range.block.el;
     litSpans = range.whole
-      ? wrapRange(el_, 0, flatText(el_).length, "lit")
-      : wrapRange(el_, range.start, range.end, "lit");
+      ? wrapRange(el_, 0, flatText(el_).length, cls)
+      : wrapRange(el_, range.start, range.end, cls);
     if (litSpans.length && Date.now() - userScrolledAt > FOLLOW_PAUSE_MS) {
       litSpans[0].scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
     }
@@ -1194,6 +1214,12 @@
         break;
       case "metrics":
         Object.assign(metrics, data);
+        break;
+      case "preparing":
+        // Playback is waiting on synthesis for this sentence. Only for the
+        // utterance on screen: a `preparing` from before its `started` names
+        // a sentence of something else.
+        if (typeof data.index === "number" && segs.length) highlight(data.index, "preparing");
         break;
       case "speed":
         if (typeof data.speed === "number") speed = data.speed;

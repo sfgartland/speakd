@@ -215,3 +215,15 @@ def test_a_seek_while_paused_stays_paused() -> None:
         assert positions(seen) == [0, 2, 3]
     finally:
         d.stop()
+
+
+def test_preparing_is_announced_before_the_first_sound() -> None:
+    engine = FakeEngine(synthesis_cost=0.05)
+    d, _, seen = build(engine)
+    try:
+        speak(d)
+        assert d.wait_idle(timeout=10.0)
+        kinds = [(e.kind, e.data.get("index")) for e in seen if e.kind in ("preparing", "position")]
+        assert kinds[:2] == [("preparing", 0), ("position", 0)]
+    finally:
+        d.stop()

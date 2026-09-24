@@ -1185,6 +1185,16 @@ class Daemon:
                 },
             )
 
+        def preparing(index: int) -> None:
+            """Say the listener is waiting on synthesis for segment `index`.
+
+            So a monitor can show the sentence that is coming before a sound
+            of it exists: the first sentence of a message can take seconds to
+            make, and silence with nothing on screen reads as a daemon that
+            did not hear.
+            """
+            self._publish("preparing", job.source_id, {"index": index})
+
         cache = AudioCache()
         start = min(job.start, max(0, len(units) - 1))
         try:
@@ -1204,6 +1214,7 @@ class Daemon:
                         cache=cache,
                         tempo=self.tempo,
                         start_index=start,
+                        on_waiting=preparing,
                     )
                 except BaseException as exc:  # noqa: B036 - re-raising would drop `finished`
                     # `started` is already out. A subscriber pairing the two

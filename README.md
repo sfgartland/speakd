@@ -183,6 +183,9 @@ shows the whole utterance as it was written — markdown rendered, headings, lis
 and code included — with the sentence being spoken lit and the view following it,
 so you can read along. Below that are a scrubber over the sentences and four
 numbers: synthesis speed against realtime, drift, resident memory and queue depth.
+A sentence still being synthesised — the first of every message, or one you have
+jumped to that was not made yet — shows the same mark at half strength, pulsing,
+until its first sound; the daemon announces it as a `preparing` event.
 
 ← and → move a sentence back or forward, and Ctrl+click on a sentence plays
 from there; a plain click does nothing, so reading and selecting never move
