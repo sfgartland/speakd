@@ -31,6 +31,25 @@ class Channel:
     # relevance, and a muted session that just finished has spoken up even
     # though nobody heard it. Zero means never.
     last_output: float = 0.0
+    # Whether something can brief the user for this channel: an agent
+    # connected through speakd's MCP server, or a client with logic of its
+    # own. Only such a channel has a mode worth choosing.
+    briefs: bool = False
+    # "brief" speaks what the briefer chose to say; "full" speaks every
+    # response. Brief by default, because a channel only reads it once it has
+    # a briefer, and an agent that connects is there to brief.
+    mode: str = "brief"
+    # Whether the briefer has spoken since the user last prompted, so the end
+    # of a turn can stay quiet when the agent has already said its piece.
+    briefed_this_turn: bool = False
+
+
+MODES = ("full", "brief")
+
+
+def effective_mode(channel: Channel) -> str:
+    """The mode that decides what is spoken: a channel with no briefer is full."""
+    return channel.mode if channel.briefs else "full"
 
 
 class ChannelTable:
@@ -48,13 +67,13 @@ class ChannelTable:
     the table hands out the live channel, not a copy.
     """
 
-    def __init__(self, muted_by_default: Callable[[str], bool] | None = None) -> None:
+    def __init__(self, defaults: Callable[[str], dict[str, object]] | None = None) -> None:
         self._channels: dict[str, Channel] = {}
         self._lock = threading.Lock()
-        # Which new channels start silent. Applied once, when the channel is
-        # first opened, so a channel someone has since unmuted stays audible
-        # however often its client opens it again.
-        self._muted_by_default = muted_by_default
+        # How a new channel starts, by its id: field name to value. Applied
+        # once, when the channel is first opened, so a channel someone has
+        # since unmuted stays audible however often its client opens it again.
+        self._defaults = defaults
 
     def open(
         self,
@@ -70,10 +89,10 @@ class ChannelTable:
         with self._lock:
             channel = self._channels.get(source_id)
             if channel is None:
-                starts_muted = self._muted_by_default is not None and self._muted_by_default(
-                    source_id
-                )
-                channel = Channel(source_id=source_id, muted=starts_muted)
+                channel = Channel(source_id=source_id)
+                if self._defaults is not None:
+                    for name, value in self._defaults(source_id).items():
+                        setattr(channel, name, value)
                 self._channels[source_id] = channel
             if role is not None:
                 channel.role = role
@@ -95,6 +114,24 @@ class ChannelTable:
             if channel is not None:
                 channel.last_output = now
         return now
+
+    def set_mode(self, source_id: str, mode: str) -> Channel:
+        channel = self.open(source_id)
+        with self._lock:
+            channel.mode = mode
+        return channel
+
+    def set_briefs(self, source_id: str, briefs: bool) -> Channel:
+        channel = self.open(source_id)
+        with self._lock:
+            channel.briefs = briefs
+        return channel
+
+    def mark_briefed(self, source_id: str, briefed: bool) -> None:
+        with self._lock:
+            channel = self._channels.get(source_id)
+            if channel is not None:
+                channel.briefed_this_turn = briefed
 
     def get(self, source_id: str) -> Channel | None:
         with self._lock:

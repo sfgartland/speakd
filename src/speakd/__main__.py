@@ -88,17 +88,29 @@ def build_profiles() -> Callable[[str], ProfileView]:
     return profile_for
 
 
-def build_channels() -> ChannelTable:
-    """The channel table, with Claude Code sessions starting muted.
+def _claude_code_defaults(source_id: str) -> dict[str, object]:
+    """How a Claude Code session's channel starts: able to brief, and muted.
 
-    Several sessions run at once, and hearing all of them is noise. So a
-    session is silent until it is chosen -- unmuted in the window's channel
-    list or with `speakctl unmute --source` -- rather than audible until it is
-    silenced. Everything else, the paste box and notifications included,
-    starts audible as before. Held for the daemon's lifetime: after a restart
-    every session starts muted again.
+    Only the session's main channel -- `claude-code:<id>`, one colon. Several
+    sessions run at once and hearing all of them is noise, so each is silent
+    until chosen; and the plugin ships the MCP server, so each can brief.
     """
-    return ChannelTable(muted_by_default=lambda source: source.startswith("claude-code:"))
+    if source_id.startswith("claude-code:") and source_id.count(":") == 1:
+        return {"briefs": True, "muted": True}
+    return {}
+
+
+def build_channels() -> ChannelTable:
+    """The channel table, with Claude Code sessions starting brief and muted.
+
+    A session is silent until it is chosen -- unmuted in the window's channel
+    list or with `speakctl unmute --source` -- and then speaks the briefings
+    its agent chooses to give, not every response, until switched to full.
+    Everything else, the paste box and notifications included, starts audible
+    as before. Held for the daemon's lifetime: after a restart every session
+    starts this way again.
+    """
+    return ChannelTable(defaults=_claude_code_defaults)
 
 
 def build_player(*, sample_rate: int, fake: bool = False) -> Player:

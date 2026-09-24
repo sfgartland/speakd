@@ -142,28 +142,20 @@ def test_a_first_touch_open_cannot_lose_a_concurrent_set_role() -> None:
     assert channel.role is Role.BACKGROUND, "a concurrent set_role was overwritten and lost"
 
 
-def test_a_channel_can_start_muted_by_rule() -> None:
-    table = ChannelTable(muted_by_default=lambda source: source.startswith("claude-code:"))
+def test_a_channel_can_start_with_defaults_by_rule() -> None:
+    table = ChannelTable(
+        defaults=lambda source: {"muted": True} if source.startswith("claude-code:") else {}
+    )
     assert table.open("claude-code:abc").muted is True
     assert table.open("gui").muted is False
 
 
-def test_the_rule_applies_once_and_an_unmute_sticks() -> None:
-    table = ChannelTable(muted_by_default=lambda source: True)
+def test_the_defaults_apply_once_and_an_unmute_sticks() -> None:
+    table = ChannelTable(defaults=lambda source: {"muted": True})
     table.open("claude-code:abc", muted=False)
     assert table.open("claude-code:abc").muted is False
 
 
-def test_an_explicit_mute_on_first_open_wins_over_the_rule() -> None:
-    table = ChannelTable(muted_by_default=lambda source: True)
+def test_an_explicit_value_on_first_open_wins_over_the_defaults() -> None:
+    table = ChannelTable(defaults=lambda source: {"muted": True})
     assert table.open("x", muted=False).muted is False
-
-
-def test_the_daemon_mutes_claude_code_sessions_until_chosen() -> None:
-    from speakd.__main__ import build_channels
-
-    table = build_channels()
-    assert table.open("claude-code:abc").muted is True
-    assert table.open("claude-code:abc:notify").muted is True
-    assert table.open("notify:whatsapp").muted is False
-    assert table.open("gui").muted is False

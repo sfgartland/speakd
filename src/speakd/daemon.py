@@ -20,7 +20,7 @@ from traceback import format_exc
 from typing import Protocol, runtime_checkable
 
 from speakd import segmenter, state
-from speakd.channels import ChannelTable
+from speakd.channels import MODES, Channel, ChannelTable, effective_mode
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
 from speakd.model import Piece, Role, Segment, Span
@@ -33,6 +33,10 @@ from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
 Prepare = Callable[[Sequence[Piece]], tuple[list[Piece], list[str]]]
+
+# Kinds spoken with the channel's label in front: several sessions share one
+# room, and a briefing or an alert is only useful if it says whose it is.
+_LABELLED_KINDS = ("brief", "attention")
 
 # The longest a speed change may take to arrive.
 _MAX_RAMP_SECONDS = 10.0
@@ -696,10 +700,18 @@ class Daemon:
             # request it sent. A client that assumed the two matched is what
             # this answer exists to catch.
             scope = "channel" if request.source_id else "all"
+            if request.source_id:
+                # A new turn for this channel: the prompt hook hushes on every
+                # prompt, so this is where "has the agent briefed yet" resets.
+                self.channels.mark_briefed(request.source_id, False)
             discarded = self._stop_speaking(
                 request.source_id, drain=request.verb is Verb.HUSH, reason=_DISCARDED_HUSHED
             )
             return Response(ok=True, data={"discarded": discarded, "scope": scope})
+        if request.verb is Verb.SET_MODE:
+            return self._set_mode(request.source_id, request.payload.get("mode"))
+        if request.verb is Verb.SET_CAPABILITIES:
+            return self._set_capabilities(request.source_id, request.payload.get("briefs"))
         if request.verb is Verb.STATUS:
             # Read-only, deliberately: asking what the channels are must not
             # open one for the asker. `speakctl status` would otherwise leave
@@ -716,6 +728,9 @@ class Daemon:
                             "label": c.label,
                             "muted": c.muted,
                             "last_output": c.last_output,
+                            "briefs": c.briefs,
+                            "mode": effective_mode(c),
+                            "briefed_this_turn": c.briefed_this_turn,
                         }
                         for c in self.channels.all()
                     ],
@@ -813,6 +828,9 @@ class Daemon:
         refusal = self._refusal(request.source_id, channel.muted, text, kind, at)
         if refusal is not None:
             return refusal
+        refusal = self._mode_refusal(channel, kind, request.payload, text, at)
+        if refusal is not None:
+            return refusal
         profile_name = str(request.payload.get("profile", channel.profile))
         profile = self.profile_for(profile_name)
         decision = decide(
@@ -827,15 +845,82 @@ class Daemon:
                 {"text": text, "kind": kind, "reason": decision.reason, "at": at},
             )
             return Response(ok=True, data={"spoken": False, "reason": decision.reason})
-        return self._accept(
-            _Job(
-                source_id=request.source_id,
-                text=text,
-                profile=profile,
-                prefix=decision.prefix,
-            ),
+        prefix = decision.prefix
+        if not prefix and kind in _LABELLED_KINDS and channel.label:
+            # Several sessions brief into one room; the listener needs to
+            # know which one is talking before what it says.
+            prefix = f"{channel.label}:"
+        response = self._accept(
+            _Job(source_id=request.source_id, text=text, profile=profile, prefix=prefix),
             at,
         )
+        if response.ok and kind == "brief":
+            self.channels.mark_briefed(request.source_id, True)
+        return response
+
+    def _mode_refusal(
+        self,
+        channel: Channel,
+        kind: str,
+        payload: dict[str, object],
+        text: str,
+        at: float,
+    ) -> Response | None:
+        """Why this kind is not spoken in this channel's mode, or None if it is.
+
+        Full mode reads every response, so a briefing would repeat it; brief
+        mode speaks only what the agent chose, so a response is what it
+        exists to hold back. `attention` -- what the agent cannot report
+        itself -- is spoken in both. Two flags narrow a single enqueue:
+        `only_in_mode`, and `unless_briefed`, which is how the end of a turn
+        stays quiet when the agent has already said its piece.
+        """
+        mode = effective_mode(channel)
+        reason: str | None = None
+        if (kind == "response" and mode == "brief") or (kind == "brief" and mode == "full"):
+            reason = f"{mode} mode"
+        elif payload.get("only_in_mode") in MODES and payload.get("only_in_mode") != mode:
+            reason = f"{mode} mode"
+        elif payload.get("unless_briefed") is True and channel.briefed_this_turn:
+            reason = "already briefed"
+        if reason is None:
+            return None
+        self._publish(
+            "declined",
+            channel.source_id,
+            {"text": text, "kind": kind, "reason": reason, "at": at},
+        )
+        return Response(ok=True, data={"spoken": False, "reason": reason})
+
+    def _set_mode(self, source_id: str, mode: object) -> Response:
+        """Switch a channel between brief and full narration.
+
+        Scoped by the channel the request names, as a per-channel mute is.
+        Refused on a channel nothing can brief for: brief mode there would
+        silence it with no briefings to take the place of what it held back.
+        """
+        if mode not in MODES:
+            return Response(ok=False, error="set_mode needs 'mode': 'full' or 'brief'")
+        if not source_id:
+            return Response(ok=False, error="set_mode needs a channel")
+        channel = self.channels.open(source_id)
+        if not channel.briefs:
+            return Response(ok=False, error="this channel has no briefer")
+        self.channels.set_mode(source_id, str(mode))
+        data = {"mode": effective_mode(channel), "briefs": channel.briefs}
+        self._publish("mode", source_id, dict(data))
+        return Response(ok=True, data=data)
+
+    def _set_capabilities(self, source_id: str, briefs: object) -> Response:
+        """A client declares that it can brief for this channel, or no longer can."""
+        if not isinstance(briefs, bool):
+            return Response(ok=False, error="set_capabilities needs a boolean 'briefs'")
+        if not source_id:
+            return Response(ok=False, error="set_capabilities needs a channel")
+        channel = self.channels.set_briefs(source_id, briefs)
+        data = {"briefs": channel.briefs, "mode": effective_mode(channel)}
+        self._publish("mode", source_id, {"mode": data["mode"], "briefs": data["briefs"]})
+        return Response(ok=True, data=data)
 
     def _refusal(
         self, source_id: str, channel_muted: bool, text: str, kind: str, at: float
