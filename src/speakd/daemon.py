@@ -854,7 +854,10 @@ class Daemon:
             _Job(source_id=request.source_id, text=text, profile=profile, prefix=prefix),
             at,
         )
-        if response.ok and kind == "brief":
+        # A progress note is not the end of the turn: only an outcome, a
+        # problem or a question stands in for the "finished" the Stop hook
+        # would otherwise say. A briefer that names no kind is taken at its word.
+        if response.ok and kind == "brief" and request.payload.get("brief_kind") != "progress":
             self.channels.mark_briefed(request.source_id, True)
         return response
 

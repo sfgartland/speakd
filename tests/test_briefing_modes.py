@@ -146,3 +146,19 @@ def test_claude_code_sessions_start_brief_and_muted() -> None:
     other = table.open("notify:whatsapp")
     assert (other.briefs, effective_mode(other), other.muted) == (False, "full", False)
     assert table.open("claude-code:abc:notify").briefs is False
+
+
+def test_a_progress_brief_does_not_stand_in_for_the_end_of_the_turn() -> None:
+    """'Halfway through' is not 'done': the turn's end must still be heard."""
+    d, _, _ = build()
+    try:
+        req(d, Verb.SET_CAPABILITIES, briefs=True)
+        say(d, "brief", "Halfway through.", brief_kind="progress")
+        assert say(d, "attention", "finished", unless_briefed=True).data["spoken"] is True
+        say(d, "brief", "All done.", brief_kind="done")
+        assert say(d, "attention", "finished", unless_briefed=True).data == {
+            "spoken": False,
+            "reason": "already briefed",
+        }
+    finally:
+        d.stop()
