@@ -35,6 +35,20 @@ def test_the_port_comes_from_the_environment(monkeypatch, value, port) -> None: 
     assert main_module.http_port() == port
 
 
+def test_an_out_of_range_port_is_reported(monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    """`-3` and `86420` are both syntactically fine integers but not ports;
+    `int()` accepts them, so unlike garbage input they must be caught
+    separately -- and, like garbage input, said out loud rather than just
+    disabling HTTP silently."""
+    monkeypatch.setenv("SPEAKD_HTTP_PORT", "86420")
+    assert main_module.http_port() is None
+    assert "86420" in capsys.readouterr().err
+
+    monkeypatch.setenv("SPEAKD_HTTP_PORT", "-3")
+    assert main_module.http_port() is None
+    assert "-3" in capsys.readouterr().err
+
+
 def test_the_transport_starts_and_mints_a_token(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from speakd import http_token
 

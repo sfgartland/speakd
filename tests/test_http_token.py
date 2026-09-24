@@ -1,5 +1,6 @@
 """Tests for the bearer token the HTTP transport requires."""
 
+import os
 import stat
 from pathlib import Path
 
@@ -33,6 +34,31 @@ def test_an_empty_token_file_is_replaced(tmp_path: Path) -> None:
     assert len(http_token.ensure(path)) >= 40
 
 
+def test_a_concurrent_creator_wins_the_race(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Two callers of `ensure()` (a daemon starting and a concurrent `speakctl
+    http-token`) can both see no token file and both try to create one. The
+    one that loses the race to create it must end up holding the winner's
+    token, not overwrite it with its own."""
+    path = tmp_path / "http-token"
+    real_read = http_token.read
+    seen: list[int] = []
+
+    def racy_read(p: Path | None = None) -> str | None:
+        seen.append(1)
+        if len(seen) == 1:
+            # A concurrent process creates the real file between this
+            # caller's read and its own attempt to create one.
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write("winner-token\n")
+            return None
+        return real_read(p)
+
+    monkeypatch.setattr(http_token, "read", racy_read)
+    assert http_token.ensure(path) == "winner-token"
+    assert mode(path) == 0o600
+
+
 def test_the_default_path_follows_xdg_config_home(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert http_token.token_path() == tmp_path / "speakd" / "http-token"
@@ -44,3 +70,21 @@ def test_speakctl_prints_it(tmp_path: Path, monkeypatch, capsys) -> None:  # typ
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert main(["http-token"]) == 0
     assert capsys.readouterr().out.strip() == http_token.read()
+
+
+def test_speakctl_reports_an_unwritable_config_dir_instead_of_a_traceback(  # type: ignore[no-untyped-def]
+    monkeypatch, capsys
+) -> None:
+    """An unwritable config directory (a read-only home, a full disk) must
+    reach the user as one clear line, not a bare traceback out of `ensure`."""
+    from speakd.cli import main
+
+    def broken(path: Path | None = None) -> str:
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(http_token, "ensure", broken)
+    code = main(["http-token"])
+    assert code != 0
+    err = capsys.readouterr().err
+    assert err.startswith("speakctl: ")
+    assert "Traceback" not in err
