@@ -90,6 +90,22 @@ describe("Link", () => {
     expect(link.state.stream).toBe("bad-token");
   });
 
+  it("says connecting until the first answer, then keeps its verdict while it retries", () => {
+    const { link, clients } = setup();
+    link.configure({ port: 1, token: "t" });
+    expect(link.state.stream).toBe("connecting");
+    const client = clients[0]!;
+    client.onState!("connecting");
+    client.onState!("no-daemon");
+    client.onState!("connecting");
+    expect(link.state.stream).toBe("no-daemon");
+    client.onState!("bad-token");
+    client.onState!("connecting");
+    expect(link.state.stream).toBe("bad-token");
+    client.onState!("connected");
+    expect(link.state.stream).toBe("connected");
+  });
+
   it("knows which channel is speaking, whether playback is paused, and the speed", () => {
     const { link, clients } = setup();
     link.configure({ port: 1, token: "t" });

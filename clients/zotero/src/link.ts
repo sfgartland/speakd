@@ -66,6 +66,7 @@ export class Link {
     const abort = this.options.makeAbort();
     this.client = client;
     this.abort = abort;
+    this.update({ stream: "connecting" });
     // Everything the stream says is checked against the connection it came
     // from: an old stream, aborted but not yet unwound, must not speak for
     // the new one.
@@ -115,6 +116,9 @@ export class Link {
   }
 
   private streamState(client: LinkClient, stream: StreamState): void {
+    // A retry is not news: "no daemon" or "wrong token" stands until an
+    // attempt ends otherwise, rather than flickering with every attempt.
+    if (stream === "connecting" && (this._state.stream === "no-daemon" || this._state.stream === "bad-token")) return;
     if (stream !== "connected") {
       // Whoever was speaking, the link can no longer tell.
       this.update({ stream, speakingChannel: "" });
