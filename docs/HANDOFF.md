@@ -1,7 +1,7 @@
 # Handoff — resume here
 
-Last updated 2026-09-25. `main` is **not yet pushed** to https://github.com/sfgartland/speakd:
-everything since the settings core is local. Push it, then check CI.
+Last updated 2026-09-25. `main` **is pushed** to https://github.com/sfgartland/speakd
+(as of `3bcf3e4`, and again with any later commits from today).
 
 ## What works now
 
@@ -10,7 +10,7 @@ everything since the settings core is local. Push it, then check CI.
 | Daemon | Running as the `speakd` user service | `systemctl --user restart speakd`; `speakctl status` |
 | Desktop window | Follow-along text, seek, speed with ramps, replay, preparing highlight, ranked channel list (stars, hide fold), brief/full toggle | `cd clients/gui/app/src-tauri && cargo run` |
 | Claude Code | Installed as a plugin (`speakd@speakd`, user scope): hooks (prompt, Notification, Stop) plus the `speakd-mcp` server | New sessions start **brief and muted**; unmute one in the window. `SPEAKD_HOME` is exported in `~/.zshenv` |
-| OpenCode | plugin in ~/.config/opencode/plugins/ + mcp entry in opencode.json, via clients/opencode/install.sh; sessions start brief and muted like Claude Code | speakctl mode full --source opencode:<id> |
+| OpenCode | Plugin in `~/.config/opencode/plugins/` + MCP entry in `opencode.json`, via `clients/opencode/install.sh`. Sessions start brief and muted like Claude Code. **Verified live end to end** (speech, briefings, mode switching, channel resolution) | `speakctl mode full --source opencode:<id>` |
 | Briefings | Agents call `brief` over MCP; sessions switch between brief and full per channel | `speakctl mode full --source claude-code:<id>`; the guide is `~/.config/speakd/briefing.md` |
 | Zotero reader | Built, reviewed, verified live in a test Zotero; **not installed in your Zotero yet** | See "Install the Zotero plugin" below |
 | HTTP transport | `127.0.0.1:8642`, token-protected, for the Zotero plugin | `speakctl http-token` prints the token |
@@ -21,6 +21,11 @@ Local machine specifics, kept outside the repo:
   falls back to the CPU anyway, plain `uv sync` / `uv run` are safe again.
 - `~/.claude/settings.json.before-speakd-plugin` is the backup from before the
   hand-wired hooks were replaced by the plugin.
+- **The Bluetooth speakers eat the first seconds of audio after a silent
+  period** (their own standby wakes on signal, not on the link; PipeWire keeps
+  the node running, which is not enough). Symptom: only later sentences
+  audible. `parecord -d bluez_output…monitor` proves the full audio reaches
+  the sink. The deferred fix list has the options.
 
 ### Install the Zotero plugin (not done yet — do it when Zotero can be restarted)
 
@@ -42,18 +47,74 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   - The fixes from an Opus whole-branch review are merged as well.
 - **The window's paste box** has no length cap.
 
-## Next, in order
+## Built on 2026-09-25
 
-1. **Phase 3, language in the clients:** `docs/superpowers/plans/2026-09-24-language-clients.md`.
-   - The Zotero side needs the live harness, so use Opus.
-   - Depends on `status.languages.supported` being right while the model loads. That's fixed.
-2. **Audio export Part B, the Zotero export flow:** `docs/superpowers/plans/2026-09-24-audio-export.md`, Tasks B2–B5.
-   - B1's pure modules are already on main (`clients/zotero/src/export/`).
-3. **Piper beside Kokoro:** spec `docs/superpowers/specs/2026-09-24-piper-engine-design.md`, plan `docs/superpowers/plans/2026-09-24-piper-engine.md`.
-   - Approved, on hold by choice.
-   - Measured here: Piper medium on one thread costs ~0.13 CPU-s per audio-s, against Kokoro's ~2.1.
-   - Supertonic 3 was evaluated and dropped (archived 2026-09-09).
-   - Samples are in `~/Music/speakd-tts-compare/`.
+- **The OpenCode client** — everything Claude Code has: `clients/opencode/` is a
+  dependency-free plugin (`speakd-mcp` reuses the shared server), sessions start
+  brief and muted, briefings/mode-switching verified live end to end.
+  - Two bugs found and fixed only by the live E2E: the v1 plugin file must
+    default-export `{id, server}` ("Plugin export is not a function"
+    otherwise), and `_speaking` never cleared made every prompt-hush stop an
+    idle player (see the hush fix below).
+  - OpenCode v2 rewrites the plugin system entirely (v1 plugins don't run on
+    v2). The signals used survive into v2's event union; the port is an
+    entry-shim job documented as Phase D in the plan. Do it when upgrading.
+- **The hush-interrupt fix (core daemon):** a channel-scoped hush on a silent
+  channel read as "sounding" (stale `_speaking`) and stopped the idle player,
+  arming an interrupt the next utterance's first sentence ate whole. Fix:
+  `_stop_speaking` only stops the player when an utterance is in flight, and
+  each utterance clears interrupts aimed at playback that already ended.
+  This one hid under brief-and-muted defaults and the BT speaker quirk; it was
+  only found by testing on the system speakers. Regression test in
+  `tests/test_daemon.py`.
+- **`disable notifications` design** is in
+  `docs/superpowers/specs/2026-09-25-disable-notifications-design.md`
+  (approved in conversation; the implementation plan is not written yet).
+
+## Next
+
+### 1. Piper beside Kokoro — the main remaining work
+
+Spec: `docs/superpowers/specs/2026-09-24-piper-engine-design.md` (binding).
+Plan: `docs/superpowers/plans/2026-09-24-piper-engine.md` (7 tasks, TDD,
+checkboxes). Approved, on hold by choice until now.
+
+- **Why:** ~16× cheaper than Kokoro on CPU (Piper `medium`, one thread:
+  ~0.13 CPU-s per audio-s vs Kokoro's ~2.1; 380 MB resident vs 1.4 GB), and
+  `de` gets a real voice (resolves the "Real German speech" deferred item).
+- **Prerequisites:** phases 1–2 (settings, languages) and audio export Part A
+  are merged — Tasks 1–5 are unblocked. **Phase 3 (language clients) is not
+  done**, and Piper plan Task 6's *Zotero* half ("the plugin's language cache,
+  added by phase 3") depends on it: do Piper Tasks 1–5 and Task 6's window
+  half now; leave the Zotero cache half for after
+  `docs/superpowers/plans/2026-09-24-language-clients.md`.
+- **Deliberate deviation in the plan** (its own "Deviation from spec §4"):
+  the year rule runs inside `PiperEngine.synthesize` on the text Piper
+  receives, not in `prepare` — follow the plan, not the spec, there.
+- **Local facts:** samples are in `~/Music/speakd-tts-compare/`; the piper
+  voice `en_US-ryan-high` is already downloaded to
+  `$XDG_DATA_HOME/piper-voices`. Install the extra (`uv sync --extra piper`;
+  piper-tts 1.4.x) before Task 2's real-voice test. **GPL-3.0:** an optional
+  extra, never a default dependency — the plan's Global Constraints say how.
+- **Process:** one worktree per task, subagent-driven with reviews, as the
+  rest of this repo. Task 7's ear check renders the comparison passage and
+  reports the path for a human listen before merging.
+- **Later (still deferred):** automatic switching on battery
+  (`/sys/class/power_supply/AC0/online`), holding renders on battery, capping
+  Kokoro's threads.
+
+### 2. The notifications off-switch (designed, unplanned)
+
+Spec above. Small (one verb, one state flag, connector ownership moves into
+the daemon). Write its plan with the writing-plans skill, then execute.
+
+### 3. Then, as before
+
+- **Phase 3, language in the clients:** `docs/superpowers/plans/2026-09-24-language-clients.md`.
+  - The Zotero side needs the live harness, so use Opus.
+  - Depends on `status.languages.supported` being right while the model loads. That's fixed.
+- **Audio export Part B, the Zotero export flow:** `docs/superpowers/plans/2026-09-24-audio-export.md`, Tasks B2–B5.
+  - B1's pure modules are already on main (`clients/zotero/src/export/`).
 
 **How to run the work:** background subagents, one worktree per phase.
 - Sonnet for closely specified tasks.
@@ -72,13 +133,18 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
 - **Briefings:**
   - The first live briefing through the installed plugin (as opposed to
     `--mcp-config`) was cut off by a usage limit. The hook side was verified.
-  - Claude Code sessions are brief and muted by default, and a daemon restart
-    resets that.
-- **Real German speech** needs a second engine.
+  - Claude Code and OpenCode sessions are brief and muted by default, and a
+    daemon restart resets that.
+- **Bluetooth speaker standby** eats the first seconds of audio after silence
+  (verified: `parecord` on the bluez monitor shows the full utterance; the
+  device gates on signal, not on the link). Options, best first: a standby
+  setting on the speaker; a PipeWire-side keep-alive; or a speakd `wake_burst`
+  (a short low-level pre-roll before the first sentence after idle — needs
+  its own design if chosen).
+- **OpenCode v2 port:** entry shim only, per Phase D of the opencode plan.
 - **Battery power (deferred by choice, 2026-09-24):** for now the engine is
-  switched by hand (Piper as a cheaper engine, being designed). Later: switch
-  automatically on battery (`/sys/class/power_supply/AC0/online`), hold
-  background renders while on battery, and cap Kokoro's CPU threads.
+  switched by hand (Piper, above). Later: switch automatically on battery,
+  hold background renders while on battery, and cap Kokoro's CPU threads.
 - **CI** runs without the kokoro extra, so the real-engine tests are skipped there.
 
 ## Working on this repo — things that bite
@@ -92,8 +158,10 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   which is why the bridge exists. The profile lives in `~/.cache/speakd-zotero-test`.
 - **Ruff formats code blocks inside Markdown**, which is why `docs/` is excluded
   in `pyproject.toml`.
-- **Old worktrees** under `../speakd-worktrees/` (cc-hooks, gui-tauri, onnx, …)
-  predate this session. They're untouched, and some may be stale.
+- **Old worktrees** under `../speakd-worktrees/` (cc-hooks, gui-tauri, onnx,
+  opencode, opencode-js, hush-interrupt, …) are kept by convention. The
+  opencode-js and hush-interrupt ones are fully merged; remove them when it
+  suits you.
 - **Commit emails are public** on GitHub (`sfgartland@hotmail.com`).
 
 ## Where the record is
