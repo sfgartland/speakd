@@ -110,6 +110,7 @@ def run(port: int) -> int:
             "int number input": "set-zotero-max_snippet",
             "choice select": "set-zotero-citation_style",
             "voice text input": "set-zotero-default_voice",
+            "engine choice select": "set-speech-engine",
             "restart-flagged int": "set-http-port",
         }
         for label, control_id in control_ids.items():
@@ -193,6 +194,27 @@ def run(port: int) -> int:
         checks.check(
             page.eval_on_selector("#set-zotero-default_voice", "el => el.value") == "mid-edit",
             "a `setting` event leaves a focused control's in-progress edit alone",
+        )
+
+        # ---- the rtf sub-line names the engine of the sentence being spoken ----
+        # The fixture opened mid-utterance on the default engine; the
+        # snapshot's `started` said so, and the sub-line has shown it since
+        # load. No playback has been touched yet, so it still does.
+        checks.check(
+            page.eval_on_selector("#rtf-sub", "el => el.textContent") == "kokoro",
+            "the rtf sub-line shows the fixture's default engine",
+        )
+        page.evaluate(
+            "() => window.__speakdSource.send('set_setting',"
+            " { key: 'speech.engine', value: 'piper' })"
+        )
+        page.click("#play")
+        page.wait_for_function(
+            "document.querySelector('#rtf-sub').textContent.includes('piper')"
+        )
+        checks.check(
+            True,
+            "the rtf sub-line names piper once piper-speaking playback starts",
         )
 
         browser.close()

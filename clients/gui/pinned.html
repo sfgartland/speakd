@@ -803,6 +803,11 @@
   // no daemon reached yet, or the link is down. A switch that shows a
   // confident position it has not been told is worse than one that is greyed.
   let engineState = null;
+  // Which engine made the sentence being spoken — `started.engine` or
+  // `position.engine`, so it follows the sentence when the two engines trade
+  // off mid-utterance. Null while nothing is speaking, and when the daemon
+  // never says: the rtf sub-line then shows what it has always shown.
+  let sentenceEngine = null;
   let statusKnown = false;
   // Which channel is currently speaking, for the dot in the channel list.
   let speakingSource = null;
@@ -1006,8 +1011,11 @@
     }
 
     setMetric("rtf", metrics.rtf, (v) => v.toFixed(2) + "×", (v) => (v < 0.85 ? "good" : v < 1 ? "warn" : "bad"));
+    // The engine of the sentence being spoken when it is known; the spare
+    // capacity read the sub-line has always shown otherwise.
     el("rtf-sub").textContent =
-      metrics.rtf == null ? "—" : metrics.rtf < 1 ? Math.round((1 - metrics.rtf) * 100) + "% spare" : "falling behind";
+      sentenceEngine ??
+      (metrics.rtf == null ? "—" : metrics.rtf < 1 ? Math.round((1 - metrics.rtf) * 100) + "% spare" : "falling behind");
 
     setMetric("drift", metrics.drift, (v) => v.toFixed(2) + "s", (v) => (v > 0.6 ? "warn" : ""));
 
@@ -1520,6 +1528,7 @@
         message = null;
         playing = true; // the daemon says nothing further; `started` means it began
         utterance = data.text ?? "";
+        if (typeof data.engine === "string") sentenceEngine = data.engine;
         // A new utterance is a new timeline. Without this the previous one's
         // segments stay in the map and its ticks in the scrubber, so a short
         // utterance after a long one is spoken under a trailing row of ticks
@@ -1537,6 +1546,7 @@
         break;
       case "position":
         currentIndex = data.index;
+        if (typeof data.engine === "string") sentenceEngine = data.engine;
         ensureSegment(data.index, {
           text: data.text,
           span_start: data.span_start,
@@ -1612,6 +1622,7 @@
           playing = false;
           statusKnown = false;
           engineState = null;
+          sentenceEngine = null; // a claim about a daemon that is no longer there
           // Every metric is a claim about now, and the last one received is a
           // claim about a daemon that is no longer there. So is every queue
           // entry: it says speech is about to happen, and nothing is about to
@@ -1647,6 +1658,7 @@
         if (utterance === null) dropQueued(event.source_id, null);
         playing = false;
         utterance = null;
+        sentenceEngine = null; // nothing is being spoken, so nothing was made by any engine
         settleDoc();
         if (data.cancelled) hushed = true;
         break;
