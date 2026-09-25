@@ -166,12 +166,13 @@ the hooks send those, since an agent waiting at a prompt cannot. Briefings and
 alerts are spoken with the session's name in front, because with several
 sessions running you need to know who is talking.
 
-**New Claude Code sessions start brief and muted.** Unmute the ones you want
-to hear; switch one to full when you are following it closely:
+**New agent sessions start brief and muted** — Claude Code and OpenCode
+alike. Unmute the ones you want to hear; switch one to full when you are
+following it closely:
 
 ```bash
 uv run speakctl mode full --source claude-code:<session>   # every response
-uv run speakctl mode brief --source claude-code:<session>  # briefings only
+uv run speakctl mode full --source opencode:<session>      # same, for OpenCode
 ```
 
 Only a session with something that can brief for it has a mode; everything
@@ -185,8 +186,9 @@ conversation ("only tell me when the migration is done") takes precedence.
 The agent can also read and change its session's mode, so "read everything to
 me" said to it works too.
 
-The Claude Code plugin ships the MCP server (`clients/claude-code/.mcp.json`).
-For other agents, register it once:
+The Claude Code plugin ships the MCP server (`clients/claude-code/.mcp.json`),
+and the OpenCode installer writes the equivalent entry for OpenCode. For
+other agents, register it once:
 
 ```bash
 codex mcp add speakd -- /path/to/speakd/.venv/bin/speakd-mcp
@@ -497,6 +499,14 @@ two hooks remain, both once per turn, to stop the speech when a new prompt
 arrives and to read the permission prompts aloud. Every hook path exits 0 and
 writes nothing to stdout, so a daemon that is not running costs silence and
 nothing else. See its [README](clients/claude-code/README.md) for the install.
+
+**OpenCode** — [`clients/opencode/`](clients/opencode/) is a plugin that
+speaks a session's text blocks as they finish, stops the speech on a new
+prompt, and reads the permission prompts aloud — the same three jobs the
+Claude Code hooks do, from inside OpenCode's own plugin runtime. Install it
+once with `clients/opencode/install.sh`; the `speakd-mcp` server comes with
+it, so sessions brief and switch modes exactly as Claude Code's do. See its
+[README](clients/opencode/README.md).
 
 **Desktop notifications** — a second follower reads chosen notifications
 aloud: email, and WhatsApp through Chrome. It listens to the session bus with
