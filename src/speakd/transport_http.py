@@ -110,28 +110,51 @@ def _key_owner(key: str) -> str:
     return key.split(".", 1)[0]
 
 
-def _render_out_problem(out: object) -> str | None:
-    """None if `render`'s `out` is safe to write; otherwise what is wrong.
+# What extension each render `format` must be written with -- matches
+# `Daemon._RENDER_FORMATS` and `cli.py`'s `_RENDER_FORMATS_BY_EXT`, the one
+# place a caller over HTTP is held to naming its own format honestly.
+_EXT_BY_FORMAT = {"mp3": ".mp3", "opus": ".opus", "m4b": ".m4b"}
+
+
+def _render_out_problem(out: object, fmt: object) -> tuple[str | None, str | None]:
+    """`(problem, resolved)`: `problem` is None if `out` is safe to write to,
+    in which case `resolved` is the actual path a render must be told to
+    write to -- not the caller's own string, but what it resolves to.
 
     Checked here, over HTTP only (the plan's Global Constraints) -- a
     Unix-socket caller is the trusted local user and is not narrowed this
     way, exactly as `settings` is unscoped there. `resolve()` follows
     symlinks, so a path that looks like it is inside home but escapes
-    through one is caught the same as a literal `../..`.
+    through one is caught the same as a literal `../..`; using the resolved
+    path from here on (rather than re-deriving one from the caller's own
+    string later) is what keeps that check meaningful.
     """
     if not isinstance(out, str) or not out:
-        return "needs an 'out' path"
+        return "needs an 'out' path", None
     path = Path(out)
     if not path.is_absolute():
-        return "'out' must be an absolute path"
+        return "'out' must be an absolute path", None
     try:
         resolved = path.resolve(strict=False)
     except OSError:
-        return "'out' could not be resolved"
+        return "'out' could not be resolved", None
     home = Path.home().resolve()
-    if resolved != home and home not in resolved.parents:
-        return "'out' must be inside the user's home directory"
-    return None
+    if resolved == home:
+        return "'out' must not be the home directory itself", None
+    if home not in resolved.parents:
+        return "'out' must be inside the user's home directory", None
+    if resolved.is_dir():
+        return "'out' is an existing directory", None
+    ext = _EXT_BY_FORMAT.get(str(fmt))
+    if ext is not None:
+        if resolved.suffix.lower() != ext:
+            # Also catches overwriting some other existing file that never
+            # had this extension: it can never match, so it is refused here
+            # rather than silently clobbered. A previous render's own
+            # output, which does have the right extension, is fine to
+            # overwrite -- that is the ordinary way to re-render something.
+            return f"'out' must end in {ext} for format {fmt!r}", None
+    return None, str(resolved)
 
 
 def _settings_response(
@@ -292,10 +315,19 @@ class HttpServer:
                     self._refuse(400, "source_id must be a string and payload an object")
                     return
                 if verb == "render":
-                    problem = _render_out_problem(payload.get("out"))
+                    problem, resolved = _render_out_problem(
+                        payload.get("out"), payload.get("format")
+                    )
                     if problem is not None:
                         self._refuse(200, f"render: {problem}")
                         return
+                    # The daemon gets the resolved path, not the caller's own
+                    # string -- `_render_out_problem` checked the resolved
+                    # path against home and the format's extension, so that
+                    # is what must actually be written to, not a string that
+                    # merely resolves the same way right now.
+                    payload = dict(payload)
+                    payload["out"] = resolved
                 owner = _owner_of(source_id)
                 if verb == "set_setting" and _key_owner(str(payload.get("key", ""))) != owner:
                     # A client may set only its own owner's keys, and never
