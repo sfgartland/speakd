@@ -20,6 +20,7 @@ from speakd.daemon import Daemon, ProfileView
 from speakd.events import EventBus
 from speakd.model import Piece
 from speakd.player import FakeSink, RecordingPlayer, StreamingPlayer
+from speakd.protocol import Request, Verb
 from speakd.synth.fake import FakeEngine
 from speakd.transport import SocketServer
 
@@ -408,6 +409,41 @@ def test_a_refused_verb_prints_the_daemons_error_and_exits_non_zero(running, cap
     address, _daemon, _player = running
     assert main(["enqueue", "   ", "--source", "s", "--socket", str(address)]) != 0
     assert "non-empty text" in capsys.readouterr().err
+
+
+def test_notify_off_and_on_take_only_the_socket() -> None:
+    """The off switch is global, so there is deliberately no --source."""
+    from speakd.cli import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args(["notify", "off"])
+    assert not hasattr(args, "source")
+    assert args.socket is not None
+
+
+def test_notify_off_and_on_through_the_socket(running) -> None:  # type: ignore[no-untyped-def]
+    address, daemon, _player = running
+
+    class Stub:  # a real daemon in this suite has no connectors (conftest)
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    daemon.add_connector("notify", Stub())
+    assert main(["notify", "off", "--socket", str(address)]) == 0
+    assert daemon.notify_enabled is False
+    status = daemon.handle(Request(verb=Verb.STATUS, source_id=""))
+    assert status.data["notify"] == {"enabled": False}
+    assert main(["notify", "on", "--socket", str(address)]) == 0
+    assert daemon.notify_enabled is True
+
+
+def test_notify_on_is_refused_when_no_reader_is_registered(running, capsys) -> None:  # type: ignore[no-untyped-def]
+    address, _daemon, _player = running
+    assert main(["notify", "on", "--socket", str(address)]) == 1
+    assert "SPEAKD_NO_NOTIFY" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

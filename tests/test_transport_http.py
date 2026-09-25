@@ -218,6 +218,10 @@ def test_only_the_readers_verbs_are_served(server) -> None:  # type: ignore[no-u
         ]
         == 404
     )
+    assert (
+        call(http, "POST", "/v1/set_notify", {"source_id": "", "payload": {"enabled": False}})[0]
+        == 404
+    )
     assert call(http, "POST", "/v1/nonsense", {})[0] == 404
     assert call(http, "GET", "/v1/status")[0] == 405
 

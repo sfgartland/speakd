@@ -720,7 +720,9 @@ def test_off_hushes_the_readers_channels_and_no_others() -> None:
         daemon.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Keep me."}))
         daemon.handle(Request(verb=Verb.SET_NOTIFY, source_id="", payload={"enabled": False}))
         status = daemon.handle(Request(verb=Verb.STATUS, source_id=""))
-        texts = [job["text"] for job in status.data["queue"]]
+        queue = status.data["queue"]
+        assert isinstance(queue, list)
+        texts = [job["text"] for job in queue]
         assert "Mail." not in texts
         assert "Keep me." in texts
     finally:
@@ -1009,7 +1011,7 @@ def test_off_with_no_daemon_is_the_usual_unreachable(monkeypatch: pytest.MonkeyP
     assert cli.main(["notify", "off"]) == 2
 ```
 
-(b) Append to `tests/test_cli_verbs.py` (the file already imports `main`, `Request`, `Verb`, the `running` fixture exists):
+(b) Append to `tests/test_cli_verbs.py` (the file already imports `main`; add `from speakd.protocol import Request, Verb` to its import block; the `running` fixture exists):
 
 ```python
 def test_notify_off_and_on_take_only_the_socket() -> None:

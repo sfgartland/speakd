@@ -15,9 +15,14 @@ import pytest
 import tomllib
 
 from speakd import __main__ as entrypoint
+from speakd.channels import ChannelTable
 from speakd.clients.notifications import rules
 from speakd.clients.notifications.monitor import Notification
 from speakd.clients.notifications.starter import STARTER_TOML
+from speakd.daemon import Daemon, ProfileView
+from speakd.events import EventBus
+from speakd.player import RecordingPlayer
+from speakd.synth.fake import FakeEngine
 
 
 def _starter_ruleset(tmp_path: Path) -> rules.Ruleset:
@@ -86,6 +91,21 @@ class _FakeSupervisor:
     def start(self) -> None:
         _FakeSupervisor.started.append(self.argv)
 
+    def stop(self) -> None:
+        pass
+
+
+def _stub_daemon() -> Daemon:
+    return Daemon(
+        FakeEngine(),
+        RecordingPlayer(),
+        lambda name: ProfileView(
+            voice="v", speed=1.0, interrupt_on=(), prepare=lambda p: (list(p), [])
+        ),
+        bus=EventBus(),
+        channels=ChannelTable(),
+    )
+
 
 @pytest.fixture
 def _fake_supervisor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,19 +122,24 @@ def _modules() -> list[str]:
 
 
 @pytest.mark.usefixtures("_fake_supervisor")
-def test_the_daemon_starts_both_connectors() -> None:
-    entrypoint._start_children()
+def test_the_daemon_registers_and_starts_both_connectors() -> None:
+    daemon = _stub_daemon()
+    entrypoint._start_children(daemon)
     assert _modules() == [
         "speakd.clients.claude_code.follow",
         "speakd.clients.notifications.follow",
     ]
+    assert [name for name, _ in daemon._connectors.items()] == ["follower", "notify"]
 
 
 @pytest.mark.usefixtures("_fake_supervisor")
 def test_each_connector_can_be_suppressed_on_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SPEAKD_NO_NOTIFY", "1")
-    entrypoint._start_children()
+    daemon = _stub_daemon()
+    entrypoint._start_children(daemon)
     assert _modules() == ["speakd.clients.claude_code.follow"]
+    # Suppressed means not even registered, so the verb has nothing to start.
+    assert [name for name, _ in daemon._connectors.items()] == ["follower"]
 
 
 @pytest.mark.usefixtures("_fake_supervisor")
@@ -122,8 +147,22 @@ def test_suppressing_notifications_does_not_suppress_claude_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SPEAKD_NO_FOLLOWER", "1")
-    entrypoint._start_children()
+    daemon = _stub_daemon()
+    entrypoint._start_children(daemon)
     assert _modules() == ["speakd.clients.notifications.follow"]
+    assert [name for name, _ in daemon._connectors.items()] == ["notify"]
+
+
+@pytest.mark.usefixtures("_fake_supervisor")
+def test_the_reader_stays_down_when_the_flag_is_off() -> None:
+    from speakd import state
+
+    state.save(state.DaemonState(notify_enabled=False))
+    daemon = _stub_daemon()
+    entrypoint._start_children(daemon)
+    # Registered, so the verb can reach it -- but not started.
+    assert _modules() == ["speakd.clients.claude_code.follow"]
+    assert [name for name, _ in daemon._connectors.items()] == ["follower", "notify"]
 
 
 @pytest.mark.usefixtures("_fake_supervisor")
@@ -131,4 +170,7 @@ def test_the_test_suite_itself_spawns_no_connector(monkeypatch: pytest.MonkeyPat
     """A connector escaping a test run reads the developer's own mail aloud."""
     monkeypatch.setenv("SPEAKD_NO_FOLLOWER", "1")
     monkeypatch.setenv("SPEAKD_NO_NOTIFY", "1")
-    assert entrypoint._start_children() == []
+    daemon = _stub_daemon()
+    entrypoint._start_children(daemon)
+    assert _modules() == []
+    assert daemon._connectors == {}

@@ -184,6 +184,10 @@ _DISCARDED_HUSHED = "discarded unspoken: a hush cleared the queue before this wa
 
 _DISCARDED_MUTED = "discarded unspoken: a mute cleared the queue before this was spoken"
 
+_DISCARDED_NOTIFY = (
+    "discarded unspoken: the notifications reader was switched off before this was spoken"
+)
+
 # How much of a queued utterance a client is shown. Enough to recognise the
 # sentence that is coming; short enough that a status response listing a deep
 # queue stays a control message rather than a copy of everything waiting to be
@@ -227,6 +231,16 @@ class Loadable(Protocol):
     def load(self) -> None: ...
 
     def unload(self) -> None: ...
+
+
+class Connector(Protocol):
+    """A supervised client child, reduced to the two operations the daemon's
+    off-switch needs. `Supervisor` satisfies it; tests substitute a stub.
+    """
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -348,6 +362,13 @@ class Daemon:
         # Loaded rather than defaulted: after a reboot, surprising silence is
         # a smaller failure than surprising speech.
         self.muted = state.load().muted
+        # The notifications reader's switch, read back for the same reason:
+        # after a restart, the reader must come back exactly as it was left.
+        self.notify_enabled = state.load().notify_enabled
+        # The supervised client connectors, by name, so the off-switch verb
+        # can stop and start the notifications reader. Registered by
+        # `__main__` once the socket exists.
+        self._connectors: dict[str, Connector] = {}
         # The listener's speed, read back for the same reason. Shared with
         # the pipeline and the player, which read it as they go: a change
         # reaches the sentence already playing, not only the next one.
@@ -388,6 +409,18 @@ class Daemon:
         self._metrics_interval = metrics_interval
         self._metrics: threading.Thread | None = None
         self._metrics_stop = threading.Event()
+
+    def add_connector(self, name: str, supervisor: Connector) -> None:
+        """Hold a client connector under `name`, so verbs can stop or start
+        it. `stop_connectors()` stops every connector registered here."""
+        self._connectors[name] = supervisor
+
+    def stop_connectors(self) -> None:
+        """Stop every supervised client. Idempotent: the shutdown path calls
+        this before the daemon goes quiet, and `stop()` calls it again to
+        catch any that remain."""
+        for supervisor in self._connectors.values():
+            supervisor.stop()
 
     def start(self) -> Response:
         """Bring the speech worker up, saying which of three things happened.
@@ -492,6 +525,9 @@ class Daemon:
         True when there was no worker or the join succeeded; False when the
         worker outlived it and is still running.
         """
+        # The readers go down first, before the daemon goes quiet, so none of
+        # them can enqueue into a daemon that is shutting down.
+        self.stop_connectors()
         # First, and outside every lock this method takes below: the render
         # worker's own `_stopping` flag is what breaks it out of a busy-wait
         # behind live speech (see `RenderQueue._yield_to_live`), so stopping
@@ -640,6 +676,63 @@ class Daemon:
             self._stop_speaking(source_id, drain=True, reason=_DISCARDED_MUTED)
         except Exception as exc:
             self._publish("error", source_id, {"message": f"could not silence the player: {exc!r}"})
+
+    def _set_notify(self, raw: object) -> Response:
+        """Stop or start the notifications reader, persisting the choice.
+
+        Global, like a global mute: the reader is one process for every
+        `notify:` channel, so there is no per-channel form to honour.
+
+        Persisted before anything can fail, as mute does: once the switch
+        has flipped in memory, a sink that refuses to stop is a reported
+        error beside a switch that did flip -- failing the verb instead
+        would refuse an action that took effect anyway.
+        """
+        if not isinstance(raw, bool):
+            return Response(ok=False, error="set_notify needs a boolean 'enabled'")
+        if raw and self._connectors.get("notify") is None:
+            return Response(
+                ok=False,
+                error=(
+                    "the notifications reader is not registered in this daemon "
+                    "(SPEAKD_NO_NOTIFY is set)"
+                ),
+            )
+        self.notify_enabled = raw
+        state.save(replace(state.load(), notify_enabled=raw))
+        supervisor = self._connectors.get("notify")
+        if raw:
+            if supervisor is not None:
+                supervisor.start()
+        else:
+            if supervisor is not None:
+                supervisor.stop()
+            self._silence_notify_channels()
+        self._publish("notify", "", {"enabled": raw})
+        return Response(ok=True, data={"enabled": raw})
+
+    def _silence_notify_channels(self) -> None:
+        """Hush every `notify:` channel: text the reader enqueued before it
+        died must not keep talking after it.
+
+        The prefix is the notifications rules' channel convention, one
+        channel per app (`speakd.clients.notifications.rules`). Iterated
+        channel by channel, like a scoped mute -- a drain that took the
+        whole queue would throw away every other session's speech with the
+        reader's. A sink that refuses to stop is reported, not raised: the
+        switch has already flipped.
+        """
+        for channel in self.channels.all():
+            if not channel.source_id.startswith("notify:"):
+                continue
+            try:
+                self._stop_speaking(channel.source_id, drain=True, reason=_DISCARDED_NOTIFY)
+            except Exception as exc:
+                self._publish(
+                    "error",
+                    channel.source_id,
+                    {"message": f"could not silence the player: {exc!r}"},
+                )
 
     def _engine_status(self) -> dict[str, object]:
         """What STATUS says about the model, for an engine of either kind.
@@ -1171,6 +1264,7 @@ class Daemon:
                     # draw: a channel that is audible behind a global mute
                     # looks identical to one that is muted itself.
                     "muted": self.muted,
+                    "notify": {"enabled": self.notify_enabled},
                     "engine": self._engine_status(),
                     "speed": self.tempo.target,
                     "languages": {
@@ -1239,6 +1333,8 @@ class Daemon:
                 self._silence_for_mute(request.source_id)
             self._publish("mute", request.source_id, {"muted": wanted, "scope": scope})
             return Response(ok=True, data={"muted": wanted, "scope": scope})
+        if request.verb is Verb.SET_NOTIFY:
+            return self._set_notify(request.payload.get("enabled"))
         if request.verb is Verb.SET_ENGINE:
             loaded = request.payload.get("loaded")
             if not isinstance(loaded, bool):

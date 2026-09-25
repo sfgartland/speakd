@@ -165,3 +165,61 @@ def test_tap_reports_a_missing_busctl_rather_than_a_traceback(
 def test_notify_with_no_subcommand_prints_usage(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["notify"]) == 2
     assert "usage" in capsys.readouterr().err.lower()
+
+
+def test_off_sends_set_notify_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    from speakd.protocol import Request, Response, Verb
+
+    sent: list[Request] = []
+
+    def fake_call(socket_path: Path, request: Request) -> Response:
+        sent.append(request)
+        return Response(ok=True, data={"enabled": request.payload["enabled"]})
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    assert cli.main(["notify", "off"]) == 0
+    assert len(sent) == 1
+    assert sent[0].verb is Verb.SET_NOTIFY
+    assert sent[0].source_id == ""
+    assert sent[0].payload == {"enabled": False}
+
+
+def test_on_sends_set_notify_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    from speakd.protocol import Request, Response, Verb
+
+    sent: list[Request] = []
+
+    def fake_call(socket_path: Path, request: Request) -> Response:
+        sent.append(request)
+        return Response(ok=True, data={"enabled": request.payload["enabled"]})
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    assert cli.main(["notify", "on"]) == 0
+    assert len(sent) == 1
+    assert sent[0].verb is Verb.SET_NOTIFY
+    assert sent[0].payload == {"enabled": True}
+
+
+def test_on_reports_a_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from speakd.protocol import Request, Response
+
+    def fake_call(socket_path: Path, request: Request) -> Response:
+        return Response(
+            ok=False,
+            error="the notifications reader is not registered in this daemon "
+            "(SPEAKD_NO_NOTIFY is set)",
+        )
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    assert cli.main(["notify", "on"]) == 1
+    assert "SPEAKD_NO_NOTIFY" in capsys.readouterr().err
+
+
+def test_off_with_no_daemon_is_the_usual_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_call(socket_path: Path, request: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_call", fake_call)
+    assert cli.main(["notify", "off"]) == 2

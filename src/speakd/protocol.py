@@ -24,6 +24,7 @@ class Verb(str, Enum):
     SET_PRIORITY = "set_priority"
     SET_LABEL = "set_label"
     MUTE = "mute"
+    SET_NOTIFY = "set_notify"
     SET_ENGINE = "set_engine"
     SET_SPEED = "set_speed"
     SET_MODE = "set_mode"

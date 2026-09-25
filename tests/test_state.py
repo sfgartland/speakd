@@ -68,3 +68,25 @@ def test_a_nonsense_speed_reads_as_the_default() -> None:
     state.state_path().parent.mkdir(parents=True, exist_ok=True)
     state.state_path().write_text('{"speed": "fast"}', encoding="utf-8")
     assert state.load().speed == 1.0
+
+
+def test_notify_enabled_defaults_to_true(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert load().notify_enabled is True
+
+
+def test_notify_enabled_round_trips(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    save(DaemonState(notify_enabled=False))
+    assert load().notify_enabled is False
+    assert load().muted is False  # one flag written, the others carried through
+
+
+def test_a_corrupt_file_leaves_the_reader_on(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # A truncated state file must not silently take the reader away: the
+    # safe failure for a speaking machine is to keep the reader.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json")
+    assert load().notify_enabled is True

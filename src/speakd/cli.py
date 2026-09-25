@@ -226,6 +226,20 @@ def _build_parser() -> argparse.ArgumentParser:
     test.add_argument("summary", nargs="?", default="")
     test.add_argument("body", nargs="?", default="")
     test.add_argument("--urgency", default="normal", help="low, normal or critical")
+    # The reader's off switch is global, so these take only `--socket`:
+    # there is deliberately no `--source` to mislead with, as `wide`'s
+    # would be.
+    notify_switch = argparse.ArgumentParser(add_help=False)
+    notify_switch.add_argument(
+        "--socket",
+        type=Path,
+        default=default_socket_path(),
+        help="where the daemon listens (default: %(default)s)",
+    )
+    notify_sub.add_parser(
+        "off", parents=[notify_switch], help="stop the notifications reader, and keep it stopped"
+    )
+    notify_sub.add_parser("on", parents=[notify_switch], help="bring the notifications reader back")
     return parser
 
 
@@ -669,6 +683,8 @@ _URGENCIES = {"low": 0, "normal": 1, "critical": 2}
 
 
 def _notify(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if args.notify_command in ("off", "on"):
+        return _notify_switch(args, args.notify_command == "on")
     if args.notify_command == "recent":
         return _notify_recent(args)
     if args.notify_command == "tap":
@@ -679,6 +695,17 @@ def _notify(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return _notify_test(args)
     parser.print_usage(sys.stderr)
     return 2
+
+
+def _notify_switch(args: argparse.Namespace, enabled: bool) -> int:
+    """`notify off` and `notify on`: the persistent reader switch."""
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_NOTIFY, source_id="", payload={"enabled": enabled}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
 
 
 def _load_rules_for_cli() -> rules.Ruleset | None:
