@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { register, stateDir } from "../plugin/speakd.js";
 
@@ -47,6 +47,24 @@ describe("registration files", () => {
     expect(files[0]).toMatch(/\.session\.json$/);
     const body = JSON.parse(fs.readFileSync(path.join(directory, files[0]), "utf-8"));
     expect(body.session_id).toBe("ses_1");
+  });
+
+  it("a directory created concurrently is not a lost registration", () => {
+    const root = tempState();
+    const env = { ...process.env, SPEAKD_STATE_DIR: root };
+    const directory = stateDir(env);
+    // Another process creates the final component between makeDirectory's
+    // probe and its mkdirSync: mkdirSync then raises EEXIST, which register
+    // must tolerate rather than swallow the whole registration with.
+    const original = fs.mkdirSync;
+    vi.spyOn(fs, "mkdirSync").mockImplementation((p, opts) => {
+      if (p === directory) original.call(fs, p, opts); // the race: it now exists
+      return original.call(fs, p, opts);
+    });
+    register("ses_2", { cwd: "/w", env });
+    const files = fs.readdirSync(directory);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/\.session\.json$/);
   });
 
   it("never throws, even into an unwritable directory", () => {

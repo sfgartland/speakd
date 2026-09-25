@@ -112,7 +112,13 @@ function makeDirectory(directory) {
   let created = probe;
   while (missing.length) {
     created = path.join(created, missing.pop());
-    fs.mkdirSync(created);
+    try {
+      fs.mkdirSync(created);
+    } catch (err) {
+      // A concurrent process may have created the component between the
+      // probe and here; that is the directory existing, not an error.
+      if (err.code !== "EEXIST") throw err;
+    }
   }
 }
 
@@ -241,6 +247,8 @@ export class Speaker {
   onSessionIdle(sessionID) {
     const state = this._session(sessionID);
     for (const [messageID, entry] of state.messages) {
+      // Parts whose message was never classified (agent === null) are
+      // dropped, not spoken: they could be sub-agent output in disguise.
       if (entry.agent !== null && entry.agent === this._main(state)) {
         this._flushAll(state, sessionID, messageID, entry);
       }

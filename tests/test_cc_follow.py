@@ -142,3 +142,15 @@ def test_a_vanished_transcript_does_not_stop_the_loop(tmp_path, monkeypatch) -> 
     f.tick()
     transcript.unlink()
     f.tick()  # must not raise
+
+
+def test_registrations_from_other_clients_are_ignored(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    spy = Spy()
+    f, transcript = follower(tmp_path, monkeypatch, spy)
+    f.tick()  # registers at end of file; nothing to say yet
+    with transcript.open("ab") as handle:
+        handle.write(assistant("u1", "Claude only."))
+    registry.register("s2", Path(""), "/home/me/Other", client="opencode")
+    f.tick()
+    assert spy.spoken() == ["Claude only."]
+    assert all(source.startswith("claude-code:") for _v, source, _p in spy.sent)

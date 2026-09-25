@@ -20,5 +20,3 @@ build/
 
 # Subagent-driven development scratch (task briefs, reports, ledger).
 .superpowers/sdd/
-
-.superpowers/sdd/

@@ -194,8 +194,7 @@ other agents, register it once:
 codex mcp add speakd -- /path/to/speakd/.venv/bin/speakd-mcp
 ```
 
-— or the equivalent `mcpServers` entry for OpenCode. Such an agent's channel is
-named after it and its working directory.
+Such an agent's channel is named after it and its working directory.
 
 The event stream is the same one the GUI reads:
 
