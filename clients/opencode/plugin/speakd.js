@@ -273,3 +273,68 @@ export class Speaker {
     }
   }
 }
+
+// ---- control signals and labels ----
+//
+// What only OpenCode itself can know, mirrored from the Claude hooks: a
+// prompt was submitted (hush, register), the user's permission is needed
+// (attention, spoken in every mode), and what the session is called.
+
+export class Signals {
+  constructor({ send, register, log = () => {} }) {
+    this.send = send;
+    this.register = register;
+    this.log = log;
+    this.sessions = new Map(); // sessionID -> { title, directory }
+    this.labels = new Map(); // sessionID -> last label sent
+  }
+
+  _session(sessionID) {
+    let state = this.sessions.get(sessionID);
+    if (!state) {
+      state = { title: null, directory: "" };
+      this.sessions.set(sessionID, state);
+    }
+    return state;
+  }
+
+  onChatMessage(sessionID) {
+    const state = this._session(sessionID);
+    this.register(sessionID, { cwd: state.directory });
+    this.send({ verb: "hush", source: `opencode:${sessionID}`, payload: { new_turn: true } });
+  }
+
+  onPermissionAsked(event) {
+    // An event, not the `permission.ask` hook: that hook is declared in the
+    // plugin types but never invoked in OpenCode 1.x. Only the session id is
+    // read, which every delivered payload shape carries.
+    const properties = event.properties ?? {};
+    const sessionID = properties.sessionID;
+    if (!sessionID) return;
+    this.send({
+      verb: "enqueue",
+      source: `opencode:${sessionID}`,
+      payload: { text: "OpenCode needs your permission.", kind: "attention" },
+    });
+  }
+
+  onSession(info) {
+    const state = this._session(info.id);
+    state.title = info.title || null;
+    state.directory = info.directory || "";
+    const label = info.title
+      ? `OpenCode · ${info.title}`
+      : info.directory
+        ? `OpenCode · ${path.basename(info.directory)}`
+        : "OpenCode";
+    if (this.labels.get(info.id) === label) return;
+    this.labels.set(info.id, label);
+    this.send({
+      verb: "set_label",
+      source: `opencode:${info.id}`,
+      payload: { label },
+    }).then((reason) => {
+      if (reason != null && this.labels.get(info.id) === label) this.labels.delete(info.id);
+    });
+  }
+}
