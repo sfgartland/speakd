@@ -106,20 +106,49 @@ class RenderJob:
     # within it. Parts before `part_index` are complete and never revisited.
     part_index: int = 0
     sentence_index: int = 0
+    # The PCM byte length of `part-{part_index}.pcm` as of the last sentence
+    # actually recorded in this manifest -- reset to 0 whenever `part_index`
+    # advances. What resume truncates the part file back to, so a crash
+    # between an append and the manifest save that names it can never
+    # duplicate a sentence. See `_truncate_to_committed`.
+    committed_bytes: int = 0
     done_seconds: float = 0.0
     estimate_seconds: float = 0.0
     error: str | None = None
 
     def to_manifest(self) -> dict[str, Any]:
+        """Everything but the parts' text -- see `to_parts`.
+
+        Written on every sentence, so it must never grow with a render's
+        length: this is progress (which part and sentence, how many bytes
+        committed, timing, state, error) and job metadata, none of it sized
+        by how much text a job holds. `parts` is deliberately absent; a
+        caller that needs the parts back reads them from `parts.json`
+        (`save_manifest`/`load_manifest` do this pairing), or, for an old
+        manifest written before this split, from this same dict, which is
+        why `from_manifest` still accepts one with `parts` in it.
+        """
         data = dict(self.__dict__)
-        data["parts"] = [{"title": p.title, "text": p.text} for p in self.parts]
+        del data["parts"]
         data["out"] = str(self.out)
         return data
 
+    def to_parts(self) -> list[dict[str, str]]:
+        """The parts' titles and text -- written once, at submit, to
+        `parts.json`, and never rewritten: this is the piece of a render
+        that scales with a book's length, so nothing may touch it again on
+        every sentence the way the progress manifest is."""
+        return [{"title": p.title, "text": p.text} for p in self.parts]
+
     @classmethod
-    def from_manifest(cls, data: dict[str, Any]) -> RenderJob:
+    def from_manifest(cls, data: dict[str, Any], parts: list[Part]) -> RenderJob:
         kwargs = dict(data)
-        kwargs["parts"] = [Part(**p) for p in data["parts"]]
+        # Compatibility with a manifest written before parts.json existed:
+        # its own embedded `parts` wins over whatever `parts` this call was
+        # given, since it is the only copy that record ever had.
+        if "parts" in kwargs:
+            parts = [Part(**p) for p in kwargs.pop("parts")]
+        kwargs["parts"] = parts
         kwargs["out"] = Path(data["out"])
         return cls(**kwargs)
 
@@ -141,6 +170,19 @@ def new_job_id() -> str:
     return uuid.uuid4().hex
 
 
+def _forget_text(job: RenderJob) -> None:
+    """Drop a terminal job's part text from memory, keeping only titles.
+
+    Once a job is `done`, `failed` or `cancelled` nothing will ever
+    synthesise from it again -- `done` and `cancelled` have already lost
+    their work directory, and a retried `failed` job resumes from its own
+    `parts.json` on disk, not from this in-memory copy. A daemon that has
+    rendered a lot of long books has no reason to keep megabytes of their
+    text sitting in `RenderQueue._jobs` after the fact.
+    """
+    job.parts = [Part(title=p.title, text="") for p in job.parts]
+
+
 # --- the manifest on disk -------------------------------------------------
 
 
@@ -148,17 +190,47 @@ def _manifest_path(work_dir: Path) -> Path:
     return work_dir / "manifest.json"
 
 
+def _parts_path(work_dir: Path) -> Path:
+    return work_dir / "parts.json"
+
+
 def save_manifest(job: RenderJob, work_dir: Path) -> None:
-    """Write the manifest atomically, so a reader never sees a half-written one."""
+    """Write the manifest atomically, so a reader never sees a half-written one.
+
+    `parts.json` -- the titles and text, the part of a render that scales
+    with a book's length -- is written once, the first time a job's work
+    directory sees a manifest at all, and never again: every later call
+    here (one per sentence, for as long as a render runs) only rewrites
+    `manifest.json`, which holds nothing bigger than progress. Without this
+    split, a manifest save's cost would grow with the render's own text,
+    turning an hours-long audiobook into gigabytes of repeated writes --
+    exactly what the no-length-limit requirement rules out.
+    """
     work_dir.mkdir(parents=True, exist_ok=True)
+    parts_path = _parts_path(work_dir)
+    if not parts_path.exists():
+        parts_tmp = work_dir / "parts.json.tmp"
+        parts_tmp.write_text(json.dumps(job.to_parts()), encoding="utf-8")
+        os.replace(parts_tmp, parts_path)
     tmp = work_dir / "manifest.json.tmp"
     tmp.write_text(json.dumps(job.to_manifest(), indent=2), encoding="utf-8")
     os.replace(tmp, _manifest_path(work_dir))
 
 
 def load_manifest(work_dir: Path) -> RenderJob:
+    """The inverse of `save_manifest`: `manifest.json` plus `parts.json`.
+
+    A manifest written before the split carries its own `parts` embedded,
+    and `RenderJob.from_manifest` prefers that over `parts.json` (which
+    will not exist for one) -- old manifests load exactly as they always
+    did.
+    """
     data = json.loads(_manifest_path(work_dir).read_text(encoding="utf-8"))
-    return RenderJob.from_manifest(data)
+    parts_path = _parts_path(work_dir)
+    parts: list[Part] = []
+    if "parts" not in data and parts_path.exists():
+        parts = [Part(**p) for p in json.loads(parts_path.read_text(encoding="utf-8"))]
+    return RenderJob.from_manifest(data, parts)
 
 
 # --- PCM parts, appended to one sentence at a time -------------------------
@@ -181,22 +253,29 @@ def pcm_duration(path: Path, sample_rate: int) -> float:
     return path.stat().st_size / (sample_rate * 2)
 
 
-def _truncate_to_whole_samples(path: Path) -> None:
-    """Drop a trailing odd byte, if a crash caught `append_pcm` mid-write.
+def _truncate_to_committed(path: Path, committed_bytes: int) -> None:
+    """Truncate `path` back to the byte length recorded with the last
+    sentence actually committed to the manifest.
 
-    16-bit mono means every sample is 2 bytes; a process killed between the
-    two writes of `fh.write(pcm)` (POSIX offers no atomicity guarantee for
-    that) can leave one dangling. Called once before resuming a part, so
-    the next `append_pcm` starts on a sample boundary rather than shifting
-    every sample after it by a byte.
+    A crash (or a plain kill -9) can land between `append_pcm` finishing its
+    write and `save_manifest` recording the new length: the PCM for a
+    sentence is on disk, but the manifest still names the sentence before
+    it. Resuming from the manifest's sentence index would then re-synthesise
+    and re-append that same sentence, duplicating it in the output. Cutting
+    the file back to exactly the length the manifest last recorded removes
+    any such orphaned tail -- whether it is a whole sentence or (the old
+    concern this replaces) a single dangling byte from a `write()` caught
+    mid-call, 16-bit mono meaning every sample is 2 bytes.
+
+    A file already no longer than that length is left alone: nothing to cut,
+    and shrinking further would be a bug in the caller, not a crash.
     """
     if not path.exists():
         return
     size = path.stat().st_size
-    remainder = size % 2
-    if remainder:
+    if size > committed_bytes:
         with path.open("r+b") as fh:
-            fh.truncate(size - remainder)
+            fh.truncate(committed_bytes)
 
 
 def _pcm16(audio: np.ndarray) -> bytes:
@@ -251,33 +330,73 @@ def _stream_file(path: Path, sink: IO[bytes]) -> None:
             sink.write(chunk)
 
 
+def _written_parts(job: RenderJob, work_dir: Path) -> list[tuple[int, Part]]:
+    """Parts that actually produced a PCM file, in order.
+
+    A part whose text yields no sentences at render time (blank after all,
+    or text that segments to nothing) is skipped cleanly here rather than
+    treated as an error: no PCM file for it is expected, not a fault, and it
+    contributes no chapter and no gap either side of the one it would have
+    been.
+    """
+    return [(i, part) for i, part in enumerate(job.parts) if (work_dir / f"part-{i}.pcm").exists()]
+
+
 def _chapter_plan(job: RenderJob, work_dir: Path) -> list[tuple[float, float, str]]:
     """`(start, end, title)` in seconds per part, from each part's real PCM
     size on disk and the gaps `_write_audio_stream` writes between them --
     never estimated, and computed without reading any part's audio."""
+    written = _written_parts(job, work_dir)
     chapters: list[tuple[float, float, str]] = []
     cursor = 0.0
-    for i, part in enumerate(job.parts):
+    for j, (i, part) in enumerate(written):
         duration = pcm_duration(work_dir / f"part-{i}.pcm", job.sample_rate)
         chapters.append((cursor, cursor + duration, part.title))
         cursor += duration
-        if i < len(job.parts) - 1 and job.chapter_gap_ms:
+        if j < len(written) - 1 and job.chapter_gap_ms:
             cursor += job.chapter_gap_ms / 1000
     return chapters
 
 
-def _write_audio_stream(job: RenderJob, work_dir: Path, sink: IO[bytes]) -> None:
+def _write_audio_stream(
+    job: RenderJob,
+    work_dir: Path,
+    sink: IO[bytes],
+    cancelled: Callable[[], bool] | None = None,
+) -> None:
     """Write every part's PCM to `sink`, `chapter_gap_ms` of silence between
     each -- streamed through `_stream_file`, so a part's whole length is
     never held in memory at once. A part boundary is just a longer version
     of the gap `_synthesize` already writes between sentences.
+
+    Checked between parts, the same "never inside one unit of work" rule
+    `_synthesize` follows between sentences: `cancelled`, if given, is
+    polled once per part, so a cancel reaches ffmpeg within one part's
+    streaming time rather than waiting for the whole encode to finish.
     """
+    written = _written_parts(job, work_dir)
     gap_frames = int(job.sample_rate * job.chapter_gap_ms / 1000)
     gap_pcm = b"\x00" * (gap_frames * 2)
-    for i, _part in enumerate(job.parts):
+    for j, (i, _part) in enumerate(written):
+        if cancelled is not None and cancelled():
+            raise _Cancelled
         _stream_file(work_dir / f"part-{i}.pcm", sink)
-        if i < len(job.parts) - 1 and job.chapter_gap_ms:
+        if j < len(written) - 1 and job.chapter_gap_ms:
             sink.write(gap_pcm)
+
+
+# ffmpeg's own ffmetadata rule: a literal `=`, `;`, `#`, `\` or newline in a
+# value must be backslash-escaped, backslash first so an already-escaped
+# character is never escaped twice. A chapter title is arbitrary text --
+# whatever a book's own table of contents says -- so any of these can show
+# up in one for real.
+_FFMETADATA_ESCAPE = (("\\", "\\\\"), ("=", "\\="), (";", "\\;"), ("#", "\\#"), ("\n", "\\\n"))
+
+
+def _escape_ffmetadata(value: str) -> str:
+    for char, escaped in _FFMETADATA_ESCAPE:
+        value = value.replace(char, escaped)
+    return value
 
 
 def _write_chapters_file(chapters: list[tuple[float, float, str]], path: Path) -> None:
@@ -289,7 +408,7 @@ def _write_chapters_file(chapters: list[tuple[float, float, str]], path: Path) -
             "TIMEBASE=1/1000",
             f"START={round(start * 1000)}",
             f"END={round(end * 1000)}",
-            f"title={title}",
+            f"title={_escape_ffmetadata(title)}",
         ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -303,7 +422,7 @@ def _metadata_args(metadata: dict[str, str]) -> list[str]:
     return args
 
 
-def _encode(job: RenderJob, work_dir: Path) -> None:
+def _encode(job: RenderJob, work_dir: Path, cancelled: Callable[[], bool] | None = None) -> None:
     """Concatenate and encode the job's parts to `job.out`, tagged from
     `job.metadata`. Writes to `<out>.partial` and `os.replace`s it onto
     `out` only once ffmpeg has exited 0, so a reader of `out` never sees a
@@ -311,7 +430,13 @@ def _encode(job: RenderJob, work_dir: Path) -> None:
 
     Raises `_EncodeFailed` -- never touches `out` or leaves a `.partial` --
     if ffmpeg is missing or exits nonzero. `_render` decides what that means
-    for the job's state and work directory.
+    for the job's state and work directory. Raises `_Cancelled` -- also
+    never touching `out`, and killing ffmpeg first -- if `cancelled` starts
+    reporting true while streaming. On *any* other exception while streaming
+    (a read error on a part's PCM, for instance), ffmpeg is killed and
+    waited for and `.partial` removed before the exception is re-raised:
+    an encode must never leave a subprocess or a half-written file behind
+    just because something upstream broke.
     """
     if not ffmpeg_available():
         raise _EncodeFailed("ffmpeg not found on PATH")
@@ -358,12 +483,25 @@ def _encode(job: RenderJob, work_dir: Path) -> None:
         )
         assert process.stdin is not None
         try:
-            _write_audio_stream(job, work_dir, process.stdin)
+            _write_audio_stream(job, work_dir, process.stdin, cancelled)
         except BrokenPipeError:
             # ffmpeg exited before consuming everything -- a bad codec, a
             # full disk. The exit code and stderr below say why; this only
             # stops the write loop from raising past it.
             pass
+        except Exception:
+            # A cancel, or anything else gone wrong mid-stream: ffmpeg gets
+            # no more input than it has already seen and is not left to run
+            # on its own. Killed rather than asked to finish -- there is no
+            # reason to wait out an encode nothing will use the result of.
+            process.kill()
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+            process.wait()
+            partial.unlink(missing_ok=True)
+            raise
         finally:
             try:
                 process.stdin.close()
@@ -382,6 +520,13 @@ def _encode(job: RenderJob, work_dir: Path) -> None:
 
 class _Cancelled(Exception):
     """Internal signal: unwind `_render` without touching `out`."""
+
+
+class _Stopping(Exception):
+    """Internal signal: the queue is stopping. Unwind `_render` leaving the
+    job exactly as it was -- still `running`, resumable from its manifest --
+    so a normal daemon shutdown mid-append never turns into a failed or
+    cancelled job, only one picked up again on the next `resume()`."""
 
 
 # --- the queue ---------------------------------------------------------
@@ -488,7 +633,35 @@ class RenderQueue:
             if not entry.is_dir() or not (entry / "manifest.json").exists():
                 continue
             job = load_manifest(entry)
+            if job.state == "failed":
+                # Not re-run -- a failure needs a person's attention, not
+                # another automatic attempt -- but surfaced in `status` and
+                # reachable by `render_cancel`, which deletes its work
+                # directory: a failed render must not strand disk space
+                # forever just because nothing asked about it again.
+                with self._lock:
+                    self._jobs[job.id] = job
+                self._notify(job)
+                continue
             if job.state in _TERMINAL_STATES:
+                continue
+            if job.sample_rate and job.sample_rate != self._engine.sample_rate:
+                # The PCM already on disk was written at the old rate; going
+                # on would either mis-decode it at encode time or silently
+                # mix rates within one output. Neither is recoverable here --
+                # the engine that made this daemon's rate what it is has
+                # changed -- so the job is surfaced as failed rather than
+                # producing a wrong file.
+                job.error = (
+                    f"engine sample rate changed from {job.sample_rate} to "
+                    f"{self._engine.sample_rate}; this render cannot be resumed"
+                )
+                job.state = "failed"
+                _forget_text(job)
+                save_manifest(job, entry)
+                with self._lock:
+                    self._jobs[job.id] = job
+                self._notify(job)
                 continue
             job.state = "queued"
             self._ensure_sample_rate(job)
@@ -502,29 +675,47 @@ class RenderQueue:
     def cancel(self, job_id: str) -> bool:
         """Stop a job and remove its work directory.
 
-        A queued job is simply dropped, without disturbing whatever is
-        currently running. A running one is flagged, and `_render` unwinds
-        and cleans up on its own the next time it checks -- never from this
-        thread, which does not own the job's files.
+        A queued job still sitting in the queue is simply dropped, without
+        disturbing whatever is currently running. A failed job is not
+        running anything, but its work directory is still on disk (kept for
+        a retry that never came); this deletes it, so `render_cancel` also
+        serves as the way to reclaim a stranded failure's space. Anything
+        else still short of a terminal state -- running, paused, or queued
+        but already handed to the worker thread (dequeued, `_render` not
+        yet reached the point of marking it `running`) -- is flagged, and
+        `_render`/`_synthesize`/`_encode` unwind and clean up on their own
+        the next time they check -- never from this thread, which does not
+        own the job's files while they are working.
         """
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 return False
+            dequeued = False
+            failed = False
+            flagged = False
             if job_id in self._queue:
                 self._queue.remove(job_id)
                 job.state = "cancelled"
-                shutil.rmtree(self._work_dir(job_id), ignore_errors=True)
-                return True
-            if job.state in ("running", "paused"):
-                # A paused job is a running job that is yielding: it is in
-                # `_render`'s hands, so it is flagged and unwinds on its own
-                # check, exactly as a mid-sentence one does. Without this a
-                # render could not be cancelled for as long as live speech
-                # went on -- which is most of a busy day.
+                _forget_text(job)
+                dequeued = True
+            elif job.state == "failed":
+                failed = True
+            elif job.state in ("queued", "running", "paused"):
+                # Covers a job the worker has already dequeued but not yet
+                # marked `running` (still `queued` here, but no longer in
+                # `self._queue`), as well as one actually running or paused
+                # behind live speech, and one encoding -- `_encode` polls
+                # this same set. Without "queued" here, a job could pass
+                # through a window where it is neither in the queue nor
+                # cancellable.
                 self._cancelled.add(job_id)
-                return True
-            return False
+                flagged = True
+        if dequeued or failed:
+            shutil.rmtree(self._work_dir(job_id), ignore_errors=True)
+        if dequeued:
+            self._notify(job)
+        return dequeued or failed or flagged
 
     def status(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -558,7 +749,7 @@ class RenderQueue:
         self._notify(job)
         try:
             self._synthesize(job, work_dir)
-            _encode(job, work_dir)
+            _encode(job, work_dir, cancelled=lambda: job.id in self._cancelled)
         except _Cancelled:
             self._cancelled.discard(job.id)
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -567,7 +758,15 @@ class RenderQueue:
             # -- a test, or a client cleaning up -- must never see "cancelled"
             # with the files of a cancelled render still on it.
             job.state = "cancelled"
+            _forget_text(job)
             self._notify(job)
+            return
+        except _Stopping:
+            # Leave the job exactly as `_synthesize` left it -- still
+            # `running`, its manifest already durable up to the last
+            # committed sentence. `resume()` picks it up on the next start;
+            # nothing here needs to touch state, the work directory or
+            # `_cancelled`.
             return
         except _EncodeFailed as exc:
             # The work directory survives a failed encode -- every part WAV
@@ -577,11 +776,30 @@ class RenderQueue:
             job.error = str(exc)
             save_manifest(job, work_dir)
             job.state = "failed"
+            _forget_text(job)
+            self._cancelled.discard(job.id)
+            self._notify(job)
+            return
+        except Exception as exc:  # noqa: BLE001 - a render's own worker thread
+            # must survive whatever any one job throws: an engine error, a
+            # bad `out` path, a full disk mid-write -- anything not already
+            # named above. Without this, one bad job would silently end the
+            # worker thread and strand every job queued behind it.
+            job.error = str(exc)
+            try:
+                save_manifest(job, work_dir)
+            except OSError:
+                pass
+            job.state = "failed"
+            _forget_text(job)
+            self._cancelled.discard(job.id)
             self._notify(job)
             return
 
         shutil.rmtree(work_dir, ignore_errors=True)
         job.state = "done"
+        _forget_text(job)
+        self._cancelled.discard(job.id)
         self._notify(job)
 
     def _yield_to_live(self, job: RenderJob) -> None:
@@ -598,12 +816,42 @@ class RenderQueue:
             return
         job.state = "paused"
         self._notify(job)
-        # `_stopping` breaks the wait rather than widening it: `stop()` joins
-        # this thread, so a worker paused behind speech that never ends would
-        # hang the join until its timeout with the job no further along.
-        while self._busy() and not self._stopping:
+        # `_stopping` breaks the wait, raising `_Stopping` to unwind the job
+        # cleanly rather than proceeding to synthesise: `stop()` joins this
+        # thread, so a worker paused behind speech that never ends would
+        # otherwise hang the join until its timeout with the job no further
+        # along, and a worker that pressed on regardless could still die
+        # mid-append if the process is killed the moment `stop()` returns.
+        while self._busy():
             if job.id in self._cancelled:
                 raise _Cancelled
+            if self._stopping:
+                raise _Stopping
+            time.sleep(self._poll_seconds)
+        job.state = "running"
+        self._notify(job)
+
+    def _wait_for_load(self, job: RenderJob) -> None:
+        """Wait, before a sentence, while the engine is not loaded.
+
+        `LazyEngine.synthesize` on an unloaded engine returns silence rather
+        than raising or blocking -- so without this, a render started (or
+        resumed) while the model is unloaded or still loading would "finish"
+        having spoken nothing at all. Duck-typed: an engine with nothing to
+        say about `loaded` (there is none today) is read as always loaded,
+        exactly as `_supported_languages` reads a silent engine as speaking
+        everything. Same shape as `_yield_to_live`: state `paused`, the same
+        poll, and cancellable and stoppable the same way.
+        """
+        if getattr(self._engine, "loaded", True):
+            return
+        job.state = "paused"
+        self._notify(job)
+        while not getattr(self._engine, "loaded", True):
+            if job.id in self._cancelled:
+                raise _Cancelled
+            if self._stopping:
+                raise _Stopping
             time.sleep(self._poll_seconds)
         job.state = "running"
         self._notify(job)
@@ -614,13 +862,17 @@ class RenderQueue:
             sentences = _sentences(part.text)
             start = job.sentence_index if part_i == job.part_index else 0
             pcm_path = work_dir / f"part-{part_i}.pcm"
-            # Only ever needed when resuming mid-part, but cheap enough (one
-            # stat, and a truncate only on the rare odd-byte crash) to run
+            # Only ever cuts anything when resuming mid-part after a crash
+            # between an append and the manifest save that recorded it, but
+            # cheap enough (one stat, and a truncate only then) to run
             # unconditionally rather than have a second code path for it.
-            _truncate_to_whole_samples(pcm_path)
+            _truncate_to_committed(pcm_path, job.committed_bytes)
             for sent_i in range(start, len(sentences)):
                 if job.id in self._cancelled:
                     raise _Cancelled
+                if self._stopping:
+                    raise _Stopping
+                self._wait_for_load(job)
                 self._yield_to_live(job)
                 text = sentences[sent_i]
                 # The lock, and only the lock, around the engine call: the
@@ -638,9 +890,14 @@ class RenderQueue:
                     gap_frames = int(self._engine.sample_rate * job.sentence_gap_ms / 1000)
                     append_pcm(pcm_path, b"\x00" * (gap_frames * 2))
                 job.sentence_index = sent_i + 1
+                # Recorded from the file's own size, never accumulated, so it
+                # can never drift from what `append_pcm` actually committed --
+                # the same principle `pcm_duration` follows for duration.
+                job.committed_bytes = pcm_path.stat().st_size
                 save_manifest(job, work_dir)
                 self._notify(job)
             job.part_index = part_i + 1
             job.sentence_index = 0
+            job.committed_bytes = 0
             save_manifest(job, work_dir)
             self._notify(job)
