@@ -421,6 +421,8 @@ export function buildPlugin({ client, send, registerFn = register } = {}) {
 
 export const SpeakdPlugin = async ({ client } = {}) => buildPlugin({ client });
 
-// The local-file loader calls the default export; without this the plugin
-// loads as "Plugin export is not a function" and nothing is spoken.
-export default SpeakdPlugin;
+// The v1 object entrypoint: opencode reads the default export as {id, server}.
+// A bare function default misses `readV1Plugin` and falls into the legacy
+// path, which treats EVERY export as a plugin and fails on the first
+// non-function one (SOCKET_TIMEOUT_MS) with "Plugin export is not a function".
+export default { id: "speakd", server: SpeakdPlugin };

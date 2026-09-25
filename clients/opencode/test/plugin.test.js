@@ -18,9 +18,9 @@ function build() {
 }
 
 describe("the plugin entry", () => {
-  it("the default export is the function opencode's loader calls", async () => {
-    expect(typeof SpeakdPlugin).toBe("function");
-    const hooks = await SpeakdPlugin({ client: { app: { log: async () => {} } } });
+  it("the default export is the v1 object entrypoint opencode loads", async () => {
+    expect(SpeakdPlugin.server).toBeInstanceOf(Function);
+    const hooks = await SpeakdPlugin.server({ client: { app: { log: async () => {} } } });
     expect(typeof hooks["chat.message"]).toBe("function");
     expect(typeof hooks.event).toBe("function");
   });
