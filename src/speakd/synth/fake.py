@@ -24,6 +24,7 @@ class FakeEngine:
     """
 
     name = "fake"
+    reads_years = True
 
     def __init__(
         self,
