@@ -23,6 +23,14 @@ kokoro = [
     # this extra will mean dropping it and relying on misaki's own download.
     "en-core-web-sm",
 ]
+# Piper is GPL-3.0 (it embeds espeak-ng), so it is an extra the user opts
+# into, never a default dependency. scipy resamples Piper's audio to the
+# player's rate and sounddevice plays it, mirroring the kokoro extra.
+piper = [
+    "piper-tts>=1.4,<2",
+    "scipy",
+    "sounddevice",
+]
 # Language detection, imported lazily on first use (speakd.detect); without
 # this extra detection is off and speakd says so once, at startup.
 lang = ["lingua-language-detector"]
@@ -69,7 +77,20 @@ strict = true
 # imported inside functions and immediately adapted behind our own typed
 # interfaces (Player, Synthesizer), so nothing untyped escapes those modules.
 [[tool.mypy.overrides]]
-module = ["kokoro.*", "misaki.*", "sounddevice.*", "torch", "torch.*", "lingua.*"]
+module = [
+    "kokoro.*",
+    "misaki.*",
+    "sounddevice.*",
+    "torch",
+    "torch.*",
+    "lingua.*",
+    "piper",
+    "piper.*",
+    "onnxruntime",
+    "onnxruntime.*",
+    "scipy",
+    "scipy.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

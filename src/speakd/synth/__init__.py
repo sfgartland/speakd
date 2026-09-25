@@ -39,5 +39,10 @@ class Synthesizer(Protocol):
 
     name: str
     sample_rate: int
+    # Whether the engine already says years as people do (Kokoro does) or
+    # reads them digit by digit and needs the text rule in
+    # `speakd.synth.years` first (Piper does not). Declared per engine; the
+    # daemon itself never reads it.
+    reads_years: bool
 
     def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray: ...

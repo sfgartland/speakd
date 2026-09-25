@@ -29,6 +29,8 @@ from speakd.synth import Synthesizer
 class LazyEngine:
     name: str
     sample_rate: int
+    # The real engine under the wrapper (Kokoro today) says years itself.
+    reads_years = True
 
     def __init__(
         self,
