@@ -9,21 +9,22 @@
  *     `handler` is called with `{ kind, data, source_id? }` events. `kind`
  *     names one of the event kinds `speakd.daemon.Daemon._publish` emits:
  *
- *       "started"   data: { text, segments }
+ *       "started"   data: { text, engine, segments }
  *                   One utterance is about to be spoken. `text` is the whole
  *                   of it, exactly as it was handed to the daemon — markdown
- *                   and all — and `segments` is every sentence it will be
- *                   spoken as, in order: { index, text, span_start, span_end }.
- *                   The daemon segments before it speaks, so the window can
- *                   show the whole utterance from the first word. A
- *                   segment's `text` is what is *spoken*, after transforms,
+ *                   and all — and `engine` is "kokoro" or "piper", whichever
+ *                   was chosen to speak it. `segments` is every sentence it
+ *                   will be spoken as, in order: { index, text, span_start,
+ *                   span_end }. The daemon segments before it speaks, so the
+ *                   window can show the whole utterance from the first word.
+ *                   A segment's `text` is what is *spoken*, after transforms,
  *                   and its span points into `text`; under the markdown
  *                   transform every sentence of a block carries the whole
  *                   block's span. `SimulatedSource` adds each segment's
  *                   `duration`, which it knows because it owns its fixture.
  *
  *       "position"  data: { text, span_start, span_end, audio_offset,
- *                            played_at, index, duration?, elapsed? }
+ *                            played_at, index, engine, duration?, elapsed? }
  *                   One segment has *started*. `index` is the segment's
  *                   place in `started.segments`, numbered by the daemon —
  *                   after a seek it is the only thing that says which
@@ -325,6 +326,11 @@ export class SimulatedSource {
         options: null, min: null, max: null, step: null, multiline: false, restart: false,
       },
       {
+        key: "speech.engine", type: "choice", default: "kokoro",
+        label: "Speech engine", help: "Piper speaks what it has a voice for; Kokoro says the rest.",
+        options: ["kokoro", "piper"], min: null, max: null, step: null, multiline: false, restart: false,
+      },
+      {
         key: "speech.rate", type: "float", default: 1.0,
         label: "Rate", help: "The listener's speed multiplier.",
         options: null, min: 0.5, max: 2.0, step: 0.05, multiline: false, restart: false,
@@ -417,10 +423,16 @@ export class SimulatedSource {
     handler(this._metricsEvent());
   }
 
+  /** Which engine the sim's speech claims to have been made with: `speech.engine`. */
+  _engineName() {
+    return this._settingValue(this._declFor("speech.engine"));
+  }
+
   /** What `started` carries for the fixture, shaped as the daemon's. */
   _startedData() {
     return {
       text: this._text,
+      engine: this._engineName(),
       segments: this._segments.map((seg, i) => ({
         index: i,
         text: seg.text,
@@ -443,6 +455,7 @@ export class SimulatedSource {
         span_end: seg.span_end,
         audio_offset: null,
         played_at: Date.now() / 1000,
+        engine: this._engineName(),
         duration: seg.dur,
         elapsed: this._hushed ? 0 : this._within,
         // Not a daemon field at all — the controller only trusts this to
@@ -941,7 +954,7 @@ export class SimulatedSource {
     this._speaking = source_id;
     this._hushed = false;
     this._utterance = { source_id, text, remaining: 1800, startedAt: 0 };
-    this._emit({ kind: "started", source_id, data: { text } });
+    this._emit({ kind: "started", source_id, data: { text, engine: this._engineName() } });
     this._emit(this._metricsEvent());
     this._runUtterance();
   }
