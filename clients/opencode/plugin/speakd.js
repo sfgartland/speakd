@@ -141,3 +141,135 @@ export function register(sessionID, { cwd = "", agentPid = process.pid, env = pr
     // A registration that cannot be written costs silence, nothing more.
   }
 }
+
+// ---- what is spoken ----
+//
+// OpenCode streams a text part's growth through `message.part.updated`; each
+// event carries the part's accumulated text. Speaking each delta would cut
+// words in half, so parts are buffered and enqueued whole when they finish
+// -- a text block's end, which is usually before the tool calls that follow
+// it. A part is spoken at most once; sub-agent output and `ignored` parts
+// are never spoken.
+
+class SessionState {
+  constructor() {
+    this.mainAgent = null;
+    this.userAgents = new Map(); // messageID -> agent, for user messages
+    this.messages = new Map(); // messageID -> { agent, parts, spoken }
+  }
+}
+
+export class Speaker {
+  constructor({ send, log = () => {} }) {
+    this.send = send; // ({verb, source, payload}) -> Promise<reason|null>
+    this.log = log;
+    this.sessions = new Map(); // sessionID -> SessionState
+  }
+
+  _session(sessionID) {
+    let state = this.sessions.get(sessionID);
+    if (!state) {
+      state = new SessionState();
+      this.sessions.set(sessionID, state);
+    }
+    return state;
+  }
+
+  _main(state) {
+    return state.mainAgent ?? "build";
+  }
+
+  _entry(state, messageID) {
+    let entry = state.messages.get(messageID);
+    if (!entry) {
+      entry = { agent: null, parts: new Map(), spoken: new Set() };
+      state.messages.set(messageID, entry);
+    }
+    return entry;
+  }
+
+  onChatMessage(sessionID, agent) {
+    // The first `chat.message` for a session names its main agent; user
+    // prompts routed to sub-agents do not come through this hook.
+    const state = this._session(sessionID);
+    if (!state.mainAgent && agent) state.mainAgent = agent;
+  }
+
+  onMessageUpdated(info) {
+    if (info.role === "user") {
+      const state = this._session(info.sessionID);
+      state.userAgents.set(info.id, info.agent);
+      return;
+    }
+    const state = this._session(info.sessionID);
+    const entry = this._entry(state, info.id);
+    // `agent` is present in OpenCode's stored messages though absent from the
+    // SDK's published types; the parent user message is the fallback.
+    entry.agent = info.agent ?? state.userAgents.get(info.parentID) ?? state.mainAgent;
+    if (entry.agent !== this._main(state)) {
+      entry.parts.clear();
+      return;
+    }
+    if (info.time && info.time.completed != null) {
+      this._flushAll(state, info.sessionID, info.id, entry);
+    }
+  }
+
+  onPartUpdated(sessionID, part) {
+    if (part.type !== "text") return;
+    const state = this._session(sessionID);
+    const entry = this._entry(state, part.messageID);
+    if (!entry.parts.has(part.id) && entry.spoken.has(part.id)) return;
+    if (part.ignored) {
+      entry.parts.delete(part.id);
+      return;
+    }
+    if (entry.agent !== null && entry.agent !== this._main(state)) return;
+    entry.parts.set(part.id, part.text);
+    if (part.time && part.time.end != null && entry.agent !== null) {
+      this._flush(state, sessionID, part.messageID, entry, part.id);
+    }
+  }
+
+  onPartRemoved(sessionID, part) {
+    if (part.type !== "text") return;
+    const state = this._session(sessionID);
+    const entry = state.messages.get(part.messageID);
+    if (entry) entry.parts.delete(part.id);
+  }
+
+  onSessionIdle(sessionID) {
+    const state = this._session(sessionID);
+    for (const [messageID, entry] of state.messages) {
+      if (entry.agent !== null && entry.agent === this._main(state)) {
+        this._flushAll(state, sessionID, messageID, entry);
+      }
+    }
+    this.send({
+      verb: "enqueue",
+      source: `opencode:${sessionID}`,
+      payload: { text: "finished", kind: "attention", unless_briefed: true, only_in_mode: "brief" },
+    });
+  }
+
+  _flush(state, sessionID, messageID, entry, partID) {
+    const text = entry.parts.get(partID);
+    if (text == null) return;
+    entry.parts.delete(partID);
+    entry.spoken.add(partID);
+    const body = text.trim();
+    if (body) {
+      this.send({
+        verb: "enqueue",
+        source: `opencode:${sessionID}`,
+        payload: { text: body, kind: "response" },
+      });
+    }
+  }
+
+  _flushAll(state, sessionID, messageID, entry) {
+    for (const partID of [...entry.parts.keys()]) {
+      this._flush(state, sessionID, messageID, entry, partID);
+    }
+  }
+}
