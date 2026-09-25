@@ -606,8 +606,15 @@ class Daemon:
                 self._cancel.set()
                 if self._current is not None:
                     self._current.seek_to = None
+            # `sounding` is what the hook's channel is; `playing` is whether
+            # audio is actually in flight. A scoped hush on a channel whose
+            # last utterance has finished matches `_speaking` but must not
+            # touch the player: stopping an idle stream aborts the warm
+            # device and arms an interrupt the next utterance's first
+            # sentence eats whole.
+            playing = sounding and self._current is not None
         try:
-            if sounding:
+            if playing:
                 self.player.stop()
         finally:
             # In a finally, because a sink that refuses to stop — the
@@ -1810,6 +1817,16 @@ class Daemon:
         current = _Current(units=tuple(units))
         with self._idle:
             self._current = current
+        # A stop aimed at playback that has already ended -- the hush during
+        # a gap between utterances -- arms the player's interrupt with no
+        # play() left to consume it, and the next utterance's first sentence
+        # takes the hit. This utterance has survived every check that could
+        # still kill it before the first sound (`running`, the cancel Event,
+        # the check above), so a stop arriving from here on is aimed at it
+        # and is consumed in the ordinary way.
+        clear = getattr(self.player, "clear_interrupt", None)
+        if callable(clear):
+            clear()
 
         def announce(segment: Segment) -> None:
             """Publish one segment's position, as that segment starts playing.

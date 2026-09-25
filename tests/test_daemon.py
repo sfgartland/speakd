@@ -286,6 +286,39 @@ def test_a_player_that_cannot_be_paused_is_reported_not_raised(running_daemon) -
     assert daemon.player.paused is False
 
 
+def test_a_hush_on_a_silent_channel_does_not_eat_the_next_utterance() -> None:
+    """A scoped hush on a channel that is not speaking must leave the player alone.
+
+    The prompt hook hushes its channel on every prompt, speech or no speech.
+    That hush used to stop the player anyway -- `_speaking` still names the
+    channel from the previous utterance -- aborting the warm stream and
+    arming an interrupt that the next utterance's first sentence ate whole.
+    """
+    sink = FakeSink()
+    daemon = Daemon(
+        FakeEngine(),
+        StreamingPlayer(sink, chunk_frames=100),
+        profile_for,
+        bus=EventBus(),
+        channels=ChannelTable(),
+    )
+    daemon.start()
+    try:
+        daemon.handle(enqueue("s", "First. Second."))
+        assert daemon.wait_idle(timeout=5.0)
+        first = sink.frames_written
+        assert daemon.handle(Request(verb=Verb.HUSH, source_id="s", payload={})).ok is True
+        # Nothing was speaking: the hush must not stop the warm stream.
+        assert sink.stopped is False
+        daemon.handle(enqueue("s", "Third. Fourth."))
+        assert daemon.wait_idle(timeout=5.0)
+        # The same-shape text must write the same frames: with a stale
+        # interrupt armed, the first sentence writes none.
+        assert sink.frames_written - first == first
+    finally:
+        daemon.stop()
+
+
 def test_hush_reports_discards_as_their_own_kind(running_daemon) -> None:  # type: ignore[no-untyped-def]
     daemon = running_daemon()
     seen: list[Event] = []
