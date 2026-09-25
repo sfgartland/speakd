@@ -1,7 +1,7 @@
 # Handoff — resume here
 
-Last updated 2026-09-24 (late evening). `main` is pushed to https://github.com/sfgartland/speakd and
-CI is green (Python 3.11–3.13 and the Zotero plugin build).
+Last updated 2026-09-25. `main` is **not yet pushed** to https://github.com/sfgartland/speakd:
+everything since the settings core is local. Push it, then check CI.
 
 ## What works now
 
@@ -32,7 +32,7 @@ Local machine specifics, kept outside the repo:
 
 Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x.
 
-## Built on 2026-09-24 (merged, pushed)
+## Built on 2026-09-24 (merged; review fixes merged 2026-09-25 without a second review)
 
 - **Settings core (phase 1):** typed settings, `speakctl settings` / `speakctl set`, the window's gear → Settings view, and HTTP scoping.
 - **Languages (phase 2):** per-utterance language (payload > channel > detection > default), `speech.voices`, `speech.unsupported_language`, and `speakctl lang`. Detection is in the `speakd[lang]` extra.
