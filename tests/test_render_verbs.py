@@ -457,14 +457,13 @@ def test_a_render_in_an_unsupported_language_is_refused_under_decline(tmp_path: 
     assert d.render_queue.status() == []
 
 
-def test_a_render_is_accepted_for_an_unloaded_engine_rather_than_declined(
+def test_a_render_that_needs_an_unloaded_kokoro_is_declined(
     tmp_path: Path,
 ) -> None:
-    """Review Focus #1: `_render_verb` must not infer availability from
-    whether the model happens to be loaded -- only from what languages the
-    engine reports (its `supported`, given at construction). A render for a
-    language the engine can speak is accepted and left to wait for the
-    model, never declined just because nothing is resident yet."""
+    """The piper-engine rule, renders included: Kokoro is never loaded
+    implicitly. A render whose language Piper cannot speak while Kokoro is
+    unloaded is declined up front with the reason, not queued to wait
+    forever on a model nothing is loading."""
     from speakd.synth.lazy import LazyEngine
 
     lazy = LazyEngine(
@@ -472,11 +471,9 @@ def test_a_render_is_accepted_for_an_unloaded_engine_rather_than_declined(
     )
     d = make_daemon(engine=lazy)  # type: ignore[arg-type]
     response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, lang="en")))
-    assert response.ok, response.error
-    job = d.render_queue.job(job_id_of(response))
-    assert job is not None
-    assert until(lambda: job.state == "paused")
-    d.render_queue.stop()
+    assert not response.ok
+    assert "no voice for en" in response.error
+    assert d.render_queue.status() == []
 
 
 def test_a_render_whose_fallback_default_is_itself_unsupported_is_refused_clearly(

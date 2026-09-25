@@ -33,7 +33,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
@@ -63,10 +63,20 @@ DEFAULT_POLL_SECONDS = 0.1
 
 @dataclass
 class Part:
-    """One chapter (or the whole thing, for an article): a title and text."""
+    """One chapter (or the whole thing, for an article): a title and text.
+
+    `engine` and `voice` are fixed at submission and persist in the
+    manifest: a resumed render keeps the engine and voice it was submitted
+    with even if the daemon's engine setting has changed since. The
+    defaults are what a manifest written before renders recorded these
+    fields means -- Kokoro, with the job's own voice (`from_manifest`
+    fills that in).
+    """
 
     title: str
     text: str
+    engine: str = "kokoro"
+    voice: str = ""
 
 
 @dataclass
@@ -134,11 +144,16 @@ class RenderJob:
         return data
 
     def to_parts(self) -> list[dict[str, str]]:
-        """The parts' titles and text -- written once, at submit, to
-        `parts.json`, and never rewritten: this is the piece of a render
+        """The parts' titles, text and engines -- written once, at submit,
+        to `parts.json`, and never rewritten: this is the piece of a render
         that scales with a book's length, so nothing may touch it again on
-        every sentence the way the progress manifest is."""
-        return [{"title": p.title, "text": p.text} for p in self.parts]
+        every sentence the way the progress manifest is. A part's engine
+        and voice are recorded here, beside its text, because they are part
+        of what a resume needs to keep sounding the same."""
+        return [
+            {"title": p.title, "text": p.text, "engine": p.engine, "voice": p.voice}
+            for p in self.parts
+        ]
 
     @classmethod
     def from_manifest(cls, data: dict[str, Any], parts: list[Part]) -> RenderJob:
@@ -147,7 +162,7 @@ class RenderJob:
         # its own embedded `parts` wins over whatever `parts` this call was
         # given, since it is the only copy that record ever had.
         if "parts" in kwargs:
-            parts = [Part(**p) for p in kwargs.pop("parts")]
+            parts = _parts_from_dicts(kwargs.pop("parts"), str(kwargs.get("voice", "")))
         kwargs["parts"] = parts
         kwargs["out"] = Path(data["out"])
         return cls(**kwargs)
@@ -180,7 +195,7 @@ def _forget_text(job: RenderJob) -> None:
     rendered a lot of long books has no reason to keep megabytes of their
     text sitting in `RenderQueue._jobs` after the fact.
     """
-    job.parts = [Part(title=p.title, text="") for p in job.parts]
+    job.parts = [Part(title=p.title, text="", engine=p.engine, voice=p.voice) for p in job.parts]
 
 
 # --- the manifest on disk -------------------------------------------------
@@ -217,6 +232,26 @@ def save_manifest(job: RenderJob, work_dir: Path) -> None:
     os.replace(tmp, _manifest_path(work_dir))
 
 
+def _parts_from_dicts(raw_parts: list[dict[str, Any]], job_voice: str) -> list[Part]:
+    """Parts from stored part dicts, filling the fields a manifest written
+    before renders recorded their engine and voice lacks.
+
+    A part dict without a `voice` is from such a manifest, and it was
+    spoken by Kokoro -- the only engine that existed then -- with the job's
+    own voice. `Part`'s default already says Kokoro; the job's voice is
+    filled here. A dict that names a voice (even an empty one) is from a
+    newer manifest and is taken exactly as written, so a round trip through
+    `save_manifest` never adds anything.
+    """
+    parts: list[Part] = []
+    for raw in raw_parts:
+        part = Part(**raw)
+        if "voice" not in raw:
+            part.voice = job_voice
+        parts.append(part)
+    return parts
+
+
 def load_manifest(work_dir: Path) -> RenderJob:
     """The inverse of `save_manifest`: `manifest.json` plus `parts.json`.
 
@@ -229,7 +264,9 @@ def load_manifest(work_dir: Path) -> RenderJob:
     parts_path = _parts_path(work_dir)
     parts: list[Part] = []
     if "parts" not in data and parts_path.exists():
-        parts = [Part(**p) for p in json.loads(parts_path.read_text(encoding="utf-8"))]
+        parts = _parts_from_dicts(
+            json.loads(parts_path.read_text(encoding="utf-8")), str(data.get("voice", ""))
+        )
     return RenderJob.from_manifest(data, parts)
 
 
@@ -535,16 +572,22 @@ class _Stopping(Exception):
 class RenderQueue:
     """Runs render jobs on one worker thread, in submission order.
 
-    Two arguments tie the queue to the live pipeline it shares the engine
-    with. `busy` says whether a live utterance is in flight or queued -- in
-    the daemon it is `daemon.speaking` -- and while it is true the worker
-    waits *before* each sentence, in the state `paused`, checking every
-    `poll_seconds`. Waiting happens between sentences and never inside one,
-    which is what bounds the delay a render can impose on live speech at one
-    sentence's synthesis time. `synth_lock` is the lock the live pipeline's
-    own synthesize calls take: a render sentence and a live sentence never
-    reach the engine at the same time, and the lock the live side holds is
-    held for one sentence, so neither waits on more than that.
+    `engines` is the set a job's parts choose from, by name, at synthesis
+    time -- in the daemon, Kokoro and the render Piper engine. Each part
+    recorded its engine at submission, so the worker looks up
+    `engines[part.engine]` before every sentence.
+
+    Two further arguments tie the queue to the live pipeline it shares the
+    engines with. `busy` says whether a live utterance is in flight or
+    queued -- in the daemon it is `daemon.speaking` -- and while it is true
+    the worker waits *before* each sentence, in the state `paused`,
+    checking every `poll_seconds`. Waiting happens between sentences and
+    never inside one, which is what bounds the delay a render can impose on
+    live speech at one sentence's synthesis time. `synth_lock` is the lock
+    the live pipeline's own synthesize calls take: a render sentence and a
+    live sentence never reach an engine at the same time, and the lock the
+    live side holds is held for one sentence, so neither waits on more than
+    that.
 
     Both are optional because a queue of their own -- in tests, or beside a
     daemon that is not running one -- has nothing to yield to.
@@ -552,7 +595,7 @@ class RenderQueue:
 
     def __init__(
         self,
-        engine: Synthesizer,
+        engines: Mapping[str, Synthesizer] | Synthesizer,
         synth_lock: threading.Lock | None = None,
         busy: Callable[[], bool] | None = None,
         work_root: Path | None = None,
@@ -560,7 +603,14 @@ class RenderQueue:
         clock: Callable[[], float] = time.monotonic,
         on_update: Callable[[RenderJob], None] | None = None,
     ) -> None:
-        self._engine = engine
+        # A bare engine still works -- it becomes the queue's Kokoro, the
+        # compatible default for call sites written before renders chose
+        # their engine per part. The mapping keys are the values
+        # `Part.engine` records; "kokoro" is the canonical one, and its
+        # engine is what `sample_rate` anchoring reads.
+        if not isinstance(engines, Mapping):
+            engines = {"kokoro": engines}
+        self._engines = dict(engines)
         # One of their own when not shared: the lock has to exist for the
         # synthesize call to take it, but nothing else can ever contend one
         # nobody was handed.
@@ -605,10 +655,12 @@ class RenderQueue:
         """Fix the rate a job's PCM is stored at, the first time it is ever
         queued. Left alone once set: a resumed job's already-written PCM
         was made at whatever rate this recorded the first time, and nothing
-        may make that field disagree with the bytes already on disk.
+        may make that field disagree with the bytes already on disk. Read
+        from the Kokoro engine: every engine here resamples to Kokoro's
+        rate, which is what the daemon's own devices were opened at.
         """
         if not job.sample_rate:
-            job.sample_rate = self._engine.sample_rate
+            job.sample_rate = self._engines["kokoro"].sample_rate
 
     def submit(self, job: RenderJob) -> str:
         self._ensure_sample_rate(job)
@@ -645,7 +697,7 @@ class RenderQueue:
                 continue
             if job.state in _TERMINAL_STATES:
                 continue
-            if job.sample_rate and job.sample_rate != self._engine.sample_rate:
+            if job.sample_rate and job.sample_rate != self._engines["kokoro"].sample_rate:
                 # The PCM already on disk was written at the old rate; going
                 # on would either mis-decode it at encode time or silently
                 # mix rates within one output. Neither is recoverable here --
@@ -654,7 +706,7 @@ class RenderQueue:
                 # producing a wrong file.
                 job.error = (
                     f"engine sample rate changed from {job.sample_rate} to "
-                    f"{self._engine.sample_rate}; this render cannot be resumed"
+                    f"{self._engines['kokoro'].sample_rate}; this render cannot be resumed"
                 )
                 job.state = "failed"
                 _forget_text(job)
@@ -831,23 +883,23 @@ class RenderQueue:
         job.state = "running"
         self._notify(job)
 
-    def _wait_for_load(self, job: RenderJob) -> None:
-        """Wait, before a sentence, while the engine is not loaded.
+    def _wait_for_load(self, job: RenderJob, engine: Synthesizer) -> None:
+        """Wait, before a sentence, while the part's engine is not loaded.
 
         `LazyEngine.synthesize` on an unloaded engine returns silence rather
         than raising or blocking -- so without this, a render started (or
         resumed) while the model is unloaded or still loading would "finish"
         having spoken nothing at all. Duck-typed: an engine with nothing to
-        say about `loaded` (there is none today) is read as always loaded,
+        say about `loaded` (Piper has none) is read as always loaded,
         exactly as `_supported_languages` reads a silent engine as speaking
         everything. Same shape as `_yield_to_live`: state `paused`, the same
         poll, and cancellable and stoppable the same way.
         """
-        if getattr(self._engine, "loaded", True):
+        if getattr(engine, "loaded", True):
             return
         job.state = "paused"
         self._notify(job)
-        while not getattr(self._engine, "loaded", True):
+        while not getattr(engine, "loaded", True):
             if job.id in self._cancelled:
                 raise _Cancelled
             if self._stopping:
@@ -867,12 +919,17 @@ class RenderQueue:
             # cheap enough (one stat, and a truncate only then) to run
             # unconditionally rather than have a second code path for it.
             _truncate_to_committed(pcm_path, job.committed_bytes)
+            # The engine this part was submitted with, recorded on the part
+            # and durable in the manifest: looked up before every sentence,
+            # so a resumed render keeps the engines it was submitted with
+            # even if the daemon's engines have changed since.
+            engine = self._engines[part.engine]
             for sent_i in range(start, len(sentences)):
                 if job.id in self._cancelled:
                     raise _Cancelled
                 if self._stopping:
                     raise _Stopping
-                self._wait_for_load(job)
+                self._wait_for_load(job, engine)
                 self._yield_to_live(job)
                 text = sentences[sent_i]
                 # The lock, and only the lock, around the engine call: the
@@ -882,12 +939,12 @@ class RenderQueue:
                 with self._synth_lock:
                     # A manifest written before renders carried a resolved language
                     # has `lang` empty; English is what those were spoken in.
-                    audio = self._engine.synthesize(text, job.voice, job.speed, job.lang or "en")
+                    audio = engine.synthesize(text, part.voice, job.speed, job.lang or "en")
                 append_pcm(pcm_path, _pcm16(audio))
-                job.done_seconds += len(audio) / self._engine.sample_rate
+                job.done_seconds += len(audio) / engine.sample_rate
                 is_last_sentence = sent_i == len(sentences) - 1
                 if not is_last_sentence and job.sentence_gap_ms:
-                    gap_frames = int(self._engine.sample_rate * job.sentence_gap_ms / 1000)
+                    gap_frames = int(engine.sample_rate * job.sentence_gap_ms / 1000)
                     append_pcm(pcm_path, b"\x00" * (gap_frames * 2))
                 job.sentence_index = sent_i + 1
                 # Recorded from the file's own size, never accumulated, so it
