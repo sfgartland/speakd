@@ -319,7 +319,16 @@ always refused, whatever the client asks for.
 
 Each utterance is spoken in its own language, with that language's voice.
 Nine codes: `en en-gb es fr hi it pt-br ja zh` (`en` is American English; `pt`
-normalises to `pt-br`). Which one wins, first match:
+and `pt-pt` both normalise to `pt-br`, Kokoro's only Portuguese). A handful of
+free-form names — as Zotero's own "Language" field spells them by hand —
+normalise too, case-insensitively: `English`, `French`/`Français`,
+`German`/`Deutsch`, `Spanish`/`Español`, `Italian`/`Italiano`,
+`Portuguese`/`Português`, `Hindi`, `Japanese`, `Chinese`. Something that does
+not even look like a language tag (free text, a typo) is treated as though
+nothing was given, so it never silently beats detection the way a real code
+is entitled to; something that is tag-shaped but names no language this
+project knows still flows to `speech.unsupported_language` below. Which one
+wins, first match:
 
 1. `enqueue`'s own `lang` in the payload.
 2. The channel's pinned language — `speakctl lang <code>`, or `auto` to clear

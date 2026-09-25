@@ -91,12 +91,23 @@ def test_set_language_empty_string_also_clears_it(daemon) -> None:  # type: igno
     assert response.data["lang"] is None
 
 
-def test_set_language_with_an_unparseable_code_is_kept_as_the_sentinel(daemon) -> None:  # type: ignore[no-untyped-def]
+def test_set_language_with_a_tag_shaped_unknown_code_is_kept_as_the_sentinel(daemon) -> None:  # type: ignore[no-untyped-def]
     d, _bus = daemon
-    response = d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "klingon"}))
+    response = d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "xx-yy"}))
     assert response.ok
     assert response.data["lang"] == "und"
     assert d.channels.get("s").lang == "und"
+
+
+def test_set_language_with_free_text_that_is_not_tag_shaped_clears_it(daemon) -> None:  # type: ignore[no-untyped-def]
+    # Review Focus #12: not even shaped like a language tag, so it is
+    # treated the same as "nothing was chosen" rather than pinned as some
+    # unsupported language that would decline every utterance after it.
+    d, _bus = daemon
+    response = d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "klingon"}))
+    assert response.ok
+    assert response.data["lang"] is None
+    assert d.channels.get("s").lang is None
 
 
 def test_set_language_needs_a_channel(daemon) -> None:  # type: ignore[no-untyped-def]

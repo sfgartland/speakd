@@ -108,14 +108,26 @@ def test_enqueue_lang_is_normalised_and_stored_on_the_job(daemon) -> None:  # ty
     assert captured[0].lang == "en-gb"
 
 
-def test_enqueue_lang_that_cannot_be_parsed_is_kept_as_unsupported(daemon) -> None:  # type: ignore[no-untyped-def]
+def test_enqueue_lang_that_is_tag_shaped_but_unknown_is_kept_as_unsupported(daemon) -> None:  # type: ignore[no-untyped-def]
+    d, _player, _bus = daemon
+    captured = _capture_accepted_job(d)
+    response = d.handle(
+        Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "hi", "lang": "xx-yy"})
+    )
+    assert response.ok
+    assert captured[0].lang == "und"
+
+
+def test_enqueue_lang_that_cannot_be_parsed_at_all_is_treated_as_absent(daemon) -> None:  # type: ignore[no-untyped-def]
+    # Review Focus #12: free text that does not even look like a language
+    # tag must not beat detection -- treated as though nothing was given.
     d, _player, _bus = daemon
     captured = _capture_accepted_job(d)
     response = d.handle(
         Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "hi", "lang": "klingon"})
     )
     assert response.ok
-    assert captured[0].lang == "und"
+    assert captured[0].lang is None
 
 
 def test_enqueue_with_no_lang_leaves_the_job_lang_unset(daemon) -> None:  # type: ignore[no-untyped-def]

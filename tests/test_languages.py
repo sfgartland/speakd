@@ -51,9 +51,38 @@ def test_normalise_de_is_known_but_kokoro_cannot_speak_it() -> None:
     assert "de" not in languages.SUPPORTED
 
 
-def test_normalise_an_unparseable_code_is_kept_as_the_unsupported_sentinel() -> None:
-    assert languages.normalise("klingon") == languages.UNSUPPORTED
+def test_normalise_a_tag_shaped_unknown_code_is_kept_as_the_unsupported_sentinel() -> None:
+    # "xx-yy" parses as a BCP-47-shaped tag -- unknown, but a real enough
+    # shape to surface to speech.unsupported_language rather than drop.
     assert languages.normalise("xx-yy") == languages.UNSUPPORTED
+
+
+def test_normalise_free_text_that_is_not_tag_shaped_is_treated_as_absent() -> None:
+    # "klingon" does not look like a BCP-47 tag at all -- treated as though
+    # nothing was given, so it does not beat detection (Review Focus #12).
+    assert languages.normalise("klingon") is None
+
+
+def test_normalise_pt_pt_becomes_pt_br() -> None:
+    assert languages.normalise("pt-pt") == "pt-br"
+    assert languages.normalise("PT-PT") == "pt-br"
+
+
+def test_normalise_full_names_map_to_codes_case_insensitively() -> None:
+    assert languages.normalise("English") == "en"
+    assert languages.normalise("FRENCH") == "fr"
+    assert languages.normalise("Français") == "fr"
+    assert languages.normalise("Deutsch") == "de"
+    assert languages.normalise("German") == "de"
+    assert languages.normalise("Español") == "es"
+    assert languages.normalise("Spanish") == "es"
+    assert languages.normalise("Italiano") == "it"
+    assert languages.normalise("Italian") == "it"
+    assert languages.normalise("Português") == "pt-br"
+    assert languages.normalise("Portuguese") == "pt-br"
+    assert languages.normalise("Hindi") == "hi"
+    assert languages.normalise("Japanese") == "ja"
+    assert languages.normalise("Chinese") == "zh"
 
 
 def test_normalise_empty_is_none() -> None:
