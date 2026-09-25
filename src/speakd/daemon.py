@@ -26,7 +26,7 @@ from typing import Protocol, cast, runtime_checkable
 from speakd import languages, segmenter, state
 from speakd.channels import MODES, Channel, ChannelTable, effective_mode
 from speakd.detect import Detector
-from speakd.engines import Declined, choose_engine
+from speakd.engines import Declined, EngineChoice, choose_engine
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
 from speakd.model import Piece, Role, Segment, Span
@@ -47,7 +47,7 @@ from speakd.settings.registry import Settings
 from speakd.settings.store import SettingsStore
 from speakd.settings.types import SettingError
 from speakd.synth import Synthesizer
-from speakd.synth.piper_engine import piper_available
+from speakd.synth.piper_engine import PiperEngine, piper_available
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
@@ -418,6 +418,7 @@ class Daemon:
         metrics_interval: float = _METRICS_INTERVAL_SECONDS,
         settings: Settings | None = None,
         piper: PiperLike | None = None,
+        render_piper: PiperLike | None = None,
     ) -> None:
         self.engine = engine
         # The optional second engine, chosen per utterance once `speech.engine`
@@ -456,6 +457,26 @@ class Daemon:
         # nothing more will ever arrive for that job.
         self._render_last_state: dict[str, str] = {}
         self._render_last_published: dict[str, float] = {}
+        # The render Piper engine is the daemon's own, built here rather
+        # than by `__main__`: renders are long and nobody is waiting on each
+        # sentence, so it runs Piper on `render.piper_threads` (0, the
+        # default, leaves it to onnxruntime -- every core) instead of live
+        # speech's frugal `speech.piper_threads`, and it owns its own ONNX
+        # sessions rather than sharing `self.piper`'s. A test substitutes
+        # a fake; None means the piper extra was not installed.
+        if render_piper is None and piper_available():
+            render_piper = PiperEngine(
+                Path(str(self.settings.get("speech.piper_voice_dir"))),
+                threads=cast(int, self.settings.get("render.piper_threads")),
+            )
+        self.render_piper = render_piper
+        # The render queue chooses its engine per part from this set, keyed
+        # by the name `Part.engine` records. `render_piper` is only added
+        # when it exists; `choose_engine` only ever names Piper when it
+        # does, so a part never names an engine that is not here.
+        engines: dict[str, Synthesizer] = {"kokoro": self.engine}
+        if self.render_piper is not None:
+            engines["piper"] = self.render_piper
         # Owned here, not built by `__main__`: a render shares this daemon's
         # engine and `synth_lock` (so a render sentence and a live one never
         # reach the engine together) and yields to `self.render_busy` (so a
@@ -464,7 +485,7 @@ class Daemon:
         # `render_busy`). See `render.RenderQueue` and "Global Constraints
         # (A)" in the audio-export plan.
         self.render_queue = RenderQueue(
-            self.engine,
+            engines,
             self.synth_lock,
             busy=lambda: self.render_busy,
             on_update=self._on_render_update,
@@ -1231,22 +1252,50 @@ class Daemon:
         speech makes, so a render sounds like the same text read aloud."""
         return self._voice_for(lang, profile.voice)
 
+    def _render_choice(self, lang: str) -> EngineChoice | Declined:
+        """`choose_engine` for a render, with the render's own Piper.
+
+        The render side chooses from `self.render_piper` -- built with
+        `render.piper_threads` -- not the live `self.piper`; everything
+        else is the live path's own reading of the settings and engines.
+        """
+        piper = self.render_piper
+        piper_ok = piper is not None and piper_available()
+        kokoro_loaded = not isinstance(self.engine, Loadable) or self.engine.loaded
+        piper_voices_raw = self.settings.get("speech.piper_voices")
+        piper_voices: dict[str, str] = (
+            piper_voices_raw if isinstance(piper_voices_raw, dict) else {}
+        )
+
+        def piper_has_voice(voice: str) -> bool:
+            return piper is not None and piper.has_voice(voice)
+
+        return choose_engine(
+            lang,
+            str(self.settings.get("speech.engine")),
+            piper_voices,
+            piper_has_voice,
+            piper_ok,
+            kokoro_loaded,
+        )
+
     def _render_language(self, requested: str, texts: list[str]) -> tuple[str | None, str | None]:
         """The language a whole render is spoken in, or `(None, declined_as)`
         to refuse it, naming the language the refusal is about.
 
-        The job's own `lang`, else detection over the start of its text, else
-        the default -- the live order minus the channel, which a render has
-        none of. Decided once, up front, for every part: a book does not
-        change voice between chapters because one of them quotes French. A
-        language the engine cannot speak follows `speech.unsupported_language`
+        The job's own `lang`, else detection over the start of its text,
+        else the default -- the live order minus the channel, which a render
+        has none of. What can speak the language is `choose_engine`'s
+        business -- Piper when it has a voice for it, else Kokoro -- and a
+        `Declined` (Kokoro needed but unloaded) refuses up front. A
+        language only Kokoro could lack follows `speech.unsupported_language`
         here rather than mid-render, so `decline` refuses the job before any
         work is queued instead of failing it hours in.
 
         The fallback default is checked too: `speech.unsupported_language`
         not being `decline` ordinarily means "speak it in the default
-        instead", but if the *default* is itself not something this engine
-        can speak (a misconfigured setting, or a language whose G2P extra is
+        instead", but if the *default* is itself not something Kokoro can
+        speak (a misconfigured setting, or a language whose G2P extra is
         not installed), falling back to it would only fail mid-render
         instead of now. That is refused up front as well, naming the
         default rather than the language that was actually requested.
@@ -1259,6 +1308,11 @@ class Daemon:
             code = self._detector.detect(" ".join(texts)[:4000])
         if code is None:
             code = default
+        choice = self._render_choice(code)
+        if isinstance(choice, Declined):
+            return None, code
+        if choice.engine == "piper":
+            return code, None
         supported = self._supported_languages()
         if code in supported:
             return code, None
@@ -1267,6 +1321,43 @@ class Daemon:
         if default not in supported:
             return None, default
         return default, None
+
+    def _render_part(
+        self, requested: str, title: str, text: str, profile: ProfileView
+    ) -> tuple[Part | None, str | None]:
+        """One part's engine and voice, decided at submission and fixed on
+        the `Part` from then on: language resolution over this part's own
+        text, then `choose_engine`, the result recorded in the manifest so
+        a resumed render keeps it even if the engine setting changes in
+        between. `(None, declined_as)` refuses the whole render up front,
+        naming the language nothing could speak -- a book must not be
+        half-rendered before its fourth chapter says it is impossible.
+
+        A language Kokoro lacks follows `speech.unsupported_language`, and
+        its fallback is always spoken by Kokoro -- Piper only ever speaks
+        languages its own map names -- which is why the engine is chosen on
+        the language itself, before the policy.
+        """
+        default = str(self.settings.get("speech.default_language"))
+        code = languages.normalise(requested) if requested else None
+        if code is None and self.settings.get("speech.detect_language"):
+            code = self._detector.detect(text[:4000])
+        if code is None:
+            code = default
+        choice = self._render_choice(code)
+        if isinstance(choice, Declined):
+            return None, code
+        if choice.engine == "piper":
+            return Part(title=title, text=text, engine="piper", voice=cast(str, choice.voice)), None
+        if code not in self._supported_languages():
+            if self.settings.get("speech.unsupported_language") == "decline":
+                return None, code
+            if default not in self._supported_languages():
+                return None, default
+            code = default
+        return Part(
+            title=title, text=text, engine="kokoro", voice=self._voice_for(code, profile.voice)
+        ), None
 
     _RENDER_FORMATS = ("mp3", "opus", "m4b")
 
@@ -1317,14 +1408,27 @@ class Daemon:
         resolved, declined_as = self._render_language(lang, [str(p["text"]) for p in raw_parts])
         if resolved is None:
             return Response(ok=False, error=f"no voice for {declined_as}")
-        lang = resolved
+        # Each part's engine and voice are chosen at submission -- its own
+        # language resolution (the payload `lang`, else detection over this
+        # part's text, else the default), then `choose_engine` -- and
+        # recorded on the part, so a resumed render keeps them even if the
+        # settings change in between. One part nothing can speak refuses
+        # the whole render up front, before any work is queued.
+        parts: list[Part] = []
+        for raw_part in raw_parts:
+            part, part_declined = self._render_part(
+                lang, str(raw_part["title"]), str(raw_part["text"]), profile
+            )
+            if part is None:
+                return Response(ok=False, error=f"no voice for {part_declined}")
+            parts.append(part)
         job = RenderJob(
             id=new_job_id(),
-            parts=[Part(title=str(p["title"]), text=str(p["text"])) for p in raw_parts],
+            parts=parts,
             out=Path(out),
             format=str(fmt),
-            lang=lang,
-            voice=self._voice_for_render(lang, profile),
+            lang=resolved,
+            voice=self._voice_for_render(resolved, profile),
             speed=profile.speed,
             metadata=dict(metadata),
             sentence_gap_ms=cast(int, self.settings.get("speech.sentence_gap_ms")),

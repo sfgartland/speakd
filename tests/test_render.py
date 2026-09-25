@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from speakd.channels import ChannelTable
-from speakd.daemon import Daemon, ProfileView
+from speakd.daemon import Daemon, ProfileView, build_settings
 from speakd.events import Event, EventBus
 from speakd.player import FakeSink, StreamingPlayer
 from speakd.protocol import Request, Verb
@@ -26,6 +26,8 @@ from speakd.render import (
     pcm_duration,
     save_manifest,
 )
+from speakd.settings.registry import Settings
+from speakd.settings.store import SettingsStore
 from speakd.synth.fake import FakeEngine
 
 
@@ -39,6 +41,27 @@ class CountingEngine(FakeEngine):
     def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
         self.calls.append(text)
         return super().synthesize(text, voice, speed, lang)
+
+
+class FakeRenderPiper(CountingEngine):
+    """Stands in for the daemon's render `PiperEngine`: a `CountingEngine`
+    with the voice hooks the daemon's Piper seam calls."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.voices: set[str] = {"voice-en"}
+
+    def has_voice(self, voice: str) -> bool:
+        return voice in self.voices
+
+    def installed_voices(self) -> list[str]:
+        return sorted(self.voices)
+
+    def unload(self) -> None:
+        pass
+
+    def set_voice_dir(self, path: Path) -> None:
+        pass
 
 
 def until(predicate: Any, timeout: float = 5.0) -> bool:
@@ -97,6 +120,30 @@ def test_manifest_round_trip(tmp_path: Path) -> None:
     assert loaded.sample_rate == 24000
 
 
+def test_manifest_round_trips_part_engine_and_voice(tmp_path: Path) -> None:
+    """A part's engine and voice are fixed at submission and persist in the
+    manifest (the job's parts live in `parts.json`), so a resumed render
+    keeps them even if the daemon's engine setting has changed since."""
+    job = _job(
+        tmp_path,
+        parts=[
+            Part(title="One", text="A. B.", engine="piper", voice="voice-en"),
+            Part(title="Two", text="C. D.", engine="kokoro", voice="pf_dora"),
+        ],
+    )
+    work_dir = tmp_path / "work"
+    save_manifest(job, work_dir)
+
+    loaded = load_manifest(work_dir)
+    assert loaded.parts == job.parts
+
+    parts_data = json.loads((work_dir / "parts.json").read_text())
+    assert parts_data == [
+        {"title": "One", "text": "A. B.", "engine": "piper", "voice": "voice-en"},
+        {"title": "Two", "text": "C. D.", "engine": "kokoro", "voice": "pf_dora"},
+    ]
+
+
 def test_manifest_size_does_not_grow_with_text_or_sentences(tmp_path: Path) -> None:
     """Review Focus #4: the manifest is rewritten after every sentence, so
     its size must never scale with a render's text -- that would break the
@@ -121,7 +168,7 @@ def test_manifest_size_does_not_grow_with_text_or_sentences(tmp_path: Path) -> N
     assert size_after_many_sentences < len(long_text)
 
     parts_data = json.loads((work_dir / "parts.json").read_text())
-    assert parts_data == [{"title": "Chapter", "text": long_text}]
+    assert parts_data == [{"title": "Chapter", "text": long_text, "engine": "kokoro", "voice": ""}]
     manifest_data = json.loads((work_dir / "manifest.json").read_text())
     assert "parts" not in manifest_data
 
@@ -131,7 +178,8 @@ def test_load_manifest_reads_an_old_format_manifest_with_embedded_parts(
 ) -> None:
     """Compatibility: a manifest written before the parts.json split carries
     its own `parts` embedded and no `parts.json` exists for it -- it must
-    still load exactly as it always did."""
+    still load exactly as it always did, spoken by Kokoro with the job's own
+    voice: the only engine and voice a manifest of that age can have meant."""
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     old_style = {
@@ -156,8 +204,50 @@ def test_load_manifest_reads_an_old_format_manifest_with_embedded_parts(
     }
     (work_dir / "manifest.json").write_text(json.dumps(old_style), encoding="utf-8")
     loaded = load_manifest(work_dir)
-    assert loaded.parts == [Part(title="Chapter", text="One. Two.")]
+    assert loaded.parts == [
+        Part(title="Chapter", text="One. Two.", engine="kokoro", voice="af_heart")
+    ]
     assert loaded.sentence_index == 1
+
+
+def test_load_manifest_reads_an_old_parts_json_without_engine_or_voice(tmp_path: Path) -> None:
+    """Compatibility: a manifest written before renders recorded their
+    engine and voice carries parts (in `parts.json` or embedded) without
+    those fields -- the parts load as Kokoro with the job's own voice, the
+    only engine and voice they could have been."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "abc124",
+                "out": str(tmp_path / "out.mp3"),
+                "format": "mp3",
+                "lang": "en",
+                "voice": "bf_emma",
+                "speed": 1.0,
+                "sentence_gap_ms": 250,
+                "chapter_gap_ms": 1500,
+                "bitrate": "128k",
+                "metadata": {},
+                "sample_rate": 24000,
+                "state": "running",
+                "part_index": 0,
+                "sentence_index": 0,
+                "done_seconds": 0.0,
+                "estimate_seconds": 0.0,
+                "error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (work_dir / "parts.json").write_text(
+        json.dumps([{"title": "Chapter", "text": "One. Two."}]), encoding="utf-8"
+    )
+    loaded = load_manifest(work_dir)
+    assert loaded.parts == [
+        Part(title="Chapter", text="One. Two.", engine="kokoro", voice="bf_emma")
+    ]
 
 
 def test_append_pcm_creates_then_appends(tmp_path: Path) -> None:
@@ -654,3 +744,165 @@ def test_a_render_does_not_wait_behind_merely_paused_live_speech(tmp_path: Path)
         d.handle(Request(verb=Verb.RESUME, source_id="live", payload={}))
         d.wait_idle(timeout=10.0)
         d.stop()
+
+
+# --- each part's engine, recorded at submission ------------------------------
+
+
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(SettingsStore(tmp_path / "settings.toml", tmp_path / "settings-schema.json"))
+
+
+def _daemon(
+    settings: Settings,
+    kokoro: CountingEngine,
+    render_piper: FakeRenderPiper | None = None,
+) -> Daemon:
+    return Daemon(
+        kokoro,
+        StreamingPlayer(FakeSink()),
+        profile_for,
+        bus=EventBus(),
+        channels=ChannelTable(),
+        settings=settings,
+        render_piper=render_piper,
+    )
+
+
+def _render_request(tmp_path: Path, parts: list[dict[str, str]], **overrides: object) -> Request:
+    payload: dict[str, object] = dict(
+        parts=parts,
+        out=str(tmp_path / "out.mp3"),
+        format="mp3",
+        profile="default",
+    )
+    payload.update(overrides)
+    return Request(verb=Verb.RENDER, source_id="cli", payload=payload)
+
+
+def test_a_two_part_render_gives_each_engine_only_its_own_sentences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Part 1 is English (spoken by Piper, per `speech.piper_voices`); part 2
+    is a language Piper has no voice for (spoken by Kokoro). Each engine gets
+    exactly its own part's sentences, and each part's engine and voice are
+    recorded on it at submission."""
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr("speakd.daemon.piper_available", lambda: True)
+    kokoro = CountingEngine()
+    render_piper = FakeRenderPiper()
+    settings = _settings(tmp_path)
+    d = _daemon(settings, kokoro, render_piper)
+    settings.set("speech.engine", "piper")
+    settings.set("speech.piper_voices", {"en": "voice-en"})
+
+    def detect(text: str) -> str | None:
+        return "pt-br" if "Olá" in text else "en"
+
+    monkeypatch.setattr(d._detector, "detect", detect)
+    d.start()
+    try:
+        response = d.handle(
+            _render_request(
+                tmp_path,
+                [
+                    {"title": "One", "text": "Hello. This is the first part."},
+                    {"title": "Two", "text": "Olá. Esta é a segunda parte."},
+                ],
+            )
+        )
+        assert response.ok, response.error
+        job_id = response.data["job"]
+        assert isinstance(job_id, str)
+        job = d.render_queue.job(job_id)
+        assert job is not None
+        assert (job.parts[0].engine, job.parts[0].voice) == ("piper", "voice-en")
+        assert (job.parts[1].engine, job.parts[1].voice) == ("kokoro", "pf_dora")
+
+        assert until(lambda: state_of(d.render_queue, job_id) in ("done", "failed"))
+        assert state_of(d.render_queue, job_id) == "done"
+        assert render_piper.calls == ["Hello.", "This is the first part."]
+        assert kokoro.calls == ["Olá.", "Esta é a segunda parte."]
+        assert set(kokoro.synthesized_langs) == {"pt-br"}
+    finally:
+        d.stop()
+
+
+def test_resume_after_the_engine_setting_changed_keeps_the_recorded_engines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review Focus 5: the engine and voice are recorded on each part at
+    submission, so a render stopped and resumed after `speech.engine`
+    changed still finishes on the engines it was submitted with -- every
+    sentence on Piper, none on Kokoro, whichever engine the new daemon
+    would choose for a fresh render."""
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr("speakd.daemon.piper_available", lambda: True)
+    settings = _settings(tmp_path)
+    kokoro_a = CountingEngine()
+    piper_a = FakeRenderPiper(synthesis_cost=0.05)
+    d = _daemon(settings, kokoro_a, piper_a)
+    settings.set("speech.engine", "piper")
+    settings.set("speech.piper_voices", {"en": "voice-en"})
+    settings.set("speech.detect_language", False)
+    text = " ".join(f"Sentence{i}." for i in range(12))
+    response = d.handle(_render_request(tmp_path, [{"title": "C", "text": text}], lang="en"))
+    assert response.ok, response.error
+    job_id = response.data["job"]
+    assert isinstance(job_id, str)
+    assert until(lambda: len(piper_a.calls) >= 2)
+    d.render_queue.stop()
+    assert state_of(d.render_queue, job_id) == "running"
+
+    settings.set("speech.engine", "kokoro")
+    kokoro_b = CountingEngine()
+    piper_b = FakeRenderPiper()
+    resumed = _daemon(settings, kokoro_b, piper_b)
+    resumed.start()
+    try:
+        assert until(lambda: state_of(resumed.render_queue, job_id) in ("done", "failed"))
+        assert state_of(resumed.render_queue, job_id) == "done"
+    finally:
+        resumed.stop()
+
+    expected = [f"Sentence{i}." for i in range(12)]
+    assert piper_a.calls + piper_b.calls == expected
+    assert kokoro_a.calls == [] and kokoro_b.calls == []
+
+
+def test_the_render_piper_engine_is_built_with_render_piper_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon owns a second Piper engine for renders, built from
+    `render.piper_threads` (0 by default: every core) rather than live
+    speech's `speech.piper_threads`."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr("speakd.daemon.piper_available", lambda: True)
+    built: list[tuple[Path, int]] = []
+
+    class RecordingPiper:
+        name = "piper"
+        sample_rate = 24000
+        reads_years = False
+
+        def __init__(self, voice_dir: Path, threads: int) -> None:
+            built.append((voice_dir, threads))
+
+        def has_voice(self, voice: str) -> bool:
+            return False
+
+        def installed_voices(self) -> list[str]:
+            return []
+
+        def unload(self) -> None:
+            pass
+
+        def set_voice_dir(self, path: Path) -> None:
+            pass
+
+    monkeypatch.setattr("speakd.daemon.PiperEngine", RecordingPiper)
+    settings = build_settings()
+    settings.set("render.piper_threads", 7)
+    d = Daemon(FakeEngine(), StreamingPlayer(FakeSink()), profile_for, settings=settings)
+    assert d.render_piper is not None
+    assert built == [(Path(str(settings.get("speech.piper_voice_dir"))), 7)]
