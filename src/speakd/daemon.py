@@ -229,6 +229,16 @@ class Loadable(Protocol):
     def unload(self) -> None: ...
 
 
+class Connector(Protocol):
+    """A supervised client child, reduced to the two operations the daemon's
+    off-switch needs. `Supervisor` satisfies it; tests substitute a stub.
+    """
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class ProfileView:
     """What the daemon needs from a profile, without importing profiles."""
@@ -348,6 +358,13 @@ class Daemon:
         # Loaded rather than defaulted: after a reboot, surprising silence is
         # a smaller failure than surprising speech.
         self.muted = state.load().muted
+        # The notifications reader's switch, read back for the same reason:
+        # after a restart, the reader must come back exactly as it was left.
+        self.notify_enabled = state.load().notify_enabled
+        # The supervised client connectors, by name, so the off-switch verb
+        # can stop and start the notifications reader. Registered by
+        # `__main__` once the socket exists.
+        self._connectors: dict[str, Connector] = {}
         # The listener's speed, read back for the same reason. Shared with
         # the pipeline and the player, which read it as they go: a change
         # reaches the sentence already playing, not only the next one.
@@ -388,6 +405,18 @@ class Daemon:
         self._metrics_interval = metrics_interval
         self._metrics: threading.Thread | None = None
         self._metrics_stop = threading.Event()
+
+    def add_connector(self, name: str, supervisor: Connector) -> None:
+        """Hold a client connector under `name`, so verbs can stop or start
+        it. `stop_connectors()` stops every connector registered here."""
+        self._connectors[name] = supervisor
+
+    def stop_connectors(self) -> None:
+        """Stop every supervised client. Idempotent: the shutdown path calls
+        this before the daemon goes quiet, and `stop()` calls it again to
+        catch any that remain."""
+        for supervisor in self._connectors.values():
+            supervisor.stop()
 
     def start(self) -> Response:
         """Bring the speech worker up, saying which of three things happened.
@@ -492,6 +521,9 @@ class Daemon:
         True when there was no worker or the join succeeded; False when the
         worker outlived it and is still running.
         """
+        # The readers go down first, before the daemon goes quiet, so none of
+        # them can enqueue into a daemon that is shutting down.
+        self.stop_connectors()
         # First, and outside every lock this method takes below: the render
         # worker's own `_stopping` flag is what breaks it out of a busy-wait
         # behind live speech (see `RenderQueue._yield_to_live`), so stopping

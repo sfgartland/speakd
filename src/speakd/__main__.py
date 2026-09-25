@@ -163,36 +163,61 @@ def _close_player(player: Player) -> None:
         sys.stderr.write(f"speakd: could not release the audio device: {exc!r}\n")
 
 
-# One per client connector: the environment variable that suppresses it, and
-# the module to run. Data rather than a branch each, because the next client
-# should be a line here and nothing else.
-CONNECTORS: tuple[tuple[str, str], ...] = (
-    ("SPEAKD_NO_FOLLOWER", "speakd.clients.claude_code.follow"),
-    ("SPEAKD_NO_NOTIFY", "speakd.clients.notifications.follow"),
+# One per client connector: its name, the environment variable that
+# suppresses it, and the module to run. Data rather than a branch each,
+# because the next client should be a line here and nothing else.
+CONNECTORS: tuple[tuple[str, str, str], ...] = (
+    ("follower", "SPEAKD_NO_FOLLOWER", "speakd.clients.claude_code.follow"),
+    ("notify", "SPEAKD_NO_NOTIFY", "speakd.clients.notifications.follow"),
 )
 
 
-def _start_children() -> list[Supervisor]:
-    """Start the client connectors under supervision.
+def _start_children(daemon: Daemon) -> None:
+    """Register the client connectors with the daemon, starting those that
+    should run.
 
     Called after the socket exists, never before: a child's first act is to
-    connect to it, and one that starts into a closed socket spends its backoff
-    on an absence we created.
+    connect to it, and one that starts into a closed socket spends its
+    backoff on an absence we created.
 
     Each is suppressible on its own. The only callers of those variables are
     the test suite -- which must never spawn a child that outlives its
     daemon's socket and starts tailing the developer's real transcripts or
     reading their real notifications aloud -- and someone debugging one
     connector by hand.
+
+    The notifications connector can also be off by flag: it is registered,
+    so the verb can reach it, but not started -- `set_notify` is how it
+    comes up. Suppressed by its variable, it is not even registered, and
+    `set_notify` refuses.
     """
-    started: list[Supervisor] = []
-    for variable, module in CONNECTORS:
+    for name, variable, module in CONNECTORS:
         if os.environ.get(variable):
             continue
-        child = Supervisor([sys.executable, "-m", module])
-        child.start()
-        started.append(child)
-    return started
+        supervisor = Supervisor([sys.executable, "-m", module])
+        daemon.add_connector(name, supervisor)
+        if name == "notify" and not daemon.notify_enabled:
+            continue
+        supervisor.start()
+
+
+def _shutdown(daemon: Daemon, server: SocketServer, http: HttpServer | None) -> None:
+    """Take the daemon down in the order that keeps every part safe.
+
+    Connectors first, before the daemon goes quiet, so a client cannot
+    enqueue into a daemon that is shutting down and have it discarded as
+    unspoken. Silenced next, so Ctrl-C goes quiet at once. The two calls
+    below keep their order: server.stop()'s shutdown() is what frees a
+    speech worker wedged writing to a subscriber that stopped reading, and
+    silencing first would make every Ctrl-C wait out a 5s join before
+    anything could unwedge it. `daemon.stop()` itself runs after this, in
+    `serve`, with the player's close behind it.
+    """
+    daemon.stop_connectors()
+    daemon.silence()
+    server.stop()
+    if http is not None:
+        http.stop()
 
 
 # The HTTP transport's default port. `SPEAKD_HTTP_PORT=0` turns it off.
@@ -280,22 +305,10 @@ def serve(daemon: Daemon, socket_path: Path) -> int:
 
     server.start()
     http = start_http(daemon)
-    children = _start_children()
+    _start_children(daemon)
 
     stop.wait()
-    # Before the daemon goes quiet, so a client cannot enqueue into a daemon
-    # that is shutting down and have it discarded as unspoken.
-    for child in children:
-        child.stop()
-    # Silenced first, so Ctrl-C goes quiet at once. The two calls below keep
-    # their order: server.stop()'s shutdown() is what frees a speech worker
-    # wedged writing to a subscriber that stopped reading, and putting
-    # daemon.stop() first would make every Ctrl-C wait out a 5s join before
-    # anything could unwedge it.
-    daemon.silence()
-    server.stop()
-    if http is not None:
-        http.stop()
+    _shutdown(daemon, server, http)
     # Last, and never above `daemon.stop()`: `close()` is terminal by contract
     # -- the sink refuses every later write and start -- so the speech worker
     # has to be gone before it runs. And asked, not assumed: `stop()` joins
