@@ -89,20 +89,21 @@ def build_profiles() -> Callable[[str], ProfileView]:
     return profile_for
 
 
-def _claude_code_defaults(source_id: str) -> dict[str, object]:
-    """How a Claude Code session's channel starts: able to brief, and muted.
+def _agent_defaults(source_id: str) -> dict[str, object]:
+    """How an agent session's channel starts: able to brief, and muted.
 
-    Only the session's main channel -- `claude-code:<id>`, one colon. Several
-    sessions run at once and hearing all of them is noise, so each is silent
-    until chosen; and the plugin ships the MCP server, so each can brief.
+    Both agents that ship an integration -- `claude-code:<id>` and
+    `opencode:<id>`, exactly one colon -- start silent until chosen, and can
+    brief because each ships the MCP server. Several sessions run at once and
+    hearing all of them is noise, so each is silent until picked.
     """
-    if source_id.startswith("claude-code:") and source_id.count(":") == 1:
+    if source_id.count(":") == 1 and source_id.split(":", 1)[0] in ("claude-code", "opencode"):
         return {"briefs": True, "muted": True}
     return {}
 
 
 def build_channels() -> ChannelTable:
-    """The channel table, with Claude Code sessions starting brief and muted.
+    """The channel table, with agent sessions starting brief and muted.
 
     A session is silent until it is chosen -- unmuted in the window's channel
     list or with `speakctl unmute --source` -- and then speaks the briefings
@@ -111,7 +112,7 @@ def build_channels() -> ChannelTable:
     as before. Held for the daemon's lifetime: after a restart every session
     starts this way again.
     """
-    return ChannelTable(defaults=_claude_code_defaults)
+    return ChannelTable(defaults=_agent_defaults)
 
 
 def build_player(*, sample_rate: int, fake: bool = False) -> Player:

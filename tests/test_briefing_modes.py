@@ -193,3 +193,15 @@ def test_set_mode_on_a_channel_that_does_not_exist_opens_none() -> None:
         assert [c["source_id"] for c in channels] == []
     finally:
         d.stop()
+
+
+def test_opencode_sessions_start_brief_and_muted() -> None:
+    from speakd.__main__ import build_channels
+    from speakd.channels import effective_mode
+
+    table = build_channels()
+    main = table.open("opencode:ses_abc123")
+    assert (main.briefs, effective_mode(main), main.muted) == (True, "brief", True)
+    assert table.open("opencode:ses_abc123:extra").briefs is False
+    other = table.open("notify:whatsapp")
+    assert (other.briefs, effective_mode(other), other.muted) == (False, "full", False)
