@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from speakd.clients.claude_code import registry
+from speakd.clients import registry
 from speakd.clients.claude_code.follow import Follower
 
 
@@ -37,7 +37,7 @@ def follower(tmp_path, monkeypatch, spy) -> tuple[Follower, Path]:  # type: igno
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     transcript = tmp_path / "t.jsonl"
     transcript.write_bytes(b"")
-    registry.register("s1", transcript, "/home/me/My Project")
+    registry.register("s1", transcript, "/home/me/My Project", client="claude-code")
     return Follower(send=spy), transcript
 
 
@@ -82,7 +82,7 @@ def test_a_new_session_starts_at_end_of_file(tmp_path, monkeypatch) -> None:  # 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     transcript = tmp_path / "t.jsonl"
     transcript.write_bytes(assistant("old", "Ancient history."))
-    registry.register("s1", transcript, "/p")
+    registry.register("s1", transcript, "/p", client="claude-code")
     spy = Spy()
     f = Follower(send=spy)
     f.tick()
@@ -142,3 +142,15 @@ def test_a_vanished_transcript_does_not_stop_the_loop(tmp_path, monkeypatch) -> 
     f.tick()
     transcript.unlink()
     f.tick()  # must not raise
+
+
+def test_registrations_from_other_clients_are_ignored(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    spy = Spy()
+    f, transcript = follower(tmp_path, monkeypatch, spy)
+    f.tick()  # registers at end of file; nothing to say yet
+    with transcript.open("ab") as handle:
+        handle.write(assistant("u1", "Claude only."))
+    registry.register("s2", Path(""), "/home/me/Other", client="opencode")
+    f.tick()
+    assert spy.spoken() == ["Claude only."]
+    assert {source for _v, source, _p in spy.sent} == {"claude-code:s1"}

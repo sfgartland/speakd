@@ -17,3 +17,6 @@ build/
 
 # Regenerable audio artefacts from the spoken-numbers measurement.
 .superpowers/spoken-numbers-wavs/
+
+# Subagent-driven development scratch (task briefs, reports, ledger).
+.superpowers/sdd/

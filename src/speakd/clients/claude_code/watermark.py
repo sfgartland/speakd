@@ -11,18 +11,15 @@ write here.
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
-import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from speakd.clients.registry import _slug
 from speakd.paths import client_state_dir
-
-_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 @dataclass(frozen=True)
@@ -42,18 +39,6 @@ def state_dir() -> Path:
     which environment variable overrides it for tests.
     """
     return client_state_dir("claude-code")
-
-
-def _slug(session_id: str) -> str:
-    """A filename that cannot leave the state directory.
-
-    Session ids come from a hook payload. Sanitising is not paranoia about
-    Claude Code; it is that a path-shaped id would otherwise write state
-    wherever it pointed.
-    """
-    safe = _SAFE.sub("_", session_id)[:80]
-    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
-    return f"{safe}-{digest}"
 
 
 def _path_for(session_id: str, suffix: str) -> Path:

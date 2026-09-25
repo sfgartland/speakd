@@ -1587,7 +1587,7 @@ class Daemon:
         source of truth for one fact, and the two would disagree the first
         time a path updated one and not the other -- `_drain_queued` puts
         filtered jobs back, `_empty_queue` takes everything, `stop()` deposits
-        a sentinel. It is the argument `clients/claude_code/registry` makes
+        a sentinel. It is the argument `clients/registry` makes
         for writing the file the hook already writes rather than adding a
         registration verb, and it holds harder here, where the two would be
         touched by four paths instead of one. There is no drift to fix

@@ -10,6 +10,7 @@ everything since the settings core is local. Push it, then check CI.
 | Daemon | Running as the `speakd` user service | `systemctl --user restart speakd`; `speakctl status` |
 | Desktop window | Follow-along text, seek, speed with ramps, replay, preparing highlight, ranked channel list (stars, hide fold), brief/full toggle | `cd clients/gui/app/src-tauri && cargo run` |
 | Claude Code | Installed as a plugin (`speakd@speakd`, user scope): hooks (prompt, Notification, Stop) plus the `speakd-mcp` server | New sessions start **brief and muted**; unmute one in the window. `SPEAKD_HOME` is exported in `~/.zshenv` |
+| OpenCode | plugin in ~/.config/opencode/plugins/ + mcp entry in opencode.json, via clients/opencode/install.sh; sessions start brief and muted like Claude Code | speakctl mode full --source opencode:<id> |
 | Briefings | Agents call `brief` over MCP; sessions switch between brief and full per channel | `speakctl mode full --source claude-code:<id>`; the guide is `~/.config/speakd/briefing.md` |
 | Zotero reader | Built, reviewed, verified live in a test Zotero; **not installed in your Zotero yet** | See "Install the Zotero plugin" below |
 | HTTP transport | `127.0.0.1:8642`, token-protected, for the Zotero plugin | `speakctl http-token` prints the token |
