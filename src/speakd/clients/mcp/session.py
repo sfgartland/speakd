@@ -1,11 +1,12 @@
 """Which channel an MCP server briefs on.
 
 An MCP server is started by the agent, with nothing on its command line to
-say which session it serves. For Claude Code the answer is in the process
-tree: the prompt hook and this server are both children of the same `claude`
-process, and the hook records that process's pid in the session registry.
-Anything else -- Codex, OpenCode -- gets a channel named for the agent and the
-nearest process that is the agent itself, labelled with its directory.
+say which session it serves. The answer is in the process tree: the prompt
+hook and this server are both children of the same agent process, and the
+registrations are shared between the agents -- the OpenCode plugin records
+OpenCode's pid just as the hook records Claude Code's. Anything else gets a
+channel named for the agent and the nearest process that is the agent
+itself, labelled with its directory.
 
 Stdlib and the registry only: the hook imports `ancestors` from here, and the
 hook is on the user's critical path.
@@ -74,20 +75,27 @@ def agent_pid(chain: list[tuple[int, str]]) -> int | None:
 def resolve(
     client_name: str, *, proc: Path = Path("/proc"), cwd: str | None = None
 ) -> tuple[str, str | None]:
-    """(source_id, label) for this server. A label of None means the channel has one."""
+    """(source_id, label) for this server. A label of None means the channel has one.
+
+    The session is whichever registered process appears first in this
+    process's ancestry -- any level, not just the nearest non-launcher, so a
+    launcher between the agent and what it starts cannot hide the match. The
+    newest registration for each pid wins: `/clear` and `/new` start a fresh
+    session in the same agent process, and the old one stays live in the
+    registry until it idles out.
+    """
     chain = ancestors(proc)
-    # The newest registration for each Claude process: `/clear` and `/resume`
-    # start a new session in the same process, and the old one stays live in
-    # the registry until it idles out.
-    sessions: dict[int, str] = {}
+    sessions: dict[int, tuple[str, str]] = {}
     for reg in sorted(registry.live(), key=lambda r: r.touched):
         if reg.agent_pid:
-            sessions[reg.agent_pid] = reg.session_id
+            sessions[reg.agent_pid] = (reg.client, reg.session_id)
+    for pid, _comm in chain:
+        if pid in sessions:
+            client, session_id = sessions[pid]
+            return f"{client}:{session_id}", None
+    # Not a registered agent session: a channel of its own, named for the
+    # agent's pid so two agents in one directory stay apart.
     agent = agent_pid(chain)
-    if agent is not None and agent in sessions:
-        return f"claude-code:{sessions[agent]}", None
-    # Not a registered Claude Code session: a channel of its own, named for
-    # the agent's pid so two agents in one directory stay apart.
     if agent is None:
         agent = chain[1][0] if len(chain) > 1 else os.getppid()
     directory = Path(cwd or os.getcwd()).name or "/"

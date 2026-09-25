@@ -338,3 +338,28 @@ def test_a_terminal_shared_with_a_claude_session_does_not_capture_another_agent(
         tmp_path / "proc", [(500, "python3", 450), (450, "codex", 100), (100, "zsh", 1)]
     )
     assert session.resolve("codex", proc=codex, cwd="/w/k") == ("agent:codex:450", "codex · k")
+
+
+def test_an_opencode_session_is_found_by_ancestry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.clients import registry
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    proc = fake_proc(
+        tmp_path / "proc", [(300, "python3", 290), (290, "bash", 700), (700, "opencode", 1)]
+    )
+    registry.register("ses_abc123", Path(""), "/work", client="opencode", agent_pid=700)
+    assert session.resolve("opencode", proc=proc) == ("opencode:ses_abc123", None)
+
+
+def test_a_registered_ancestor_is_found_through_any_launcher_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from speakd.clients import registry
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    registry.register("abc", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
+    proc = fake_proc(
+        tmp_path / "proc",
+        [(300, "python3", 290), (290, "bash", 250), (250, "env", 200), (200, "node", 1)],
+    )
+    assert session.resolve("claude-code", proc=proc) == ("claude-code:abc", None)
