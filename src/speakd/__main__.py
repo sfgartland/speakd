@@ -326,14 +326,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    from speakd import state
+    from speakd import languages, state
     from speakd.synth.kokoro_engine import KokoroEngine
     from speakd.synth.lazy import LazyEngine
 
     # The class attributes, not an instance: `build_player` below needs the
     # rate to open its sink, and asking an instance for it would mean loading
-    # the model this whole path exists to be able to not load.
-    engine = LazyEngine(KokoroEngine, name=KokoroEngine.name, sample_rate=KokoroEngine.sample_rate)
+    # the model this whole path exists to be able to not load. Likewise
+    # `languages.supported_languages` (Kokoro's own list, minus any language
+    # whose G2P extra is not installed) answers without needing the model
+    # resident, so `status` and a render's language check are correct even
+    # before the model is ever loaded.
+    engine = LazyEngine(
+        KokoroEngine,
+        name=KokoroEngine.name,
+        sample_rate=KokoroEngine.sample_rate,
+        supported=languages.supported_languages,
+    )
 
     def load() -> None:
         try:
