@@ -240,7 +240,12 @@ def test_unsupported_default_mode_falls_back_and_announces_it(settings: Settings
         d.stop()
     assert engine.synthesized_langs == ["en"]
     language_events = [e for e in events if e.kind == "language"]
-    assert language_events[-1].data == {"requested": "de", "used": "en", "reason": "unsupported"}
+    assert language_events[-1].data == {
+        "requested": "de",
+        "used": "en",
+        "reason": "unsupported",
+        "engine": "kokoro",
+    }
 
 
 def test_unsupported_decline_mode_speaks_nothing(settings: Settings) -> None:
@@ -337,7 +342,12 @@ def test_unsupported_language_raised_mid_synthesis_falls_back(settings: Settings
         d.stop()
     assert engine.synthesized_langs == ["fr", "en"]
     language_events = [e for e in events if e.kind == "language"]
-    assert language_events[-1].data == {"requested": "fr", "used": "en", "reason": "unsupported"}
+    assert language_events[-1].data == {
+        "requested": "fr",
+        "used": "en",
+        "reason": "unsupported",
+        "engine": "kokoro",
+    }
     finished = [e for e in events if e.kind == "finished"]
     assert finished[-1].data == {"cancelled": False, "aborted": False}
 

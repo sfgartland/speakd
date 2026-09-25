@@ -324,7 +324,12 @@ def test_status_reports_the_engine() -> None:
     daemon.start()
     try:
         status = daemon.handle(Request(verb=Verb.STATUS, source_id=""))
-        assert status.data["engine"] == {"loaded": False, "loading": False}
+        assert status.data["engine"] == {
+            "loaded": False,
+            "loading": False,
+            "name": "lazy",
+            "piper": {"available": False, "voices": []},
+        }
     finally:
         daemon.stop()
 
@@ -334,7 +339,12 @@ def test_an_engine_that_cannot_be_unloaded_reports_as_loaded() -> None:
     daemon, _engine, _ = build()
     try:
         status = daemon.handle(Request(verb=Verb.STATUS, source_id=""))
-        assert status.data["engine"] == {"loaded": True, "loading": False}
+        assert status.data["engine"] == {
+            "loaded": True,
+            "loading": False,
+            "name": "fake",
+            "piper": {"available": False, "voices": []},
+        }
     finally:
         daemon.stop()
 

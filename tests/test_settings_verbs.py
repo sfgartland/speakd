@@ -80,9 +80,13 @@ def test_settings_verb_answers_schema_and_values(daemon: Daemon) -> None:
     assert keys == {
         "speech.default_language",
         "speech.detect_language",
-        "speech.voices",
-        "speech.unsupported_language",
+        "speech.engine",
+        "speech.piper_threads",
+        "speech.piper_voice_dir",
+        "speech.piper_voices",
         "speech.sentence_gap_ms",
+        "speech.unsupported_language",
+        "speech.voices",
     }
 
 

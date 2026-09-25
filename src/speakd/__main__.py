@@ -10,9 +10,10 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import FrameType
+from typing import cast
 
 from speakd.channels import ChannelTable
-from speakd.daemon import Daemon, ProfileView
+from speakd.daemon import Daemon, ProfileView, build_settings
 from speakd.events import EventBus
 from speakd.model import Piece
 from speakd.paths import default_profiles_path, default_socket_path
@@ -22,6 +23,7 @@ from speakd.plugins.host import PluginHost
 from speakd.plugins.registry import ServiceRegistry
 from speakd.profiles import Profile, load_profiles, resolve_chain
 from speakd.supervise import Supervisor
+from speakd.synth.piper_engine import PiperEngine, piper_available
 from speakd.transforms.chain import apply_chain
 from speakd.transport import SocketServer
 from speakd.transport_http import HttpServer
@@ -377,6 +379,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         # which that is true.
         threading.Thread(target=load, name="speakd-engine-load", daemon=True).start()
 
+    # The settings, built here (rather than only inside the daemon) because
+    # the Piper engine is constructed from their values before the daemon
+    # exists. The daemon reuses this same registry, so a later
+    # `set_setting` and this construction read the same store.
+    settings = build_settings()
+    piper: PiperEngine | None = None
+    if piper_available():
+        piper = PiperEngine(
+            Path(str(settings.get("speech.piper_voice_dir"))),
+            threads=cast(int, settings.get("speech.piper_threads")),
+        )
+
     daemon = Daemon(
         engine,
         # The engine's own rate, not a literal: a sink opened at the wrong
@@ -386,6 +400,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         build_profiles(),
         bus=EventBus(),
         channels=build_channels(),
+        settings=settings,
+        piper=piper,
     )
     return serve(daemon, args.socket)
 

@@ -363,7 +363,12 @@ def test_status_prints_the_two_off_switches(running, capsys) -> None:  # type: i
     assert main(["status", "--socket", str(address)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["muted"] is False
-    assert payload["engine"] == {"loaded": True, "loading": False}
+    assert payload["engine"] == {
+        "loaded": True,
+        "loading": False,
+        "name": "fake",
+        "piper": {"available": False, "voices": []},
+    }
 
 
 def test_disable_on_a_daemon_whose_engine_cannot_be_unloaded_names_it(running, capsys) -> None:  # type: ignore[no-untyped-def]
