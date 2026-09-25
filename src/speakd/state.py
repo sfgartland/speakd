@@ -27,6 +27,10 @@ class DaemonState:
     # applied (`speakd.tempo`), not here: this module only has to refuse what
     # is not a speed at all.
     speed: float = 1.0
+    # The notifications reader's switch, defaulting on: a daemon that cannot
+    # read its state file must come back speaking, not silently mute the
+    # channel it was reading aloud.
+    notify_enabled: bool = True
 
 
 def state_path() -> Path:
@@ -55,6 +59,7 @@ def load() -> DaemonState:
         muted=bool(body.get("muted", False)),
         disabled=bool(body.get("disabled", False)),
         speed=speed,
+        notify_enabled=bool(body.get("notify_enabled", True)),
     )
 
 
