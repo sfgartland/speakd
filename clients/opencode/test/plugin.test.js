@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPlugin } from "../plugin/speakd.js";
+import SpeakdPlugin, { buildPlugin } from "../plugin/speakd.js";
 
 function build() {
   const sent = [];
@@ -18,6 +18,13 @@ function build() {
 }
 
 describe("the plugin entry", () => {
+  it("the default export is the function opencode's loader calls", async () => {
+    expect(typeof SpeakdPlugin).toBe("function");
+    const hooks = await SpeakdPlugin({ client: { app: { log: async () => {} } } });
+    expect(typeof hooks["chat.message"]).toBe("function");
+    expect(typeof hooks.event).toBe("function");
+  });
+
   it("a chat.message hushes, registers and sets the main agent", async () => {
     const { plugin, sent, registrations } = build();
     await plugin["chat.message"]({ sessionID: "ses_1", agent: "build" });

@@ -420,3 +420,7 @@ export function buildPlugin({ client, send, registerFn = register } = {}) {
 }
 
 export const SpeakdPlugin = async ({ client } = {}) => buildPlugin({ client });
+
+// The local-file loader calls the default export; without this the plugin
+// loads as "Plugin export is not a function" and nothing is spoken.
+export default SpeakdPlugin;
