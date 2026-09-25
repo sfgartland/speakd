@@ -67,6 +67,26 @@ def test_unloading_when_never_loaded_is_not_an_error() -> None:
     build([]).unload()
 
 
+def test_supported_languages_comes_from_the_constructor_regardless_of_load_state() -> None:
+    # Review Focus #1's known issue: what the engine speaks does not depend
+    # on whether it happens to be loaded right now, so `status.languages.
+    # supported` (and a render's own check) must not flicker to [] while
+    # unloaded or loading -- it is given at construction, like `sample_rate`.
+    engine = LazyEngine(
+        lambda: FakeEngine(), name="lazy", sample_rate=24000, supported=lambda: ["en", "fr"]
+    )
+    assert not engine.loaded
+    assert engine.supported_languages() == ["en", "fr"]
+    engine.load()
+    assert engine.supported_languages() == ["en", "fr"]
+    engine.unload()
+    assert engine.supported_languages() == ["en", "fr"]
+
+
+def test_supported_languages_defaults_to_empty_when_not_given() -> None:
+    assert build([]).supported_languages() == []
+
+
 def test_an_unload_during_a_load_is_not_undone_when_the_factory_returns() -> None:
     # The two decisions are ordered, and the user's is the later one: a
     # factory that has been working for thirty seconds must not outvote a

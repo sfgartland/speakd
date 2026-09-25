@@ -319,11 +319,21 @@ always refused, whatever the client asks for.
 
 Each utterance is spoken in its own language, with that language's voice.
 Nine codes: `en en-gb es fr hi it pt-br ja zh` (`en` is American English; `pt`
-normalises to `pt-br`). Which one wins, first match:
+and `pt-pt` both normalise to `pt-br`, Kokoro's only Portuguese). A handful of
+free-form names — as Zotero's own "Language" field spells them by hand —
+normalise too, case-insensitively: `English`, `French`/`Français`,
+`German`/`Deutsch`, `Spanish`/`Español`, `Italian`/`Italiano`,
+`Portuguese`/`Português`, `Hindi`, `Japanese`, `Chinese`. Something that does
+not even look like a language tag (free text, a typo) is treated as though
+nothing was given, so it never silently beats detection the way a real code
+is entitled to; something that is tag-shaped but names no language this
+project knows still flows to `speech.unsupported_language` below. Which one
+wins, first match:
 
 1. `enqueue`'s own `lang` in the payload.
 2. The channel's pinned language — `speakctl lang <code>`, or `auto` to clear
-   it.
+   it. A pin that doesn't look like a language is refused, and the old pin
+   stays.
 3. Detection, when `speech.detect_language` is on (the default) and the
    detector is available and there are at least 20 letters to look at.
 4. `speech.default_language`, default `en`.
@@ -371,7 +381,13 @@ Before each sentence the worker checks whether anything is speaking live and
 waits if so, so live speech is never held up by more than the one render
 sentence already in flight — and the two never reach the engine at the same
 moment, since both sides of `render.py`'s worker take the same lock around a
-`synthesize()` call that the live pipeline does.
+`synthesize()` call that the live pipeline does. Live speech that is merely
+*paused* does not hold up a render at all — a render yields to speech that is
+actually playing or being synthesised, never to speech someone left paused,
+which could otherwise stall a render indefinitely. A render started (or
+resumed) while the model is unloaded or still loading waits for it rather
+than losing every sentence to silence; it is reported `paused` meanwhile,
+same as when yielding to live speech.
 
 ```bash
 uv run speakctl render paper.txt --out paper.mp3
@@ -386,15 +402,28 @@ progress until the job is done or fails; `--no-wait` just prints the job id
 and returns.
 
 Progress survives a crash or a restart: a work directory under
-`$XDG_STATE_HOME/speakd/renders/<job>/` holds a manifest (which part and
-sentence come next) and each part's audio as it is made, so a daemon that
-comes back mid-render picks up exactly where it left off rather than
-resynthesising anything already on disk. A part's audio is stored as headerless
+`$XDG_STATE_HOME/speakd/renders/<job>/` holds `parts.json` (each part's title
+and text, written once at submit and never rewritten), a manifest (which part
+and sentence come next, and how many PCM bytes are committed for it — nothing
+sized by the text itself, so a manifest save never grows with a render's
+length), and each part's audio as it is made. A daemon that comes back
+mid-render picks up exactly where it left off: the part file is first
+truncated back to the byte length its last committed sentence recorded, so a
+crash landing between an append and the manifest save that names it can never
+leave a sentence duplicated on resume. A part's audio is stored as headerless
 PCM rather than a WAV — a WAV's 32-bit RIFF size field caps a part at 4 GiB
 (about 24.8 hours at Kokoro's rate), which a real audiobook is not obliged to
 fit inside, and encoding streams that PCM to ffmpeg rather than concatenating
 it into one file first, so nothing about a render's length is ever held in
-memory or written twice.
+memory or written twice. A part whose text is only whitespace (pdftotext's
+trailing chunk after a final form feed, for instance) is dropped rather than
+carried through as one that would simply synthesise nothing; a job left with
+no text at all is refused up front. Whatever goes wrong mid-render — an engine
+error, a full disk, ffmpeg missing or failing — fails that job with the error
+recorded and the worker moves on to the next one, rather than the whole queue
+dying with it. If the engine's sample rate has changed since a job was
+started (a different model loaded between runs), resuming it fails clearly
+instead of mixing rates in one output.
 
 `render.mp3_bitrate` (32k/48k/64k/96k, default 64k — mono speech needs
 little) is the bitrate for every format, `render.chapter_gap_ms` (default
@@ -404,13 +433,19 @@ little) is the bitrate for every format, `render.chapter_gap_ms` (default
 `PATH` at all — and the `render` event carries each job's state, progress
 and, once done, its output path, published on every state change and at
 most once every two seconds while one is running. `render_cancel` drops a
-queued job outright, or flags a running one to unwind at its next check,
-without disturbing whatever else is in the queue.
+queued job outright, or flags a running or encoding one to unwind at its next
+check (killing ffmpeg if it is mid-encode), without disturbing whatever else
+is in the queue; a failed job is not re-run automatically, but stays visible
+in `status` and `render_cancel` on it reclaims its work directory.
 
-Over HTTP — the transport Zotero's export flow will drive this through —
-`out` must resolve to somewhere inside your home directory; a symlink that
-would land it elsewhere is refused the same as a literal path outside it
-would be.
+Over HTTP — the transport Zotero's export flow will drive this through — `out`
+must resolve to somewhere inside your home directory (not the home directory
+itself), must not already exist as a directory, and must end in the
+extension its `format` requires (`.mp3`/`.opus`/`.m4b`) — including when it
+would overwrite an existing file of some other extension, though overwriting
+a previous render's own output is fine. A symlink that would land it outside
+home is refused the same as a literal path outside it would be, and the job
+is given the resolved path, not the caller's own string.
 
 ## Measured
 

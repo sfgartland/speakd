@@ -101,6 +101,28 @@ def test_detection_is_used_when_neither_payload_nor_channel_says(
     assert engine.synthesized_langs == ["it"]
 
 
+def test_unparseable_payload_lang_does_not_beat_detection(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A payload lang that does not even look like a language tag (free text,
+    # a typo) must be treated as though none was given, so detection still
+    # gets to run and win -- see languages.normalise (Review Focus #12).
+    engine = FakeEngine()
+    d, _player = build(settings, engine)
+    monkeypatch.setattr(d._detector, "detect", lambda text: "it")
+    d.start()
+    try:
+        enqueue(
+            d,
+            "s",
+            "Questo testo e abbastanza lungo per essere rilevato.",
+            lang="please speak italian",
+        )
+    finally:
+        d.stop()
+    assert engine.synthesized_langs == ["it"]
+
+
 def test_default_is_used_when_nothing_else_says(settings: Settings) -> None:
     engine = FakeEngine()
     d, _player = build(settings, engine)

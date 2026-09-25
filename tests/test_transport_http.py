@@ -492,6 +492,86 @@ def test_render_out_through_a_symlink_escaping_home_is_refused(  # type: ignore[
     assert "home" in answer["error"].lower()
 
 
+def test_render_out_the_home_directory_itself_is_refused(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(tmp_path)))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is False
+    assert "home" in answer["error"].lower()
+
+
+def test_render_out_an_existing_directory_is_refused(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    a_dir = tmp_path / "out.mp3"
+    a_dir.mkdir()
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(a_dir)))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is False
+    assert "directory" in answer["error"].lower()
+
+
+def test_render_out_extension_must_match_the_format(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    http, _ = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(tmp_path / "out.wav")))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is False
+    assert ".mp3" in answer["error"]
+
+
+def test_render_out_overwriting_a_file_with_the_wrong_extension_is_refused(  # type: ignore[no-untyped-def]
+    server, tmp_path, monkeypatch
+) -> None:
+    http, _ = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    existing = tmp_path / "out.mp3.bak"
+    existing.write_bytes(b"not an mp3")
+    body = _render_body(str(existing))
+    status, _, response_body = call(http, "POST", "/v1/render", body)
+    answer = json.loads(response_body)
+    assert status == 200
+    assert answer["ok"] is False
+
+
+def test_render_out_overwriting_a_previous_render_of_the_same_extension_is_accepted(  # type: ignore[no-untyped-def]
+    server, tmp_path, monkeypatch
+) -> None:
+    http, daemon = server
+    monkeypatch.setenv("HOME", str(tmp_path))
+    existing = tmp_path / "out.mp3"
+    existing.write_bytes(b"a previous render")
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(existing)))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is True
+    daemon.render_queue.cancel(answer["data"]["job"])
+
+
+def test_render_out_stores_the_resolved_path_on_the_job(  # type: ignore[no-untyped-def]
+    server, tmp_path, monkeypatch
+) -> None:
+    http, daemon = server
+    real_home = tmp_path / "home"
+    real_home.mkdir()
+    monkeypatch.setenv("HOME", str(real_home))
+    link = real_home / "link"
+    link.symlink_to(real_home)  # resolves back to home itself, but is not the literal string given
+    out = link / "out.mp3"
+    status, _, body = call(http, "POST", "/v1/render", _render_body(str(out)))
+    answer = json.loads(body)
+    assert status == 200
+    assert answer["ok"] is True
+    job = daemon.render_queue.job(answer["data"]["job"])
+    assert job is not None
+    assert job.out == (real_home / "out.mp3").resolve()
+    daemon.render_queue.cancel(job.id)
+
+
 def test_render_cancel_is_served_over_http(server, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     http, daemon = server
     monkeypatch.setenv("HOME", str(tmp_path))

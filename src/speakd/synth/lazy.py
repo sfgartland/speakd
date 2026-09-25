@@ -36,10 +36,18 @@ class LazyEngine:
         *,
         name: str = "lazy",
         sample_rate: int = 24000,
+        supported: Callable[[], list[str]] = list,
     ) -> None:
         self._factory = factory
         self.name = name
         self.sample_rate = sample_rate
+        # Given at construction, like `sample_rate`: what the underlying
+        # engine speaks does not depend on whether it happens to be loaded
+        # right now, so this must answer the same regardless. Without it, a
+        # render or a `status` read while the model is unloaded or loading
+        # sees every language as unsupported and refuses work it could
+        # perfectly well queue and wait for.
+        self._supported = supported
         self._engine: Synthesizer | None = None
         self._loading = False
         # Counted rather than flagged, so a load can tell "nothing happened
@@ -100,17 +108,13 @@ class LazyEngine:
         return engine.synthesize(text, voice, speed, lang)
 
     def supported_languages(self) -> list[str]:
-        """What the underlying engine speaks, or none while unloaded.
+        """What the underlying engine speaks -- regardless of load state.
 
-        Not "every language we might ever load" -- while unloaded there is no
-        pipeline for any of them, and the daemon's `_refusal` already drops
-        an utterance for "disabled" before this could matter operationally.
-        Delegated rather than hard-coded so a swapped-in engine's own list is
-        always what is reported.
+        A render or a `status` read must see the true list whether or not a
+        model happens to be resident: a render worker waits for the model to
+        load rather than treating the language as unsupported, and `status`
+        must not flicker "nothing supported" while the model is unloaded or
+        loading. Given at construction (`supported`) rather than read off the
+        live engine, for exactly that reason.
         """
-        with self._lock:
-            engine = self._engine
-        if engine is None:
-            return []
-        getter = getattr(engine, "supported_languages", None)
-        return list(getter()) if callable(getter) else []
+        return list(self._supported())

@@ -334,14 +334,15 @@ class Daemon:
         self._render_last_published: dict[str, float] = {}
         # Owned here, not built by `__main__`: a render shares this daemon's
         # engine and `synth_lock` (so a render sentence and a live one never
-        # reach the engine together) and yields to `self.speaking` (so a
-        # render never delays live speech by more than one sentence). See
-        # `render.RenderQueue` and "Global Constraints (A)" in the
-        # audio-export plan.
+        # reach the engine together) and yields to `self.render_busy` (so a
+        # render never delays live speech by more than one sentence, but
+        # also never waits behind speech that is merely paused -- see
+        # `render_busy`). See `render.RenderQueue` and "Global Constraints
+        # (A)" in the audio-export plan.
         self.render_queue = RenderQueue(
             self.engine,
             self.synth_lock,
-            busy=lambda: self.speaking,
+            busy=lambda: self.render_busy,
             on_update=self._on_render_update,
         )
         # Loaded rather than defaulted: after a reboot, surprising silence is
@@ -904,15 +905,32 @@ class Daemon:
     def speaking(self) -> bool:
         """Whether a live utterance is in flight or queued.
 
-        What the render queue polls before each of its sentences: while this
-        is true the renderer waits rather than competing for the engine, and
-        a live enqueue therefore delays a render, never the other way round.
         `_pending` is exactly the span meant -- from the moment `handle`
         accepts an utterance to the moment the last one accepted has been
-        spoken -- which is the span `wait_idle` waits out.
+        spoken -- which is the span `wait_idle` waits out. Other callers of
+        this property mean exactly that span; the render queue does not --
+        see `render_busy`.
         """
         with self._idle:
             return self._pending > 0
+
+    @property
+    def render_busy(self) -> bool:
+        """Whether the render queue should yield to live speech right now.
+
+        What the render queue polls before each of its sentences. Unlike
+        `speaking`, a paused player does not count: paused speech makes no
+        progress on its own, and blocking a render behind it could stall a
+        render indefinitely -- for as long as someone left playback paused.
+        A render yields only while live speech is actually playing or being
+        synthesised, never merely queued-but-paused. A player that cannot
+        pause at all (not `Pausable`) is never paused, so this reduces to
+        `speaking` for it.
+        """
+        player = self.player
+        if isinstance(player, Pausable) and player.paused:
+            return False
+        return self.speaking
 
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
@@ -954,8 +972,9 @@ class Daemon:
         speech makes, so a render sounds like the same text read aloud."""
         return self._voice_for(lang, profile.voice)
 
-    def _render_language(self, requested: str, texts: list[str]) -> str | None:
-        """The language a whole render is spoken in, or None to refuse it.
+    def _render_language(self, requested: str, texts: list[str]) -> tuple[str | None, str | None]:
+        """The language a whole render is spoken in, or `(None, declined_as)`
+        to refuse it, naming the language the refusal is about.
 
         The job's own `lang`, else detection over the start of its text, else
         the default -- the live order minus the channel, which a render has
@@ -964,6 +983,14 @@ class Daemon:
         language the engine cannot speak follows `speech.unsupported_language`
         here rather than mid-render, so `decline` refuses the job before any
         work is queued instead of failing it hours in.
+
+        The fallback default is checked too: `speech.unsupported_language`
+        not being `decline` ordinarily means "speak it in the default
+        instead", but if the *default* is itself not something this engine
+        can speak (a misconfigured setting, or a language whose G2P extra is
+        not installed), falling back to it would only fail mid-render
+        instead of now. That is refused up front as well, naming the
+        default rather than the language that was actually requested.
         """
         default = str(self.settings.get("speech.default_language"))
         code = languages.normalise(requested) if requested else None
@@ -973,11 +1000,14 @@ class Daemon:
             code = self._detector.detect(" ".join(texts)[:4000])
         if code is None:
             code = default
-        if code in self._supported_languages():
-            return code
+        supported = self._supported_languages()
+        if code in supported:
+            return code, None
         if self.settings.get("speech.unsupported_language") == "decline":
-            return None
-        return default
+            return None, code
+        if default not in supported:
+            return None, default
+        return default, None
 
     _RENDER_FORMATS = ("mp3", "opus", "m4b")
 
@@ -998,6 +1028,15 @@ class Daemon:
             return Response(
                 ok=False, error="render needs a non-empty 'parts' list of {title, text}"
             )
+        # A part whose text is nothing but whitespace contributes no audio
+        # and no chapter, so it is dropped before a job is ever built --
+        # rather than carried through as a part that will simply synthesise
+        # nothing. `speakctl render`'s pdftotext-split parts (design's CLI,
+        # `_render_parts`) end with exactly this: a trailing form feed leaves
+        # a last chunk of "".
+        raw_parts = [p for p in raw_parts if str(p["text"]).strip()]
+        if not raw_parts:
+            return Response(ok=False, error="render has no text")
         out = payload.get("out")
         if not isinstance(out, str) or not out:
             return Response(ok=False, error="render needs an 'out' path")
@@ -1016,9 +1055,9 @@ class Daemon:
         if not isinstance(profile_name, str):
             return Response(ok=False, error="render 'profile' must be a string")
         profile = self.profile_for(profile_name)
-        resolved = self._render_language(lang, [str(p["text"]) for p in raw_parts])
+        resolved, declined_as = self._render_language(lang, [str(p["text"]) for p in raw_parts])
         if resolved is None:
-            return Response(ok=False, error=f"no voice for {languages.normalise(lang) or lang}")
+            return Response(ok=False, error=f"no voice for {declined_as}")
         lang = resolved
         job = RenderJob(
             id=new_job_id(),
@@ -1395,6 +1434,10 @@ class Daemon:
             normalised = None
         else:
             normalised = languages.normalise(lang)
+            if normalised is None:
+                # Unlike an utterance's `lang`, a pin is a deliberate choice:
+                # reading a typo as "auto" would clear it without a word.
+                return Response(ok=False, error=f"set_language: unrecognised language {lang!r}")
         self.channels.set_lang(source_id, normalised)
         self._publish("language", source_id, {"lang": normalised})
         return Response(ok=True, data={"lang": normalised})

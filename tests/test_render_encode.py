@@ -153,6 +153,33 @@ def test_m4b_render_has_chapters_and_tags(tmp_path: Path) -> None:
     assert tags["date"] == "2026"
 
 
+@needs_ffmpeg
+def test_m4b_chapter_title_with_ffmetadata_special_characters_round_trips(
+    tmp_path: Path,
+) -> None:
+    """Review Focus #11: a chapter title is arbitrary text -- whatever a
+    book's own table of contents says -- so `=`, `;`, `#`, `\\` and a
+    newline can show up in one for real. Unescaped, any of these corrupts
+    ffmpeg's own ffmetadata format; escaped per its rules, the same title
+    round-trips through a real encode and a real ffprobe."""
+    engine = FakeEngine()
+    queue = RenderQueue(engine, work_root=tmp_path / "renders")
+    title = "Part one\\Two: A=B; #3\nSecond line"
+    job = _job(
+        tmp_path,
+        out=tmp_path / "out.m4b",
+        format="m4b",
+        parts=[Part(title=title, text="One. Two.")],
+    )
+    queue.submit(job)
+
+    assert _run_to_terminal(queue, job.id) == "done"
+    queue.stop()
+
+    probe = _ffprobe(job.out)
+    assert probe["chapters"][0]["tags"]["title"] == title
+
+
 # --- real ffmpeg: opus smoke test ---------------------------------------
 
 
@@ -304,6 +331,45 @@ def test_encode_streams_parts_without_building_an_intermediate_file(
     assert job.out.read_text() == "fake\n"
     assert not list(work_dir.glob("*.wav"))
     assert not list(work_dir.glob("concat*"))
+
+
+def test_encode_honours_a_cancel_that_lands_between_parts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review Focus #9: cancelling during encode is honoured -- ffmpeg is
+    killed, no output is produced, and `.partial` is removed. `cancelled`
+    is polled once per part, so this proves the cancel reaches ffmpeg
+    within one part's streaming time rather than being ignored until the
+    whole encode finishes."""
+    from speakd.render import _Cancelled, _encode
+
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    _fake_ffmpeg_that_drains_stdin(bin_dir)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    job = _job(
+        tmp_path,
+        out=tmp_path / "out.mp3",
+        parts=[Part(title="A", text="x"), Part(title="B", text="y")],
+        sample_rate=8000,
+    )
+    (work_dir / "part-0.pcm").write_bytes(b"\x00\x00" * 100)
+    (work_dir / "part-1.pcm").write_bytes(b"\x00\x00" * 100)
+
+    calls = {"n": 0}
+
+    def cancelled() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1  # not yet cancelled for part 0, cancelled before part 1
+
+    with pytest.raises(_Cancelled):
+        _encode(job, work_dir, cancelled=cancelled)
+
+    assert not job.out.exists()
+    assert not job.out.with_name(job.out.name + ".partial").exists()
 
 
 @needs_ffmpeg

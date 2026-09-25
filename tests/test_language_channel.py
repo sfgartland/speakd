@@ -91,12 +91,23 @@ def test_set_language_empty_string_also_clears_it(daemon) -> None:  # type: igno
     assert response.data["lang"] is None
 
 
-def test_set_language_with_an_unparseable_code_is_kept_as_the_sentinel(daemon) -> None:  # type: ignore[no-untyped-def]
+def test_set_language_with_a_tag_shaped_unknown_code_is_kept_as_the_sentinel(daemon) -> None:  # type: ignore[no-untyped-def]
     d, _bus = daemon
-    response = d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "klingon"}))
+    response = d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "xx-yy"}))
     assert response.ok
     assert response.data["lang"] == "und"
     assert d.channels.get("s").lang == "und"
+
+
+def test_set_language_refuses_free_text_and_keeps_the_existing_pin(daemon) -> None:  # type: ignore[no-untyped-def]
+    # A pin is a deliberate choice, so a typo is refused rather than read
+    # as "auto": silently clearing the pin would hide the mistake.
+    d, _bus = daemon
+    assert d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "fr"})).ok
+    response = d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "klingon"}))
+    assert not response.ok
+    assert "klingon" in (response.error or "")
+    assert d.channels.get("s").lang == "fr"
 
 
 def test_set_language_needs_a_channel(daemon) -> None:  # type: ignore[no-untyped-def]
