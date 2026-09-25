@@ -338,3 +338,78 @@ export class Signals {
     });
   }
 }
+
+// ---- the plugin ----
+
+export function buildPlugin({ client, send, registerFn = register } = {}) {
+  const log = async (line) => {
+    try {
+      if (client && client.app && client.app.log) {
+        await client.app.log({ body: { service: "speakd", level: "warn", message: String(line) } });
+      }
+    } catch {
+      // A log that cannot be written is not worth an error in the host.
+    }
+  };
+
+  const realSend =
+    send ??
+    (({ verb, source, payload }) =>
+      sendRequest(verb, source, payload, { timeoutMs: SOCKET_TIMEOUT_MS }).then((reason) => {
+        if (reason != null) log(reason);
+        return reason;
+      }));
+
+  const speaker = new Speaker({ send: realSend, log });
+  const signals = new Signals({ send: realSend, register: registerFn, log });
+
+  return {
+    "chat.message": async (input) => {
+      try {
+        speaker.onChatMessage(input.sessionID, input.agent);
+        signals.onChatMessage(input.sessionID);
+      } catch (err) {
+        log(`chat.message failed: ${err}`);
+      }
+    },
+    event: async ({ event }) => {
+      try {
+        switch (event.type) {
+          case "message.updated":
+            speaker.onMessageUpdated(event.properties.info);
+            break;
+          case "message.part.updated": {
+            const part = event.properties.part;
+            if (!part) break;
+            speaker.onPartUpdated(part.sessionID ?? event.properties.sessionID, part);
+            break;
+          }
+          case "message.part.removed": {
+            const part = event.properties.part;
+            if (!part) break;
+            speaker.onPartRemoved(part.sessionID ?? event.properties.sessionID, part);
+            break;
+          }
+          case "session.status":
+            // `session.idle` is deprecated; a status of idle is the same
+            // signal, and it is the spelling that survives into v2.
+            if (event.properties.status && event.properties.status.type === "idle") {
+              speaker.onSessionIdle(event.properties.sessionID);
+            }
+            break;
+          case "permission.asked":
+            signals.onPermissionAsked(event);
+            break;
+          case "session.created":
+          case "session.updated":
+            signals.onSession(event.properties.info);
+            break;
+        }
+      } catch (err) {
+        log(`event ${event && event.type} failed: ${err}`);
+      }
+    },
+  };
+}
+
+export const SpeakdPlugin = async ({ client } = {}) => buildPlugin({ client });
