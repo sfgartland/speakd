@@ -1,7 +1,7 @@
 # Handoff — resume here
 
 Last updated 2026-09-25. `main` **is pushed** to https://github.com/sfgartland/speakd
-(as of `3bcf3e4`, and again with any later commits from today).
+(as of `e139851`, and again with any later commits from today).
 
 ## What works now
 
@@ -13,6 +13,7 @@ Last updated 2026-09-25. `main` **is pushed** to https://github.com/sfgartland/s
 | OpenCode | Plugin in `~/.config/opencode/plugins/` + MCP entry in `opencode.json`, via `clients/opencode/install.sh`. Sessions start brief and muted like Claude Code. **Verified live end to end** (speech, briefings, mode switching, channel resolution) | `speakctl mode full --source opencode:<id>` |
 | Briefings | Agents call `brief` over MCP; sessions switch between brief and full per channel | `speakctl mode full --source claude-code:<id>`; the guide is `~/.config/speakd/briefing.md` |
 | Zotero reader | Built, reviewed, verified live in a test Zotero; **not installed in your Zotero yet** | See "Install the Zotero plugin" below |
+| Notifications off-switch | `speakctl notify off` stops the reader for good (survives restarts), `on` brings it back, `status` reports it. **Not yet smoke-tested against the live daemon** — takes effect on the daemon's next restart | `speakctl notify off` / `on`; `SPEAKD_NO_NOTIFY` stays the startup hard-off |
 | HTTP transport | `127.0.0.1:8642`, token-protected, for the Zotero plugin | `speakctl http-token` prints the token |
 
 Local machine specifics, kept outside the repo:
@@ -68,8 +69,24 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   only found by testing on the system speakers. Regression test in
   `tests/test_daemon.py`.
 - **`disable notifications` design** is in
-  `docs/superpowers/specs/2026-09-25-disable-notifications-design.md`
-  (approved in conversation; the implementation plan is not written yet).
+  `docs/superpowers/specs/2026-09-25-disable-notifications-design.md` —
+  **built and merged** (see "Built today, continued" below).
+- **CI's mypy gate was red on main** (lingua ships no stubs; the optional-extras
+  overrides in `pyproject.toml` didn't list it). Fixed on main with the other
+  extras: `6dac088`.
+
+## Built today, continued (merged as `e139851`)
+
+- **The notifications off-switch**, per the spec and
+  `docs/superpowers/plans/2026-09-25-notifications-off-switch.md` (4 TDD tasks,
+  per-task reviews, whole-branch review): `notify_enabled` in `DaemonState`
+  (defaults on; a corrupt state file keeps the reader), the daemon owns its
+  connectors (`add_connector`/`stop_connectors`, a testable `_shutdown` keeping
+  the connectors→silence→server.stop order), the global `set_notify` verb
+  (persist first, then stop + per-channel `notify:` hush, then the `notify`
+  event; `on` refused under `SPEAKD_NO_NOTIFY`; `off` always persists), and
+  `speakctl notify off/on` (socket-only). `set_notify` deliberately stays out
+  of the HTTP allowlist. Deferred follow-ups in "Deferred and known gaps".
 
 ## Next
 
@@ -103,12 +120,7 @@ checkboxes). Approved, on hold by choice until now.
   (`/sys/class/power_supply/AC0/online`), holding renders on battery, capping
   Kokoro's threads.
 
-### 2. The notifications off-switch (designed, unplanned)
-
-Spec above. Small (one verb, one state flag, connector ownership moves into
-the daemon). Write its plan with the writing-plans skill, then execute.
-
-### 3. Then, as before
+### 2. Then, as before
 
 - **Phase 3, language in the clients:** `docs/superpowers/plans/2026-09-24-language-clients.md`.
   - The Zotero side needs the live harness, so use Opus.
@@ -141,6 +153,16 @@ the daemon). Write its plan with the writing-plans skill, then execute.
   setting on the speaker; a PipeWire-side keep-alive; or a speakd `wake_burst`
   (a short low-level pre-roll before the first sentence after idle — needs
   its own design if chosen).
+- **The notifications off-switch** (merged, not yet smoke-tested live): the
+  running daemon predates it, so restart it (`systemctl --user restart speakd`)
+  before the first `speakctl notify off`. Smoke: `speakctl notify off` →
+  `pgrep -f "[n]otifications.follow"` finds nothing, `speakctl status` shows
+  `"notify": {"enabled": false}`; `on` brings the reader back. Small follow-ups
+  from the whole-branch review, all pre-existing-or-hypothetical: a
+  per-supervisor guard in `stop_connectors()`, one shared constant for the
+  `"notify"` connector name (daemon + `__main__` both spell it), and
+  `Supervisor.start()` silently no-opping forever if its thread never starts
+  (`Daemon.start()` already rolls this back — mirror it in supervise.py).
 - **OpenCode v2 port:** entry shim only, per Phase D of the opencode plan.
 - **Battery power (deferred by choice, 2026-09-24):** for now the engine is
   switched by hand (Piper, above). Later: switch automatically on battery,
@@ -159,9 +181,9 @@ the daemon). Write its plan with the writing-plans skill, then execute.
 - **Ruff formats code blocks inside Markdown**, which is why `docs/` is excluded
   in `pyproject.toml`.
 - **Old worktrees** under `../speakd-worktrees/` (cc-hooks, gui-tauri, onnx,
-  opencode, opencode-js, hush-interrupt, …) are kept by convention. The
-  opencode-js and hush-interrupt ones are fully merged; remove them when it
-  suits you.
+  opencode, opencode-js, hush-interrupt, notify-off-switch, …) are kept by
+  convention. The opencode-js, hush-interrupt and notify-off-switch ones are
+  fully merged; remove them when it suits you.
 - **Commit emails are public** on GitHub (`sfgartland@hotmail.com`).
 
 ## Where the record is
