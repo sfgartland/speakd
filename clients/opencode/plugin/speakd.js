@@ -205,7 +205,7 @@ export class Speaker {
     const entry = this._entry(state, info.id);
     // `agent` is present in OpenCode's stored messages though absent from the
     // SDK's published types; the parent user message is the fallback.
-    entry.agent = info.agent ?? state.userAgents.get(info.parentID) ?? state.mainAgent;
+    entry.agent = info.agent ?? state.userAgents.get(info.parentID) ?? this._main(state);
     if (entry.agent !== this._main(state)) {
       entry.parts.clear();
       return;

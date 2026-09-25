@@ -102,4 +102,16 @@ describe("the speaker", () => {
       },
     ]);
   });
+
+  it("defaults the main agent to build when no chat message named one", () => {
+    const { speaker, sent } = build();
+    speaker.onMessageUpdated({
+      id: "m1", sessionID: "ses_1", role: "assistant",
+      parentID: "", time: { created: 1 },
+    });
+    speaker.onPartUpdated("ses_1", text("ses_1", "m1", "p1", "Default me.", { time: { start: 0, end: 11 } }));
+    expect(sent).toEqual([
+      { verb: "enqueue", source: "opencode:ses_1", payload: { text: "Default me.", kind: "response" } },
+    ]);
+  });
 });
