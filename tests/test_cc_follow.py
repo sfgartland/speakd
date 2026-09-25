@@ -153,4 +153,4 @@ def test_registrations_from_other_clients_are_ignored(tmp_path, monkeypatch) -> 
     registry.register("s2", Path(""), "/home/me/Other", client="opencode")
     f.tick()
     assert spy.spoken() == ["Claude only."]
-    assert all(source.startswith("claude-code:") for _v, source, _p in spy.sent)
+    assert {source for _v, source, _p in spy.sent} == {"claude-code:s1"}

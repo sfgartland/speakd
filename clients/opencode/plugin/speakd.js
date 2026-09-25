@@ -247,8 +247,7 @@ export class Speaker {
   onSessionIdle(sessionID) {
     const state = this._session(sessionID);
     for (const [messageID, entry] of state.messages) {
-      // Parts whose message was never classified (agent === null) are
-      // dropped, not spoken: they could be sub-agent output in disguise.
+      // Parts whose message was never classified (agent === null) are dropped, not spoken: they could be sub-agent output in disguise.
       if (entry.agent !== null && entry.agent === this._main(state)) {
         this._flushAll(state, sessionID, messageID, entry);
       }

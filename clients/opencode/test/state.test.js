@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { register, stateDir } from "../plugin/speakd.js";
 
@@ -10,6 +10,10 @@ function tempState() {
 }
 
 describe("registration files", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("writes the schema the Python registry reads", () => {
     const root = tempState();
     const env = { ...process.env, SPEAKD_STATE_DIR: root };
