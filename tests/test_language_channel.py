@@ -99,15 +99,15 @@ def test_set_language_with_a_tag_shaped_unknown_code_is_kept_as_the_sentinel(dae
     assert d.channels.get("s").lang == "und"
 
 
-def test_set_language_with_free_text_that_is_not_tag_shaped_clears_it(daemon) -> None:  # type: ignore[no-untyped-def]
-    # Review Focus #12: not even shaped like a language tag, so it is
-    # treated the same as "nothing was chosen" rather than pinned as some
-    # unsupported language that would decline every utterance after it.
+def test_set_language_refuses_free_text_and_keeps_the_existing_pin(daemon) -> None:  # type: ignore[no-untyped-def]
+    # A pin is a deliberate choice, so a typo is refused rather than read
+    # as "auto": silently clearing the pin would hide the mistake.
     d, _bus = daemon
+    assert d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "fr"})).ok
     response = d.handle(Request(Verb.SET_LANGUAGE, "s", {"lang": "klingon"}))
-    assert response.ok
-    assert response.data["lang"] is None
-    assert d.channels.get("s").lang is None
+    assert not response.ok
+    assert "klingon" in (response.error or "")
+    assert d.channels.get("s").lang == "fr"
 
 
 def test_set_language_needs_a_channel(daemon) -> None:  # type: ignore[no-untyped-def]

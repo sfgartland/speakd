@@ -332,7 +332,8 @@ wins, first match:
 
 1. `enqueue`'s own `lang` in the payload.
 2. The channel's pinned language — `speakctl lang <code>`, or `auto` to clear
-   it.
+   it. A pin that doesn't look like a language is refused, and the old pin
+   stays.
 3. Detection, when `speech.detect_language` is on (the default) and the
    detector is available and there are at least 20 letters to look at.
 4. `speech.default_language`, default `en`.

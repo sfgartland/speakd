@@ -1434,6 +1434,10 @@ class Daemon:
             normalised = None
         else:
             normalised = languages.normalise(lang)
+            if normalised is None:
+                # Unlike an utterance's `lang`, a pin is a deliberate choice:
+                # reading a typo as "auto" would clear it without a word.
+                return Response(ok=False, error=f"set_language: unrecognised language {lang!r}")
         self.channels.set_lang(source_id, normalised)
         self._publish("language", source_id, {"lang": normalised})
         return Response(ok=True, data={"lang": normalised})
