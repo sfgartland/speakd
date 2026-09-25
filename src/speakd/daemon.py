@@ -184,6 +184,10 @@ _DISCARDED_HUSHED = "discarded unspoken: a hush cleared the queue before this wa
 
 _DISCARDED_MUTED = "discarded unspoken: a mute cleared the queue before this was spoken"
 
+_DISCARDED_NOTIFY = (
+    "discarded unspoken: the notifications reader was switched off before this was spoken"
+)
+
 # How much of a queued utterance a client is shown. Enough to recognise the
 # sentence that is coming; short enough that a status response listing a deep
 # queue stays a control message rather than a copy of everything waiting to be
@@ -672,6 +676,63 @@ class Daemon:
             self._stop_speaking(source_id, drain=True, reason=_DISCARDED_MUTED)
         except Exception as exc:
             self._publish("error", source_id, {"message": f"could not silence the player: {exc!r}"})
+
+    def _set_notify(self, raw: object) -> Response:
+        """Stop or start the notifications reader, persisting the choice.
+
+        Global, like a global mute: the reader is one process for every
+        `notify:` channel, so there is no per-channel form to honour.
+
+        Persisted before anything can fail, as mute does: once the switch
+        has flipped in memory, a sink that refuses to stop is a reported
+        error beside a switch that did flip -- failing the verb instead
+        would refuse an action that took effect anyway.
+        """
+        if not isinstance(raw, bool):
+            return Response(ok=False, error="set_notify needs a boolean 'enabled'")
+        if raw and self._connectors.get("notify") is None:
+            return Response(
+                ok=False,
+                error=(
+                    "the notifications reader is not registered in this daemon "
+                    "(SPEAKD_NO_NOTIFY is set)"
+                ),
+            )
+        self.notify_enabled = raw
+        state.save(replace(state.load(), notify_enabled=raw))
+        supervisor = self._connectors.get("notify")
+        if raw:
+            if supervisor is not None:
+                supervisor.start()
+        else:
+            if supervisor is not None:
+                supervisor.stop()
+            self._silence_notify_channels()
+        self._publish("notify", "", {"enabled": raw})
+        return Response(ok=True, data={"enabled": raw})
+
+    def _silence_notify_channels(self) -> None:
+        """Hush every `notify:` channel: text the reader enqueued before it
+        died must not keep talking after it.
+
+        The prefix is the notifications rules' channel convention, one
+        channel per app (`speakd.clients.notifications.rules`). Iterated
+        channel by channel, like a scoped mute -- a drain that took the
+        whole queue would throw away every other session's speech with the
+        reader's. A sink that refuses to stop is reported, not raised: the
+        switch has already flipped.
+        """
+        for channel in self.channels.all():
+            if not channel.source_id.startswith("notify:"):
+                continue
+            try:
+                self._stop_speaking(channel.source_id, drain=True, reason=_DISCARDED_NOTIFY)
+            except Exception as exc:
+                self._publish(
+                    "error",
+                    channel.source_id,
+                    {"message": f"could not silence the player: {exc!r}"},
+                )
 
     def _engine_status(self) -> dict[str, object]:
         """What STATUS says about the model, for an engine of either kind.
@@ -1203,6 +1264,7 @@ class Daemon:
                     # draw: a channel that is audible behind a global mute
                     # looks identical to one that is muted itself.
                     "muted": self.muted,
+                    "notify": {"enabled": self.notify_enabled},
                     "engine": self._engine_status(),
                     "speed": self.tempo.target,
                     "languages": {
@@ -1271,6 +1333,8 @@ class Daemon:
                 self._silence_for_mute(request.source_id)
             self._publish("mute", request.source_id, {"muted": wanted, "scope": scope})
             return Response(ok=True, data={"muted": wanted, "scope": scope})
+        if request.verb is Verb.SET_NOTIFY:
+            return self._set_notify(request.payload.get("enabled"))
         if request.verb is Verb.SET_ENGINE:
             loaded = request.payload.get("loaded")
             if not isinstance(loaded, bool):
