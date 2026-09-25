@@ -58,7 +58,13 @@ def call(
     data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
     if data is not None:
         headers["Content-Type"] = "application/json"
-    connection.request(method, path, body=data, headers=headers)
+    try:
+        connection.request(method, path, body=data, headers=headers)
+    except BrokenPipeError:
+        # The server can decide on the declared Content-Length (a 413 for a
+        # body over the cap) and close the connection while the body is still
+        # being written. The response it sent is buffered: read it as usual.
+        pass
     response = connection.getresponse()
     result = (response.status, {k.lower(): v for k, v in response.getheaders()}, response.read())
     connection.close()
