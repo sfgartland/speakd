@@ -142,6 +142,44 @@ def test_render_verb_refuses_missing_parts(tmp_path: Path) -> None:
         d.stop()
 
 
+def test_render_verb_drops_a_trailing_whitespace_only_part(tmp_path: Path) -> None:
+    """Review Focus #2: `speakctl render`'s pdftotext-split parts end with
+    exactly this when the source file ends in a form feed -- the last chunk
+    is empty. A part whose text is nothing but whitespace contributes no
+    audio and no chapter, so it is dropped rather than carried through as
+    one that will simply synthesise nothing."""
+    d = make_daemon(engine=FakeEngine(synthesis_cost=0.05))
+    d.start()
+    try:
+        payload = render_payload(tmp_path)
+        payload["parts"] = [
+            {"title": "Whole", "text": "One. Two. Three."},
+            {"title": "Trailing", "text": "  \n"},  # pdftotext's trailing \f, split to nothing
+        ]
+        response = d.handle(Request(Verb.RENDER, "cli", payload))
+        assert response.ok, response.error
+        job = d.render_queue.job(job_id_of(response))
+        assert job is not None
+        assert len(job.parts) == 1
+        assert job.parts[0].title == "Whole"
+    finally:
+        d.render_queue.stop()
+        d.stop()
+
+
+def test_render_verb_refuses_a_job_whose_parts_are_all_whitespace(tmp_path: Path) -> None:
+    d = make_daemon()
+    d.start()
+    try:
+        payload = render_payload(tmp_path)
+        payload["parts"] = [{"title": "Whole", "text": "   \n\t"}]
+        response = d.handle(Request(Verb.RENDER, "cli", payload))
+        assert not response.ok
+        assert "text" in response.error
+    finally:
+        d.stop()
+
+
 def test_render_verb_refuses_unknown_format(tmp_path: Path) -> None:
     d = make_daemon()
     d.start()
@@ -416,6 +454,44 @@ def test_a_render_in_an_unsupported_language_is_refused_under_decline(tmp_path: 
     response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, lang="de")))
     assert not response.ok
     assert "no voice for de" in response.error
+    assert d.render_queue.status() == []
+
+
+def test_a_render_is_accepted_for_an_unloaded_engine_rather_than_declined(
+    tmp_path: Path,
+) -> None:
+    """Review Focus #1: `_render_verb` must not infer availability from
+    whether the model happens to be loaded -- only from what languages the
+    engine reports (its `supported`, given at construction). A render for a
+    language the engine can speak is accepted and left to wait for the
+    model, never declined just because nothing is resident yet."""
+    from speakd.synth.lazy import LazyEngine
+
+    lazy = LazyEngine(
+        lambda: FakeEngine(), name="lazy", sample_rate=24000, supported=lambda: ["en"]
+    )
+    d = make_daemon(engine=lazy)  # type: ignore[arg-type]
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, lang="en")))
+    assert response.ok, response.error
+    job = d.render_queue.job(job_id_of(response))
+    assert job is not None
+    assert until(lambda: job.state == "paused")
+    d.render_queue.stop()
+
+
+def test_a_render_whose_fallback_default_is_itself_unsupported_is_refused_clearly(
+    tmp_path: Path,
+) -> None:
+    """Review Focus #1's known issue: `speech.unsupported_language` not being
+    `decline` ordinarily means "speak it in the default instead" -- but if
+    the default itself is not something this engine can speak, that would
+    only fail mid-render. `_render_language` must refuse up front, naming
+    the default rather than the language that was actually requested."""
+    engine = FakeEngine(supported=("fr",))  # neither "de" nor the default "en"
+    d = make_daemon(engine=engine)
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, lang="de")))
+    assert not response.ok
+    assert "en" in response.error
     assert d.render_queue.status() == []
 
 
