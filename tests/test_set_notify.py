@@ -84,6 +84,7 @@ def test_off_stops_the_reader_persists_and_announces() -> None:
         assert state.load().notify_enabled is False
         notify = [e for e in seen if e.kind == "notify"]
         assert notify and notify[-1].data == {"enabled": False}
+        assert notify[-1].source_id == ""
     finally:
         daemon.stop()
 
@@ -102,6 +103,7 @@ def test_on_starts_the_reader_persists_and_announces() -> None:
         assert state.load().notify_enabled is True
         notify = [e for e in seen if e.kind == "notify"]
         assert notify and notify[-1].data == {"enabled": True}
+        assert notify[-1].source_id == ""
         # Idempotent: a second on does not respawn the child.
         daemon.handle(Request(verb=Verb.SET_NOTIFY, source_id="", payload={"enabled": True}))
         assert supervisor.starts == 1
@@ -138,6 +140,8 @@ def test_off_hushes_the_readers_channels_and_no_others() -> None:
 
 
 def test_on_with_no_reader_registered_is_refused() -> None:
+    from speakd import state
+
     daemon, _seen = build(None)
     try:
         response = daemon.handle(
@@ -145,6 +149,8 @@ def test_on_with_no_reader_registered_is_refused() -> None:
         )
         assert not response.ok
         assert "SPEAKD_NO_NOTIFY" in response.error
+        # Refused before anything is persisted: the flag stays as it was.
+        assert state.load().notify_enabled is True
     finally:
         daemon.stop()
 

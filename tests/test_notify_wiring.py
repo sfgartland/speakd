@@ -95,7 +95,7 @@ class _FakeSupervisor:
         pass
 
 
-def _stub_daemon(notify_enabled: bool = True) -> Daemon:
+def _stub_daemon() -> Daemon:
     return Daemon(
         FakeEngine(),
         RecordingPlayer(),
