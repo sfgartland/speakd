@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from speakd.clients.claude_code import registry
+from speakd.clients import registry
 
 # Processes that stand between an agent and what it starts without being the
 # agent: interpreters, and the shells and launchers that start them. `node` is
@@ -81,8 +81,8 @@ def resolve(
     # the registry until it idles out.
     sessions: dict[int, str] = {}
     for reg in sorted(registry.live(), key=lambda r: r.touched):
-        if reg.claude_pid:
-            sessions[reg.claude_pid] = reg.session_id
+        if reg.agent_pid:
+            sessions[reg.agent_pid] = reg.session_id
     agent = agent_pid(chain)
     if agent is not None and agent in sessions:
         return f"claude-code:{sessions[agent]}", None

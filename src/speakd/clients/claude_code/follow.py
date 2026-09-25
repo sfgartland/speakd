@@ -24,7 +24,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import FrameType
 
-from speakd.clients.claude_code import registry
+from speakd.clients import registry
 from speakd.clients.claude_code.reader import new_text
 from speakd.clients.claude_code.transcript import ai_title, parse
 from speakd.clients.claude_code.watermark import Watermark, load, save, state_dir
@@ -96,6 +96,8 @@ class Follower:
 
     def tick(self) -> None:
         for reg in registry.live():
+            if reg.client != "claude-code":
+                continue
             try:
                 self._follow(reg)
             except Exception as exc:

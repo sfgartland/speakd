@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from speakd.clients import registry
 from speakd.clients import send as send_module
-from speakd.clients.claude_code import hook, registry
+from speakd.clients.claude_code import hook
 from speakd.clients.claude_code.watermark import state_dir
 from speakd.clients.log import LOG_CAP_BYTES
 
@@ -133,7 +134,7 @@ def test_a_prompt_records_the_claude_process(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(hook, "_claude_pid", lambda: 4242)
     run(monkeypatch, payload(hook_event_name="UserPromptSubmit"), [])
-    assert [r.claude_pid for r in registry.live()] == [4242]
+    assert [r.agent_pid for r in registry.live()] == [4242]
 
 
 def test_a_prompt_registers_the_session(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -166,13 +166,13 @@ def fake_proc(root: Path, chain: list[tuple[int, str, int]]) -> Path:
 
 
 def test_a_claude_code_session_is_found_by_ancestry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from speakd.clients.claude_code import registry
+    from speakd.clients import registry
 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
     proc = fake_proc(
         tmp_path / "proc", [(300, "python3", 200), (200, "claude", 100), (100, "zsh", 1)]
     )
-    registry.register("abc", Path("/t.jsonl"), "/work", claude_pid=200)
+    registry.register("abc", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
     assert session.resolve("claude-code", proc=proc) == ("claude-code:abc", None)
 
 
@@ -223,13 +223,13 @@ def test_the_newest_registration_for_a_process_wins(tmp_path: Path, monkeypatch)
     import json as _json
     import time as _time
 
-    from speakd.clients.claude_code import registry
+    from speakd.clients import registry
     from speakd.clients.claude_code.watermark import state_dir
 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
     proc = fake_proc(tmp_path / "proc", [(300, "python3", 200), (200, "claude", 1)])
-    registry.register("zzz-old", Path("/t.jsonl"), "/work", claude_pid=200)
-    registry.register("aaa-new", Path("/t.jsonl"), "/work", claude_pid=200)
+    registry.register("zzz-old", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
+    registry.register("aaa-new", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
     # Make the old one older, whatever order the filenames sort in.
     old = next(state_dir().glob("*zzz-old*.session.json"))
     body = _json.loads(old.read_text())
@@ -241,18 +241,18 @@ def test_the_newest_registration_for_a_process_wins(tmp_path: Path, monkeypatch)
 def test_the_server_follows_its_process_to_a_new_session(
     daemon_socket: tuple[Path, Daemon], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from speakd.clients.claude_code import registry
+    from speakd.clients import registry
     from speakd.clients.mcp.server import Server
 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
     socket, d = daemon_socket
     proc = fake_proc(tmp_path / "proc", [(300, "python3", 200), (200, "claude", 1)])
-    registry.register("first", Path("/t.jsonl"), "/work", claude_pid=200)
+    registry.register("first", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
     server = Server(socket, proc=proc)
     server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     brief = {"name": "brief", "arguments": {"text": "Hi.", "kind": "done"}}
     server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": brief})
-    registry.register("second", Path("/t.jsonl"), "/work", claude_pid=200)
+    registry.register("second", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
     seen: list[Event] = []
     d.bus.subscribe(seen.append)
     server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": brief})
@@ -305,7 +305,7 @@ def test_hook_and_server_meet_at_the_agent_whatever_it_is_called(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Claude Code from npm runs as `node`, and may run hooks through `sh -c`."""
-    from speakd.clients.claude_code import registry
+    from speakd.clients import registry
 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
     hook_side = fake_proc(
@@ -323,17 +323,17 @@ def test_hook_and_server_meet_at_the_agent_whatever_it_is_called(
         [(300, "python3", 290), (290, "bash", 200), (200, "node", 100), (100, "zsh", 1)],
     )
     assert session.agent_pid(session.ancestors(hook_side)) == 200
-    registry.register("abc", Path("/t.jsonl"), "/work", claude_pid=200)
+    registry.register("abc", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
     assert session.resolve("claude-code", proc=server_side) == ("claude-code:abc", None)
 
 
 def test_a_terminal_shared_with_a_claude_session_does_not_capture_another_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from speakd.clients.claude_code import registry
+    from speakd.clients import registry
 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
-    registry.register("abc", Path("/t.jsonl"), "/work", claude_pid=200)
+    registry.register("abc", Path("/t.jsonl"), "/work", client="claude-code", agent_pid=200)
     codex = fake_proc(
         tmp_path / "proc", [(500, "python3", 450), (450, "codex", 100), (100, "zsh", 1)]
     )

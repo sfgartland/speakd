@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from speakd.clients.claude_code import registry
+from speakd.clients import registry
 from speakd.clients.claude_code.follow import Follower
 
 
@@ -37,7 +37,7 @@ def follower(tmp_path, monkeypatch, spy) -> tuple[Follower, Path]:  # type: igno
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     transcript = tmp_path / "t.jsonl"
     transcript.write_bytes(b"")
-    registry.register("s1", transcript, "/home/me/My Project")
+    registry.register("s1", transcript, "/home/me/My Project", client="claude-code")
     return Follower(send=spy), transcript
 
 
@@ -82,7 +82,7 @@ def test_a_new_session_starts_at_end_of_file(tmp_path, monkeypatch) -> None:  # 
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     transcript = tmp_path / "t.jsonl"
     transcript.write_bytes(assistant("old", "Ancient history."))
-    registry.register("s1", transcript, "/p")
+    registry.register("s1", transcript, "/p", client="claude-code")
     spy = Spy()
     f = Follower(send=spy)
     f.tick()

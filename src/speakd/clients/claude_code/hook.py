@@ -20,7 +20,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from speakd.clients.claude_code import registry
+from speakd.clients import registry
 from speakd.clients.claude_code.watermark import state_dir
 from speakd.clients.log import logger_for
 from speakd.clients.mcp.session import agent_pid, ancestors
@@ -106,7 +106,8 @@ def _dispatch(body: dict[str, object]) -> None:
                 session_id,
                 Path(transcript_path),
                 str(body.get("cwd") or ""),
-                claude_pid=_claude_pid(),
+                client="claude-code",
+                agent_pid=_claude_pid(),
             )
         reason = hush(channel, new_turn=True, timeout=HUSH_TIMEOUT)
         if reason is not None:
