@@ -69,7 +69,7 @@ strict = true
 # imported inside functions and immediately adapted behind our own typed
 # interfaces (Player, Synthesizer), so nothing untyped escapes those modules.
 [[tool.mypy.overrides]]
-module = ["kokoro.*", "misaki.*", "sounddevice.*", "torch", "torch.*"]
+module = ["kokoro.*", "misaki.*", "sounddevice.*", "torch", "torch.*", "lingua.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
