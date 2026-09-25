@@ -159,6 +159,16 @@ def fake_piper(monkeypatch: pytest.MonkeyPatch) -> FakePiper:
     return fake
 
 
+@pytest.fixture
+def needs_scipy() -> None:
+    """Skip unless scipy is installed: `synthesize` lazily imports it for the resample.
+
+    scipy comes only with the optional `piper` extra, which CI does not install;
+    every other test in this file runs against fakes and must keep running.
+    """
+    pytest.importorskip("scipy", reason="the piper extra (which brings scipy) is not installed")
+
+
 def write_voice(directory: Path, name: str, rate: int = 22050) -> None:
     """The two files a Piper voice is: an .onnx and its .onnx.json config."""
     (directory / f"{name}.onnx").write_bytes(b"not really onnx")
@@ -166,7 +176,7 @@ def write_voice(directory: Path, name: str, rate: int = 22050) -> None:
 
 
 def test_a_voice_loads_one_session_reused_across_calls(
-    fake_piper: FakePiper, tmp_path: Path
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
 ) -> None:
     write_voice(tmp_path, "voice-a")
     write_voice(tmp_path, "voice-b")
@@ -181,7 +191,9 @@ def test_a_voice_loads_one_session_reused_across_calls(
     assert len(fake_piper.voices) == 2
 
 
-def test_threads_reach_the_session_options(fake_piper: FakePiper, tmp_path: Path) -> None:
+def test_threads_reach_the_session_options(
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
+) -> None:
     write_voice(tmp_path, "voice-a")
     engine = PiperEngine(tmp_path, threads=3)
     engine.synthesize("Hello.", "voice-a", 1.0)
@@ -191,7 +203,9 @@ def test_threads_reach_the_session_options(fake_piper: FakePiper, tmp_path: Path
     assert fake_piper.sessions[0].providers == ["CPUExecutionProvider"]
 
 
-def test_zero_threads_leaves_the_intra_setting_unset(fake_piper: FakePiper, tmp_path: Path) -> None:
+def test_zero_threads_leaves_the_intra_setting_unset(
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
+) -> None:
     # 0 means "onnxruntime's own default", so the engine must not write the
     # setting at all -- writing a 0 would be the same thing today, but would
     # pin whatever 0 happens to mean in a later onnxruntime.
@@ -203,14 +217,18 @@ def test_zero_threads_leaves_the_intra_setting_unset(fake_piper: FakePiper, tmp_
     assert options.inter_op_num_threads == 1
 
 
-def test_speed_maps_to_the_inverse_length_scale(fake_piper: FakePiper, tmp_path: Path) -> None:
+def test_speed_maps_to_the_inverse_length_scale(
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
+) -> None:
     write_voice(tmp_path, "voice-a")
     engine = PiperEngine(tmp_path, threads=1)
     engine.synthesize("Hello.", "voice-a", 2.0)
     assert fake_piper.voices[0].syn_configs[-1].length_scale == 0.5
 
 
-def test_audio_is_resampled_to_the_engines_rate(fake_piper: FakePiper, tmp_path: Path) -> None:
+def test_audio_is_resampled_to_the_engines_rate(
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
+) -> None:
     write_voice(tmp_path, "voice-a", rate=22050)
     fake_piper.chunk_factory = lambda: [np.full(44100, 0.5, dtype=np.float32)]
     engine = PiperEngine(tmp_path, threads=1)
@@ -219,7 +237,9 @@ def test_audio_is_resampled_to_the_engines_rate(fake_piper: FakePiper, tmp_path:
     assert len(audio) == pytest.approx(44100 * 24000 / 22050, abs=2)
 
 
-def test_years_are_spoken_as_words_before_synthesis(fake_piper: FakePiper, tmp_path: Path) -> None:
+def test_years_are_spoken_as_words_before_synthesis(
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
+) -> None:
     write_voice(tmp_path, "voice-a")
     engine = PiperEngine(tmp_path, threads=1)
     engine.synthesize("In 1994, Habermas replied.", "voice-a", 1.0)
@@ -243,7 +263,7 @@ def test_installed_voices_lists_sorted_stems_that_have_configs(tmp_path: Path) -
 
 
 def test_a_voice_that_will_not_load_raises_and_is_not_cached(
-    fake_piper: FakePiper, tmp_path: Path
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
 ) -> None:
     write_voice(tmp_path, "voice-a")
     fake_piper.fail_sessions = 1
@@ -257,7 +277,9 @@ def test_a_voice_that_will_not_load_raises_and_is_not_cached(
     assert len(fake_piper.sessions) == 1
 
 
-def test_unload_forces_the_next_synthesize_to_reload(fake_piper: FakePiper, tmp_path: Path) -> None:
+def test_unload_forces_the_next_synthesize_to_reload(
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
+) -> None:
     write_voice(tmp_path, "voice-a")
     engine = PiperEngine(tmp_path, threads=1)
     engine.synthesize("Hello.", "voice-a", 1.0)
@@ -267,7 +289,7 @@ def test_unload_forces_the_next_synthesize_to_reload(fake_piper: FakePiper, tmp_
 
 
 def test_set_voice_dir_unloads_and_points_at_the_new_directory(
-    fake_piper: FakePiper, tmp_path: Path
+    fake_piper: FakePiper, tmp_path: Path, needs_scipy: None
 ) -> None:
     write_voice(tmp_path, "voice-a")
     engine = PiperEngine(tmp_path, threads=1)
