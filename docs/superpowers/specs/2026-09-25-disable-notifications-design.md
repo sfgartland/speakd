@@ -90,8 +90,9 @@ names it.
      switch as their reason (`_DISCARDED_NOTIFY`, beside the mute and hush
      texts),
   4. publish `notify {enabled: false}`.
-- `enabled = True`: start the supervisor (a no-op if it is running), persist
-  `True`, publish `notify {enabled: true}`.
+- `enabled = True`: persist `True`, start the supervisor (a no-op if it is
+  running), publish `notify {enabled: true}` — persisted first, as on the
+  off path, so the two directions keep one order.
 - Both are idempotent and answer `ok` either way. `off` works even when no
   notifications connector is registered (it persists and answers `ok`;
   nothing is hushed, because no reader ever ran).
