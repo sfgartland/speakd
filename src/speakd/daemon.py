@@ -12,7 +12,9 @@ fields and a function.
 from __future__ import annotations
 
 import math
+import os
 import queue
+import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -24,6 +26,7 @@ from typing import Protocol, cast, runtime_checkable
 from speakd import languages, segmenter, state
 from speakd.channels import MODES, Channel, ChannelTable, effective_mode
 from speakd.detect import Detector
+from speakd.engines import Declined, choose_engine
 from speakd.events import Event, EventBus
 from speakd.metrics import SynthesisWindow, resident_bytes
 from speakd.model import Piece, Role, Segment, Span
@@ -44,6 +47,7 @@ from speakd.settings.registry import Settings
 from speakd.settings.store import SettingsStore
 from speakd.settings.types import SettingError
 from speakd.synth import Synthesizer
+from speakd.synth.piper_engine import piper_available
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
@@ -116,6 +120,61 @@ _CORE_SPEECH_SETTINGS: tuple[dict[str, object], ...] = (
     },
 )
 
+# The Piper settings (piper-engine plan, Global Constraints). Piper is the
+# optional second engine: chosen by hand with `speech.engine`, spoken with the
+# voice `speech.piper_voices` maps a language to, loaded from
+# `speech.piper_voice_dir`, on `speech.piper_threads` threads.
+_PIPER_VOICES: dict[str, str] = {
+    "en": "en_US-ryan-medium",
+    "en-gb": "en_GB-alan-medium",
+    "de": "de_DE-thorsten-medium",
+    "fr": "fr_FR-siwis-medium",
+    "es": "es_ES-davefx-medium",
+    "it": "it_IT-paola-medium",
+}
+
+
+def _default_piper_voice_dir() -> Path:
+    """Where Piper voices live by default: `$XDG_DATA_HOME/piper-voices`."""
+    data_home = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+    return Path(data_home) / "piper-voices"
+
+
+_CORE_PIPER_SETTINGS: tuple[dict[str, object], ...] = (
+    {
+        "name": "engine",
+        "type": "choice",
+        "default": "kokoro",
+        "label": "Speech engine",
+        "help": "Piper speaks what it has a voice for; Kokoro says the rest.",
+        "options": ["kokoro", "piper"],
+    },
+    {
+        "name": "piper_voices",
+        "type": "voice_map",
+        "default": dict(_PIPER_VOICES),
+        "label": "Piper voices",
+        "help": "Which Piper voice speaks each language.",
+    },
+    {
+        "name": "piper_voice_dir",
+        "type": "string",
+        "default": str(_default_piper_voice_dir()),
+        "label": "Piper voice directory",
+        "help": "Where Piper's .onnx voices and their configs are.",
+    },
+    {
+        "name": "piper_threads",
+        "type": "int",
+        "default": 1,
+        "label": "Piper threads",
+        "help": "How many threads Piper synthesises live speech with.",
+        "min": 1,
+        "max": 8,
+        "restart": True,
+    },
+)
+
 # Render-wide settings (audio-export design §1). `mp3_bitrate` names the
 # bitrate ffmpeg is given for every format a render can produce -- mp3, opus
 # and m4b alike -- not only mp3; see `render._encode`.
@@ -136,6 +195,16 @@ _CORE_RENDER_SETTINGS: tuple[dict[str, object], ...] = (
         "help": "Silence, in milliseconds, between a render's parts.",
         "min": 0,
         "max": 10000,
+    },
+    {
+        "name": "piper_threads",
+        "type": "int",
+        "default": 0,
+        "label": "Piper threads",
+        "help": "How many threads Piper renders with; 0 leaves it to onnxruntime.",
+        "min": 0,
+        "max": 16,
+        "restart": True,
     },
 )
 
@@ -195,6 +264,22 @@ _DISCARDED_NOTIFY = (
 QUEUE_PREVIEW_CHARS = 200
 
 
+def build_settings() -> Settings:
+    """The daemon's own settings: core's declarations on the default store.
+
+    `__main__` needs them before the daemon exists -- to read
+    `speech.piper_voice_dir` and `speech.piper_threads` and build the Piper
+    engine it hands to `Daemon` -- so the construction lives here rather than
+    only inside `Daemon.__init__`. Declared with `persist=False`, like the
+    daemon's own declaration call: core redeclares on every start.
+    """
+    values_path, schema_path = default_settings_paths()
+    settings = Settings(SettingsStore(values_path, schema_path))
+    settings.declare("speech", list((*_CORE_SPEECH_SETTINGS, *_CORE_PIPER_SETTINGS)), persist=False)
+    settings.declare("render", list(_CORE_RENDER_SETTINGS), persist=False)
+    return settings
+
+
 def _preview(text: str) -> str:
     """The head of an utterance, for a client showing what is coming.
 
@@ -231,6 +316,25 @@ class Loadable(Protocol):
     def load(self) -> None: ...
 
     def unload(self) -> None: ...
+
+
+class PiperLike(Synthesizer, Protocol):
+    """A Piper engine, as the daemon's per-utterance choice uses it.
+
+    Kept apart from `Synthesizer` for the same reason `Loadable` is: an
+    engine with no voices, unload or voice directory is still a perfectly
+    good Kokoro, and every test double would otherwise carry members it has
+    no use for. Tests stand in with a fake carrying these four; `__main__`
+    passes the real `PiperEngine`.
+    """
+
+    def has_voice(self, voice: str) -> bool: ...
+
+    def installed_voices(self) -> list[str]: ...
+
+    def unload(self) -> None: ...
+
+    def set_voice_dir(self, path: Path) -> None: ...
 
 
 class Connector(Protocol):
@@ -313,8 +417,13 @@ class Daemon:
         channels: ChannelTable | None = None,
         metrics_interval: float = _METRICS_INTERVAL_SECONDS,
         settings: Settings | None = None,
+        piper: PiperLike | None = None,
     ) -> None:
         self.engine = engine
+        # The optional second engine, chosen per utterance once `speech.engine`
+        # says piper. None means the piper extra was not installed when the
+        # daemon started; `__main__` builds it, tests substitute a fake.
+        self.piper = piper
         self.player = player
         # The engine is one object, and it is entered from two threads: the
         # speech worker's pipeline and, once the render verbs are wired in,
@@ -327,13 +436,14 @@ class Daemon:
         self.bus = bus if bus is not None else EventBus()
         self.channels = channels if channels is not None else ChannelTable()
         if settings is None:
-            values_path, schema_path = default_settings_paths()
-            settings = Settings(SettingsStore(values_path, schema_path))
+            settings = build_settings()
         self.settings = settings
         # Redeclared on every start, never persisted: core is not a client
         # that can go offline and come back, so there is nothing here for a
         # persisted schema to stand in for.
-        self.settings.declare("speech", list(_CORE_SPEECH_SETTINGS), persist=False)
+        self.settings.declare(
+            "speech", list((*_CORE_SPEECH_SETTINGS, *_CORE_PIPER_SETTINGS)), persist=False
+        )
         # Built once and reused for the daemon's whole life: it imports
         # lingua lazily on its own first `detect()` call, not here, so
         # constructing the daemon never pays that cost either.
@@ -739,12 +849,44 @@ class Daemon:
 
         An engine that cannot be unloaded reports as loaded, because it is: a
         control surface asking whether this daemon can speak must not read
-        `false` off one that will speak perfectly well.
+        `false` off one that will speak perfectly well. `piper` reports the
+        optional second engine beside it -- whether it exists at all and
+        which voices it has installed.
         """
         engine = self.engine
         if not isinstance(engine, Loadable):
-            return {"loaded": True, "loading": False}
-        return {"loaded": engine.loaded, "loading": engine.loading}
+            status: dict[str, object] = {"loaded": True, "loading": False}
+        else:
+            status = {"loaded": engine.loaded, "loading": engine.loading}
+        status["name"] = engine.name
+        piper = self.piper
+        if piper is not None:
+            status["piper"] = {
+                "available": piper_available(),
+                "voices": piper.installed_voices(),
+            }
+        else:
+            status["piper"] = {"available": False, "voices": []}
+        return status
+
+    def _status_supported_languages(self) -> list[str]:
+        """What `status.languages.supported` reports.
+
+        Kokoro's languages, plus -- while `speech.engine` is piper -- any
+        language `speech.piper_voices` maps to an installed voice. The live
+        speech path decides the same way, per utterance, in `choose_engine`;
+        this is the static list a client reads.
+        """
+        supported = self._supported_languages()
+        if str(self.settings.get("speech.engine")) != "piper" or self.piper is None:
+            return supported
+        voices = self.settings.get("speech.piper_voices")
+        if not isinstance(voices, dict):
+            return supported
+        for lang, voice in voices.items():
+            if lang not in supported and self.piper.has_voice(str(voice)):
+                supported.append(lang)
+        return supported
 
     def _supported_languages(self) -> list[str]:
         """What `self.engine` can actually speak right now.
@@ -780,25 +922,42 @@ class Daemon:
         default_lang = str(self.settings.get("speech.default_language"))
         return str(voice_map.get(default_lang, profile_voice))
 
+    def _decline(self, source_id: str, reason: str) -> None:
+        """Publish `declined` and the `finished` that pairs with it.
+
+        The utterance was never announced as `started`, so this pair is all
+        of it: nothing to unwind, but a client pairing the two events must
+        still get both. The same shape phase 2's unsupported-language
+        decline uses, now shared with `choose_engine`'s.
+        """
+        self._publish("declined", source_id, {"reason": reason})
+        self._publish("finished", source_id, {"cancelled": False, "aborted": True})
+
     def _unsupported_language(self, source_id: str, requested: str) -> str | None:
         """Apply `speech.unsupported_language` for a language nothing can speak.
 
         Returns the language to speak instead, or None having already
         published `declined` and `finished` for a caller that must now stop
-        -- the same two-event shape `_refusal` uses elsewhere in this module,
-        kept separate because this decision needs the text prepared and the
-        language resolved, which only `_speak` has.
+        -- the same two-event shape `_decline` gives, kept separate because
+        this decision needs the text prepared and the language resolved,
+        which only `_speak` has. The fallback is always spoken by Kokoro,
+        whichever engine was in play: Piper only ever speaks languages its
+        own map names.
         """
         mode = self.settings.get("speech.unsupported_language")
         if mode == "decline":
-            self._publish("declined", source_id, {"reason": f"no voice for {requested}"})
-            self._publish("finished", source_id, {"cancelled": False, "aborted": True})
+            self._decline(source_id, f"no voice for {requested}")
             return None
         default_lang = str(self.settings.get("speech.default_language"))
         self._publish(
             "language",
             source_id,
-            {"requested": requested, "used": default_lang, "reason": "unsupported"},
+            {
+                "requested": requested,
+                "used": default_lang,
+                "reason": "unsupported",
+                "engine": "kokoro",
+            },
         )
         return default_lang
 
@@ -1268,7 +1427,7 @@ class Daemon:
                     "engine": self._engine_status(),
                     "speed": self.tempo.target,
                     "languages": {
-                        "supported": self._supported_languages(),
+                        "supported": self._status_supported_languages(),
                         "default": self.settings.get("speech.default_language"),
                         "detect": bool(self.settings.get("speech.detect_language")),
                     },
@@ -1379,10 +1538,31 @@ class Daemon:
         """
         if not isinstance(key, str) or not key:
             return Response(ok=False, error="set_setting needs a non-empty string 'key'")
+        if (
+            key == "speech.engine"
+            and value == "piper"
+            and (self.piper is None or not piper_available())
+        ):
+            # Refused before anything is written, so the stored value still
+            # names what is actually installed -- a client watching `setting`
+            # events must never see one for a value that was never stored.
+            return Response(
+                ok=False, error="piper-tts is not installed (pip install 'speakd[piper]')"
+            )
+        previous = self.settings.get(key) if key == "speech.engine" else None
         try:
             applied = self.settings.set(key, value)
         except SettingError as exc:
             return Response(ok=False, error=str(exc))
+        if key == "speech.engine":
+            if applied != "piper" and previous == "piper" and self.piper is not None:
+                # Leaving piper for kokoro: drop the voices' sessions, since
+                # kokoro is what speaks from here on.
+                self.piper.unload()
+        elif key == "speech.piper_voice_dir" and self.piper is not None:
+            # The engine's own method unloads first: anything loaded came
+            # from the old directory.
+            self.piper.set_voice_dir(Path(str(applied)))
         self._publish("setting", "", {"key": key, "value": applied})
         return Response(ok=True, data={"value": applied})
 
@@ -1569,12 +1749,20 @@ class Daemon:
                 "declined", source_id, {"text": text, "kind": kind, "reason": "muted", "at": at}
             )
             return Response(ok=True, data={"spoken": False, "reason": "muted"})
-        if isinstance(self.engine, Loadable) and not self.engine.loaded:
+        piper_ready = (
+            str(self.settings.get("speech.engine")) == "piper"
+            and self.piper is not None
+            and piper_available()
+        )
+        if not piper_ready and isinstance(self.engine, Loadable) and not self.engine.loaded:
             # Disabled, or still loading: either way there is no model to say
             # this with. Dropped for the same reason as a mute, and it covers
             # the load as well as the disable deliberately — an enable that
             # queued thirty seconds of arrivals would speak them all at once
-            # the moment the model landed.
+            # the moment the model landed. When piper is the engine and is
+            # usable, the job goes through instead: `choose_engine` decides
+            # per utterance whether it can be spoken, and declines with its
+            # own reason when it needs the unloaded Kokoro.
             self._publish(
                 "declined",
                 source_id,
@@ -1867,15 +2055,47 @@ class Daemon:
         default_lang = str(self.settings.get("speech.default_language"))
         resolution = languages.resolve(job.lang, channel_lang, detected_lang, default_lang)
         lang = resolution.lang
-        if lang not in self._supported_languages():
-            fallback = self._unsupported_language(job.source_id, lang)
-            if fallback is None:
-                # `_unsupported_language` already published `declined` and
-                # `finished` -- nothing was ever announced as `started`, so
-                # there is nothing left to unwind.
-                return
-            lang = fallback
-        voice = self._voice_for(lang, job.profile.voice)
+        # The engine for this utterance, chosen here, once, after language
+        # resolution (plan: "Choosing the engine per utterance"). A seek or
+        # replay within the utterance stays on the engine captured below and
+        # reuses its cached audio, even if `speech.engine` changes mid-flight.
+        piper = self.piper
+        piper_ok = piper is not None and piper_available()
+        kokoro_loaded = not isinstance(self.engine, Loadable) or self.engine.loaded
+        piper_voices_raw = self.settings.get("speech.piper_voices")
+        piper_voices: dict[str, str] = (
+            piper_voices_raw if isinstance(piper_voices_raw, dict) else {}
+        )
+
+        def piper_has_voice(voice: str) -> bool:
+            return piper is not None and piper.has_voice(voice)
+
+        choice = choose_engine(
+            lang,
+            str(self.settings.get("speech.engine")),
+            piper_voices,
+            piper_has_voice,
+            piper_ok,
+            kokoro_loaded,
+        )
+        if isinstance(choice, Declined):
+            self._decline(job.source_id, choice.reason)
+            return
+        if choice.engine == "piper":
+            engine: Synthesizer = cast(Synthesizer, piper)
+            voice = cast(str, choice.voice)
+        else:
+            engine = self.engine
+            if lang not in self._supported_languages():
+                fallback = self._unsupported_language(job.source_id, lang)
+                if fallback is None:
+                    # `_unsupported_language` already published `declined` and
+                    # `finished` -- nothing was ever announced as `started`,
+                    # so there is nothing left to unwind.
+                    return
+                lang = fallback
+            voice = self._voice_for(lang, job.profile.voice)
+        engine_name = choice.engine
         with self._idle:
             self._last = _Spoken(
                 source_id=job.source_id,
@@ -1890,6 +2110,7 @@ class Daemon:
             {
                 "text": text,
                 "lang": lang,
+                "engine": engine_name,
                 "segments": [
                     {
                         "index": i,
@@ -1951,6 +2172,7 @@ class Daemon:
                     "audio_offset": segment.audio_offset,
                     "played_at": segment.played_at,
                     "index": segment.index,
+                    "engine": engine_name,
                 },
             )
 
@@ -1971,7 +2193,7 @@ class Daemon:
                 try:
                     result = speak(
                         pieces,
-                        self.engine,
+                        engine,
                         self.player,
                         voice=voice,
                         speed=job.profile.speed,
@@ -2028,6 +2250,31 @@ class Daemon:
                         return
                     lang = fallback
                     voice = self._voice_for(lang, job.profile.voice)
+                    continue
+                if result.piper_error is not None:
+                    # Piper was chosen, and the voice's files existed when it
+                    # was -- but the .onnx would not load (corrupt). Piper
+                    # made no sound, so the whole utterance is re-run on
+                    # Kokoro from the start, with one stderr line to say why.
+                    # Caught at the utterance level rather than inside the
+                    # pipeline: a voice that will not load fails on the very
+                    # first unit, before anything has played. A fresh cache,
+                    # so any piper audio an earlier seek pass cached is never
+                    # replayed under Kokoro.
+                    piper_error = result.piper_error
+                    sys.stderr.write(
+                        f"speakd: piper could not load voice {piper_error.voice} "
+                        f"({piper_error.reason}); speaking this utterance with kokoro\n"
+                    )
+                    if lang not in self._supported_languages():
+                        fallback = self._unsupported_language(job.source_id, lang)
+                        if fallback is None:
+                            return
+                        lang = fallback
+                    engine = self.engine
+                    voice = self._voice_for(lang, job.profile.voice)
+                    engine_name = "kokoro"
+                    cache = AudioCache()
                     continue
                 with self._idle:
                     target, current.seek_to = current.seek_to, None

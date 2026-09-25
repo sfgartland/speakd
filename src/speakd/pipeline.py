@@ -20,6 +20,7 @@ from speakd.model import Piece, Segment
 from speakd.player import Player, Stretchable
 from speakd.segmenter import DEFAULT_MAX_CHARS, segment
 from speakd.synth import Synthesizer, UnsupportedLanguage
+from speakd.synth.piper_engine import PiperVoiceError
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
@@ -48,9 +49,15 @@ class SpeechResult:
     # carries) so the caller can fall back to another language rather than
     # simply losing the segment. None means nothing of the kind happened.
     unsupported_language: str | None = None
+    # Set when a Piper voice could not be loaded: its files existed when the
+    # engine was chosen, but the .onnx would not load (corrupt). Like
+    # `unsupported_language`, this is the whole engine failing for this
+    # utterance rather than one bad segment, so the caller can fall back to
+    # another engine. None means nothing of the kind happened.
+    piper_error: PiperVoiceError | None = None
 
 
-_Item = tuple[Piece, int, np.ndarray, float] | str | UnsupportedLanguage | None
+_Item = tuple[Piece, int, np.ndarray, float] | str | UnsupportedLanguage | PiperVoiceError | None
 
 # How much made audio an utterance may keep for going back to: about ten
 # minutes of 24 kHz float32.
@@ -324,6 +331,14 @@ def speak(
                     # producer has nothing left to usefully make.
                     work.put(exc)
                     break
+                except PiperVoiceError as exc:
+                    # The same shape as UnsupportedLanguage, but the whole
+                    # engine rather than one language: a Piper voice whose
+                    # files existed when it was chosen cannot be loaded
+                    # (a corrupt .onnx). Nothing it could make would sound,
+                    # so the producer stops and the caller decides.
+                    work.put(exc)
+                    break
                 except Exception as exc:  # speech must not vanish on one bad segment
                     work.put(f"{unit.spoken[:40]!r}: {exc}")
                     continue
@@ -353,6 +368,7 @@ def speak(
     exhausted = False
     aborted = False
     unsupported_language: str | None = None
+    piper_error: PiperVoiceError | None = None
     expected = first
     try:
         while True:
@@ -375,6 +391,12 @@ def speak(
                 # `aborted`: nothing here failed to play, there was simply
                 # nothing this engine could make.
                 unsupported_language = item.lang
+                break
+            if isinstance(item, PiperVoiceError):
+                # The engine could not make a sound for this utterance at
+                # all. Same shape as UnsupportedLanguage, carried out so the
+                # caller can fall back to another engine.
+                piper_error = item
                 break
             if isinstance(item, str):
                 errors.append(item)
@@ -483,4 +505,5 @@ def speak(
         errors=errors,
         units=tuple(units),
         unsupported_language=unsupported_language,
+        piper_error=piper_error,
     )
