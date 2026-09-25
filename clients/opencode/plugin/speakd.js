@@ -109,7 +109,11 @@ function makeDirectory(directory) {
     missing.push(path.basename(probe));
     probe = path.dirname(probe);
   }
-  while (missing.length) fs.mkdirSync(path.join(probe, missing.pop()));
+  let created = probe;
+  while (missing.length) {
+    created = path.join(created, missing.pop());
+    fs.mkdirSync(created);
+  }
 }
 
 function isDirectory(p) {

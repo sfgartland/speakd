@@ -37,6 +37,18 @@ describe("registration files", () => {
     expect(fs.existsSync(path.join(root, "evil.session.json"))).toBe(false);
   });
 
+  it("creates every missing level of the state directory", () => {
+    const root = tempState();
+    const env = { ...process.env, SPEAKD_STATE_DIR: path.join(root, "missing", "deeper") };
+    register("ses_1", { cwd: "/w", env });
+    const directory = path.join(root, "missing", "deeper", "opencode");
+    const files = fs.readdirSync(directory);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/\.session\.json$/);
+    const body = JSON.parse(fs.readFileSync(path.join(directory, files[0]), "utf-8"));
+    expect(body.session_id).toBe("ses_1");
+  });
+
   it("never throws, even into an unwritable directory", () => {
     const env = { SPEAKD_STATE_DIR: "/proc/forbidden/speakd" };
     expect(() => register("ses_1", { cwd: "/w", env })).not.toThrow();
