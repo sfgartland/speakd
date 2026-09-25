@@ -72,3 +72,68 @@ export function hushChannel(source, { new_turn = false, ...options } = {}) {
 export function setLabelChannel(source, label, options = {}) {
   return sendRequest("set_label", source, { label }, options);
 }
+
+// ---- the registration file ----
+//
+// The same file `speakd.clients.registry` writes and reads, in the same
+// state directory scheme, so `speakd-mcp` can find this session by process
+// ancestry. The slug must match Python's `_slug` exactly.
+
+import fs from "node:fs";
+import crypto from "node:crypto";
+
+export function stateDir(env = process.env) {
+  // Mirrors speakd.paths.client_state_dir for client "opencode".
+  const override = env.SPEAKD_STATE_DIR;
+  if (override) return path.join(override, "opencode");
+  const xdg = env.XDG_STATE_HOME;
+  const base = xdg
+    ? path.join(xdg, "speakd")
+    : path.join(env.HOME ?? "/tmp", ".local", "state", "speakd");
+  return path.join(base, "opencode");
+}
+
+export function slug(sessionID) {
+  const safe = sessionID.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80);
+  const digest = crypto.createHash("sha256").update(sessionID, "utf-8").digest("hex").slice(0, 12);
+  return `${safe}-${digest}`;
+}
+
+function makeDirectory(directory) {
+  // Component-wise, not mkdirSync(..., { recursive: true }): on hosts where
+  // mkdir reports ENOENT for a permission failure (SELinux over /proc),
+  // recursive mkdir retries forever and this hook would hang OpenCode.
+  const missing = [];
+  let probe = directory;
+  while (!isDirectory(probe)) {
+    missing.push(path.basename(probe));
+    probe = path.dirname(probe);
+  }
+  while (missing.length) fs.mkdirSync(path.join(probe, missing.pop()));
+}
+
+function isDirectory(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export function register(sessionID, { cwd = "", agentPid = process.pid, env = process.env } = {}) {
+  try {
+    const directory = stateDir(env);
+    makeDirectory(directory);
+    const body = {
+      session_id: sessionID,
+      transcript: "",
+      cwd: cwd || process.cwd(),
+      touched: Date.now() / 1000,
+      client: "opencode",
+      agent_pid: agentPid,
+    };
+    fs.writeFileSync(path.join(directory, `${slug(sessionID)}.session.json`), JSON.stringify(body));
+  } catch {
+    // A registration that cannot be written costs silence, nothing more.
+  }
+}
