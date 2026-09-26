@@ -17,7 +17,9 @@ Last updated 2026-09-26. `main` **is pushed** to https://github.com/sfgartland/s
 | HTTP transport | `127.0.0.1:8642`, token-protected, for the Zotero plugin | `speakctl http-token` prints the token |
 
 Local machine specifics, kept outside the repo:
-- `~/.config/systemd/user/speakd.service.d/local-device.conf` sets `SPEAKD_DEVICE=cpu`.
+- `~/.config/systemd/user/speakd.service.d/local-device.conf` sets `SPEAKD_DEVICE=cpu`
+  **and, since 2026-09-26, `SPEAKD_NO_NOTIFY=1`** (the notifications reader
+  was annoying and untrusted; remove those two lines to bring it back).
   This laptop's NVIDIA GPU is too old for torch's CUDA build. Because the engine
   falls back to the CPU anyway, plain `uv sync` / `uv run` are safe again.
 - `~/.claude/settings.json.before-speakd-plugin` is the backup from before the
