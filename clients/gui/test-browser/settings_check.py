@@ -209,9 +209,7 @@ def run(port: int) -> int:
             " { key: 'speech.engine', value: 'piper' })"
         )
         page.click("#play")
-        page.wait_for_function(
-            "document.querySelector('#rtf-sub').textContent.includes('piper')"
-        )
+        page.wait_for_function("document.querySelector('#rtf-sub').textContent.includes('piper')")
         checks.check(
             True,
             "the rtf sub-line names piper once piper-speaking playback starts",
