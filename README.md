@@ -391,6 +391,12 @@ among them — and `speech.piper_voice_dir` (default `$XDG_DATA_HOME/piper-voice
 is where the downloads land. The switch takes effect on the next utterance; the
 one already speaking finishes on the engine it started with.
 
+The pronunciation transform chain — abbreviations like "pp.", numeric ranges,
+the substitution table — runs on live speech; render text is not transformed,
+so a render sentence reaches its engine as written, except that years still
+read right in both engines: Kokoro reads them natively, and Piper rewrites
+them inside its own `synthesize`, which render parts reach.
+
 **Kokoro is the fallback, and is never loaded implicitly.** With the engine on
 Piper, anything Piper has no voice for is spoken by Kokoro exactly as today.
 The unload switch still means Kokoro: `speakctl disable` on Piper gives back
@@ -423,8 +429,9 @@ second of audio; samples of the passage are in `~/Music/speakd-tts-compare/`:
 ## Audio files
 
 `render` turns a stretch of text into an mp3, opus, or m4b with chapters —
-the daemon side of "turn this paper into a podcast episode", read through
-the same pipeline as live speech: cleanup, segmentation and Kokoro. It runs
+the daemon side of "turn this paper into a podcast episode". Each part is
+read by the engine recorded for it at submission — Piper when configured and
+the part's language has a voice, Kokoro otherwise. It runs
 on its own worker, never the live queue, so a render never delays a sentence
 you are actually listening to; the two directions are kept apart on purpose.
 Before each sentence the worker checks whether anything is speaking live and

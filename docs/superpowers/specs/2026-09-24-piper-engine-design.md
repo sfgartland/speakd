@@ -125,7 +125,10 @@ espeak-ng, which reads "1994" as "one thousand nine hundred ninety four".
 
 ## 5. What the rest of the daemon sees
 
-- `status.engine` gains `name` (the engine chosen for the next utterance) and
+- `status.engine` gains `name`, the engine the settings choose for the next
+  utterance (`piper` while `speech.engine` is piper and Piper is usable, else
+  `kokoro`; the per-utterance fallback is language-dependent and reported
+  per-event on `started`/`position`), and
   `piper: {available: bool, voices: [installed names]}`. `available` is false
   when `piper-tts` isn't importable, and then `set_setting speech.engine piper`
   is refused with that reason.
