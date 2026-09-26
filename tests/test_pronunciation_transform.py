@@ -106,6 +106,8 @@ RANGES_THAT_FIRE = [
     ("99-101", "99 to 101", "crossing a power of ten"),
     ("1787-1799", "1787 to 1799", "a year range: four digits both sides"),
     ("§12-14", "§12 to 14", "a Bekker-style section range"),
+    ("34-38.", "34 to 38.", "sentence-final: the full stop is punctuation, kept"),
+    ("34–38.", "34 to 38.", "sentence-final en dash keeps its full stop too"),
 ]
 
 
@@ -129,6 +131,7 @@ RANGES_THAT_MUST_NOT_FIRE = [
     ("1-800-555-1212", "a full phone number is a dash chain"),
     ("8601-1", "a standard's part number: four digits paired with one"),
     ("1.5-2.5", "a decimal range: the dots put it out of scope"),
+    ("34-38.5", "a decimal continuation after the range: not a full stop"),
 ]
 
 
@@ -147,8 +150,20 @@ def test_a_four_digit_year_is_left_for_the_engine_to_read() -> None:
 
 def test_a_citation_range_survives_the_rest_of_the_table() -> None:
     assert say("See §12, e.g. pp. 34-38, ca. 1787.") == (
-        "See §12, for example pp. 34 to 38, ca. 1787."
+        "See §12, for example pages 34 to 38, ca. 1787."
     )
+
+
+def test_pp_is_read_as_pages() -> None:
+    assert say("pp. 34-38") == "pages 34 to 38"
+
+
+def test_pp_does_not_bite_a_word_ending_in_pp() -> None:
+    assert say("app. 34") == "app. 34"
+
+
+def test_a_sentence_final_range_is_still_rewritten() -> None:
+    assert say("See pp. 34–38.") == "See pages 34 to 38."
 
 
 # --- paths, calls, dashes -------------------------------------------------
