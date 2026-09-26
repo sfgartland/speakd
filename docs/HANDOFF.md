@@ -1,7 +1,7 @@
 # Handoff — resume here
 
-Last updated 2026-09-25. `main` **is pushed** to https://github.com/sfgartland/speakd
-(as of `e139851`, and again with any later commits from today).
+Last updated 2026-09-26. `main` **is pushed** to https://github.com/sfgartland/speakd
+(as of `331860e`, and again with any later commits).
 
 ## What works now
 
@@ -88,43 +88,37 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   `speakctl notify off/on` (socket-only). `set_notify` deliberately stays out
   of the HTTP allowlist. Deferred follow-ups in "Deferred and known gaps".
 
+## Built 2026-09-26 (merged as `331860e`)
+
+- **Piper beside Kokoro** — the whole 7-task plan
+  (`docs/superpowers/plans/2026-09-24-piper-engine.md`, spec
+  `docs/superpowers/specs/2026-09-24-piper-engine-design.md`), one worktree
+  per task, per-task reviews, a final whole-branch review, and the ear check
+  confirmed by a human listen. ~16× cheaper than Kokoro on CPU; `de` now has
+  a real voice. Switch with `speakctl set speech.engine piper` (window
+  Settings also works); voices via `python -m piper.download_voices ...`;
+  README's "Piper" section has the details. `en_US-ryan-medium` is downloaded;
+  `en_US-ryan-high` was already there.
+  - The ear check caught two pre-existing pronunciation gaps and the fixes
+    are merged: sentence-final ranges ("34–38.") now rewrite, and "pp." reads
+    as "pages". The render went to
+    `~/Music/speakd-tts-compare/piper-medium-speakd.wav` (human-confirmed).
+  - Deferred small items in "Deferred and known gaps" below.
+- **CI fixed twice on the way:** lingua's missing stubs (mypy overrides) and
+  the piper tests' scipy skips + the HTTP 413 BrokenPipe flake.
+
 ## Next
 
-### 1. Piper beside Kokoro — the main remaining work
+### 1. Phase 3, language in the clients
 
-Spec: `docs/superpowers/specs/2026-09-24-piper-engine-design.md` (binding).
-Plan: `docs/superpowers/plans/2026-09-24-piper-engine.md` (7 tasks, TDD,
-checkboxes). Approved, on hold by choice until now.
-
-- **Why:** ~16× cheaper than Kokoro on CPU (Piper `medium`, one thread:
-  ~0.13 CPU-s per audio-s vs Kokoro's ~2.1; 380 MB resident vs 1.4 GB), and
-  `de` gets a real voice (resolves the "Real German speech" deferred item).
-- **Prerequisites:** phases 1–2 (settings, languages) and audio export Part A
-  are merged — Tasks 1–5 are unblocked. **Phase 3 (language clients) is not
-  done**, and Piper plan Task 6's *Zotero* half ("the plugin's language cache,
-  added by phase 3") depends on it: do Piper Tasks 1–5 and Task 6's window
-  half now; leave the Zotero cache half for after
-  `docs/superpowers/plans/2026-09-24-language-clients.md`.
-- **Deliberate deviation in the plan** (its own "Deviation from spec §4"):
-  the year rule runs inside `PiperEngine.synthesize` on the text Piper
-  receives, not in `prepare` — follow the plan, not the spec, there.
-- **Local facts:** samples are in `~/Music/speakd-tts-compare/`; the piper
-  voice `en_US-ryan-high` is already downloaded to
-  `$XDG_DATA_HOME/piper-voices`. Install the extra (`uv sync --extra piper`;
-  piper-tts 1.4.x) before Task 2's real-voice test. **GPL-3.0:** an optional
-  extra, never a default dependency — the plan's Global Constraints say how.
-- **Process:** one worktree per task, subagent-driven with reviews, as the
-  rest of this repo. Task 7's ear check renders the comparison passage and
-  reports the path for a human listen before merging.
-- **Later (still deferred):** automatic switching on battery
-  (`/sys/class/power_supply/AC0/online`), holding renders on battery, capping
-  Kokoro's threads.
+`docs/superpowers/plans/2026-09-24-language-clients.md`.
+- The Zotero side needs the live harness, so use Opus.
+- Depends on `status.languages.supported` being right while the model loads. That's fixed.
+- **Includes Piper Task 6's Zotero half** (the plugin's language-cache
+  invalidation on a `speech.engine` setting event) — deferred until phase 3.
 
 ### 2. Then, as before
 
-- **Phase 3, language in the clients:** `docs/superpowers/plans/2026-09-24-language-clients.md`.
-  - The Zotero side needs the live harness, so use Opus.
-  - Depends on `status.languages.supported` being right while the model loads. That's fixed.
 - **Audio export Part B, the Zotero export flow:** `docs/superpowers/plans/2026-09-24-audio-export.md`, Tasks B2–B5.
   - B1's pure modules are already on main (`clients/zotero/src/export/`).
 
@@ -153,23 +147,30 @@ checkboxes). Approved, on hold by choice until now.
   setting on the speaker; a PipeWire-side keep-alive; or a speakd `wake_burst`
   (a short low-level pre-roll before the first sentence after idle — needs
   its own design if chosen).
-- **The notifications off-switch** (merged, not yet smoke-tested live): the
-  running daemon predates it, so restart it (`systemctl --user restart speakd`)
-  before the first `speakctl notify off`. Smoke: `speakctl notify off` →
-  `pgrep -f "[n]otifications.follow"` finds nothing, `speakctl status` shows
-  `"notify": {"enabled": false}`; `on` brings the reader back. Small follow-ups
-  from the whole-branch review, all pre-existing-or-hypothetical: a
+- **The notifications off-switch** (merged and smoke-tested live on
+  2026-09-25: off kills the reader, on revives it, status reports). Small
+  follow-ups from the whole-branch review, all pre-existing-or-hypothetical: a
   per-supervisor guard in `stop_connectors()`, one shared constant for the
   `"notify"` connector name (daemon + `__main__` both spell it), and
   `Supervisor.start()` silently no-opping forever if its thread never starts
   (`Daemon.start()` already rolls this back — mirror it in supervise.py).
+- **Piper follow-ups** (from the whole-branch review; all Minor, all cheap):
+  `reads_years` on the engines is dead surface — pin it in tests or drop it;
+  the year rule is English-only (German voices get English year words);
+  a resumed render part whose engine needs a missing extra fails with the bare
+  error `"piper"`; `has_voice`/`installed_voices` mix `is_file`/`exists`;
+  `trim_silence` no-ops on real Piper (noise floor above the Kokoro-tuned
+  threshold — edges still <50 ms by Piper's own tightness); on a
+  `PiperVoiceError` fallback, `started.engine` says "piper" while Kokoro
+  speaks. Defer all.
 - **OpenCode v2 port:** entry shim only, per Phase D of the opencode plan.
 - **Battery power (deferred by choice, 2026-09-24):** Piper is built and
   switching is available now, by hand, through `speech.engine` (`speakctl set
   speech.engine piper`, or the window's Settings). Automatic switching on
   battery, holding background renders while on battery, and capping Kokoro's
   CPU threads all remain deferred.
-- **CI** runs without the kokoro extra, so the real-engine tests are skipped there.
+- **CI** runs without the kokoro and piper extras, so the real-engine tests are
+  skipped there; piper tests needing scipy skip too.
 
 ## Working on this repo — things that bite
 
@@ -183,10 +184,16 @@ checkboxes). Approved, on hold by choice until now.
 - **Ruff formats code blocks inside Markdown**, which is why `docs/` is excluded
   in `pyproject.toml`.
 - **Old worktrees** under `../speakd-worktrees/` (cc-hooks, gui-tauri, onnx,
-  opencode, opencode-js, hush-interrupt, notify-off-switch, …) are kept by
-  convention. The opencode-js, hush-interrupt and notify-off-switch ones are
-  fully merged; remove them when it suits you.
+  opencode, opencode-js, hush-interrupt, notify-off-switch, fix-ci, piper-years,
+  piper-engine, piper-choose, piper-daemon, piper-renders, piper-window,
+  piper-docs, …) are kept by convention. All of the ones after `notify-off-switch`
+  are fully merged; remove them when it suits you.
 - **Commit emails are public** on GitHub (`sfgartland@hotmail.com`).
+- **The main checkout may carry uncommitted work-in-progress** (as of
+  2026-09-26: a Codex client under `clients/codex/` and edits to the opencode
+  client, the mcp server and the cc follower). Check `git status` before
+  assuming main's working tree is clean; Piper work happened in worktrees so
+  the two don't collide.
 
 ## Where the record is
 
