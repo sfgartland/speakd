@@ -135,9 +135,14 @@ _EM_DASH = re.compile(r"\s*—\s*")
 #   4. spacing around the dash is symmetric — both sides or neither, so a
 #      parenthetical "34 -38" is not swept up;
 #   5. nothing in the same token touches either operand: no letter, digit,
-#      underscore, dot or further dash. That lookaround pair is what excludes
-#      ISBNs, ISO dates and full phone numbers (all longer dash chains) along
-#      with version strings ("2.1-2.2", "v1-2") and decimal ranges.
+#      underscore or further dash, and no dot except one at the very end
+#      that is sentence punctuation rather than a decimal. The lookbehind
+#      still refuses any dot touching the left operand ("2.1-2.2", "v1-2"),
+#      but the lookahead allows a trailing dot that is not followed by a
+#      digit, so a sentence-final range keeps its full stop ("34-38." is a
+#      range, "34-38.5" is not). That lookaround pair is what excludes
+#      ISBNs, ISO dates and full phone numbers (all longer dash chains)
+#      along with version strings and decimal ranges.
 #
 # A name that merely ends in a number — "COVID-19", "GPT-4", "Kokoro-82M" — is
 # excluded a step earlier, by the requirement of digits on *both* sides; there
@@ -147,7 +152,7 @@ _NUMERIC_RANGE = re.compile(
     r"(\d{1,4})"
     r"(?:[-–−]|[ ][-–−][ ])"
     r"(\d{1,4})"
-    r"(?![\w.–−-])"
+    r"(?![\w–−-]|[.]\d)"
 )
 
 
@@ -213,6 +218,14 @@ _WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bOAuth\b", re.I), "oh auth"),
     (re.compile(r"\bCORS\b"), "cores"),
     (re.compile(r"\bREPL\b"), "repple"),
+    # "pp." is "pages", and espeak reads the letters "pee pee" otherwise.
+    # A literal-table entry is out of the question: substring replacement
+    # would rewrite the tail of "app." as well. Here the \b keeps it off
+    # "app.", the lookahead keeps it out of runs like "pp.e.g.", and the
+    # trailing space — collapsed back down by the final whitespace
+    # normalisation when the source already had one — keeps "pp.34" from
+    # concatenating into "pages34".
+    (re.compile(r"\bpp\.(?![A-Za-z])"), "pages "),
 )
 
 

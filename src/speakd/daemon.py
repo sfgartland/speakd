@@ -879,7 +879,13 @@ class Daemon:
             status: dict[str, object] = {"loaded": True, "loading": False}
         else:
             status = {"loaded": engine.loaded, "loading": engine.loading}
-        status["name"] = engine.name
+        status["name"] = (
+            "piper"
+            if str(self.settings.get("speech.engine")) == "piper"
+            and self.piper is not None
+            and piper_available()
+            else "kokoro"
+        )
         piper = self.piper
         if piper is not None:
             status["piper"] = {
@@ -1653,7 +1659,9 @@ class Daemon:
             return Response(
                 ok=False, error="piper-tts is not installed (pip install 'speakd[piper]')"
             )
-        previous = self.settings.get(key) if key == "speech.engine" else None
+        previous = (
+            self.settings.get(key) if key in ("speech.engine", "speech.piper_voice_dir") else None
+        )
         try:
             applied = self.settings.set(key, value)
         except SettingError as exc:
@@ -1663,10 +1671,14 @@ class Daemon:
                 # Leaving piper for kokoro: drop the voices' sessions, since
                 # kokoro is what speaks from here on.
                 self.piper.unload()
-        elif key == "speech.piper_voice_dir" and self.piper is not None:
-            # The engine's own method unloads first: anything loaded came
-            # from the old directory.
-            self.piper.set_voice_dir(Path(str(applied)))
+        elif key == "speech.piper_voice_dir" and self.piper is not None and applied != previous:
+            # The engines' own methods unload first: anything loaded came
+            # from the old directory. Both Pipers -- live and render -- read
+            # the one setting, so both are repointed.
+            voice_dir = Path(str(applied))
+            self.piper.set_voice_dir(voice_dir)
+            if self.render_piper is not None:
+                self.render_piper.set_voice_dir(voice_dir)
         self._publish("setting", "", {"key": key, "value": applied})
         return Response(ok=True, data={"value": applied})
 

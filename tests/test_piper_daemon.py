@@ -120,6 +120,7 @@ def build(
     *,
     engine: str = "kokoro",
     player: Player | None = None,
+    render_piper: FakePiperEngine | None = None,
 ) -> tuple[Daemon, list[Event]]:
     """A daemon with both engines, recording every event on a locked list."""
     d = Daemon(
@@ -130,6 +131,7 @@ def build(
         channels=ChannelTable(),
         settings=settings,
         piper=piper,
+        render_piper=render_piper,
     )
     if piper is not None:
         settings.set("speech.piper_voices", {"en": "voice-en", "de": "voice-de"})
@@ -372,12 +374,13 @@ def test_status_reports_the_piper_engine_and_its_languages(
     status = d.handle(Request(verb=Verb.STATUS, source_id=""))
     engine = _dict(status.data["engine"])
     languages_status = _dict(status.data["languages"])
-    assert engine["name"] == "fake"
+    assert engine["name"] == "piper"
     assert engine["piper"] == {"available": True, "voices": ["voice-de", "voice-en"]}
     assert "de" in _supported(languages_status["supported"])
     settings.set("speech.engine", "kokoro")
     status = d.handle(Request(verb=Verb.STATUS, source_id=""))
     languages_status = _dict(status.data["languages"])
+    assert _dict(status.data["engine"])["name"] == "kokoro"
     assert "de" not in _supported(languages_status["supported"])
     assert _dict(status.data["engine"])["piper"] == {
         "available": True,
@@ -392,7 +395,7 @@ def test_status_without_a_piper_engine_says_it_is_unavailable(
     d, _seen = build(settings, kokoro, piper=None)
     status = d.handle(Request(verb=Verb.STATUS, source_id=""))
     engine = _dict(status.data["engine"])
-    assert engine["name"] == "fake"
+    assert engine["name"] == "kokoro"
     assert engine["piper"] == {"available": False, "voices": []}
 
 
@@ -447,3 +450,32 @@ def test_changing_the_piper_voice_directory_reaches_the_engine(
     )
     assert response.ok
     assert piper.voice_dirs == [Path("/some/other/dir")]
+
+
+def test_changing_the_piper_voice_directory_reaches_both_engines_once(
+    settings: Settings, piper_available: None
+) -> None:
+    kokoro = FakeEngine()
+    piper = FakePiperEngine()
+    render_piper = FakePiperEngine()
+    d, _seen = build(settings, kokoro, piper, engine="piper", render_piper=render_piper)
+    response = d.handle(
+        Request(
+            verb=Verb.SET_SETTING,
+            source_id="",
+            payload={"key": "speech.piper_voice_dir", "value": "/some/other/dir"},
+        )
+    )
+    assert response.ok
+    assert piper.voice_dirs == [Path("/some/other/dir")]
+    assert render_piper.voice_dirs == [Path("/some/other/dir")]
+    # The same value again is not a change: neither engine is repointed.
+    d.handle(
+        Request(
+            verb=Verb.SET_SETTING,
+            source_id="",
+            payload={"key": "speech.piper_voice_dir", "value": "/some/other/dir"},
+        )
+    )
+    assert piper.voice_dirs == [Path("/some/other/dir")]
+    assert render_piper.voice_dirs == [Path("/some/other/dir")]

@@ -371,11 +371,67 @@ It is built for the nine languages above plus German, Dutch, Swedish,
 Norwegian, Danish and Polish, so a common near-neighbour is recognised as
 itself rather than guessed as English.
 
+## Piper
+
+Kokoro is the default, and the better voice. Piper is the cheap second engine
+you switch to by hand — mostly for battery, where Kokoro's torch build is a
+CPU tax, or for German, which Kokoro cannot speak. Because `piper-tts` embeds
+espeak-ng and is GPL-3.0, it is an extra you install yourself; it is never
+bundled into a speakd distribution:
+
+```bash
+uv sync --extra piper                    # or: pip install 'speakd[piper]'
+python -m piper.download_voices en_US-ryan-medium de_DE-thorsten-medium \
+  --data-dir ~/.local/share/piper-voices
+uv run speakctl set speech.engine piper  # or the window's Settings
+```
+
+`speech.piper_voices` maps languages to Piper voices — six out of the box, `de`
+among them — and `speech.piper_voice_dir` (default `$XDG_DATA_HOME/piper-voices`)
+is where the downloads land. The switch takes effect on the next utterance; the
+one already speaking finishes on the engine it started with.
+
+The pronunciation transform chain — abbreviations like "pp.", numeric ranges,
+the substitution table — runs on live speech; render text is not transformed,
+so a render sentence reaches its engine as written, except that years still
+read right in both engines: Kokoro reads them natively, and Piper rewrites
+them inside its own `synthesize`, which render parts reach.
+
+**Kokoro is the fallback, and is never loaded implicitly.** With the engine on
+Piper, anything Piper has no voice for is spoken by Kokoro exactly as today.
+The unload switch still means Kokoro: `speakctl disable` on Piper gives back
+its memory, and from then on anything Piper cannot speak is declined with `no
+voice for <lang>` rather than silently loading Kokoro again — the same way
+disable already keeps a stray enqueue from undoing the decision by accident.
+So on battery: switch to Piper, disable, and what stays is the 380 MB of a
+Piper voice instead of 1.4 GB of torch.
+
+**Two thread settings, deliberately opposite.** `speech.piper_threads` (default
+1) is how many threads live speech synthesises on; measured, one is the cheap
+setting — extra ONNX threads spin while they wait on each other and cost more
+CPU, not less. `render.piper_threads` (default 0, every core) is for renders: a
+render is long and nobody is waiting on each sentence, so it takes the whole
+machine rather than live speech's frugal single thread. On battery, set it to
+1. Both are `restart` settings.
+
+Measured on this laptop, CPU only, one ~200-character passage — CPU-seconds per
+second of audio; samples of the passage are in `~/Music/speakd-tts-compare/`:
+
+| engine | CPU cost | wall RTF | notes |
+|---|---|---|---|
+| Kokoro | ~2.1 | ~0.5 | best voice; torch, 1.4 GB resident |
+| Piper `high` | ~1.4 | ~0.35 | |
+| Piper `medium`, default threads | ~0.25 | ~0.07 | |
+| **Piper `medium`, one thread** | **~0.13** | ~0.13 | ~16× cheaper than Kokoro; 380 MB resident |
+| Piper `low` | ~0.17 | ~0.04 | 16 kHz, audibly duller |
+| Supertonic 3 (dropped) | 0.6–1.5 | 0.27–0.62 | archived; no text normaliser |
+
 ## Audio files
 
 `render` turns a stretch of text into an mp3, opus, or m4b with chapters —
-the daemon side of "turn this paper into a podcast episode", read through
-the same pipeline as live speech: cleanup, segmentation and Kokoro. It runs
+the daemon side of "turn this paper into a podcast episode". Each part is
+read by the engine recorded for it at submission — Piper when configured and
+the part's language has a voice, Kokoro otherwise. It runs
 on its own worker, never the live queue, so a render never delays a sentence
 you are actually listening to; the two directions are kept apart on purpose.
 Before each sentence the worker checks whether anything is speaking live and

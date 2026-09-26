@@ -164,9 +164,11 @@ checkboxes). Approved, on hold by choice until now.
   `Supervisor.start()` silently no-opping forever if its thread never starts
   (`Daemon.start()` already rolls this back — mirror it in supervise.py).
 - **OpenCode v2 port:** entry shim only, per Phase D of the opencode plan.
-- **Battery power (deferred by choice, 2026-09-24):** for now the engine is
-  switched by hand (Piper, above). Later: switch automatically on battery,
-  hold background renders while on battery, and cap Kokoro's CPU threads.
+- **Battery power (deferred by choice, 2026-09-24):** Piper is built and
+  switching is available now, by hand, through `speech.engine` (`speakctl set
+  speech.engine piper`, or the window's Settings). Automatic switching on
+  battery, holding background renders while on battery, and capping Kokoro's
+  CPU threads all remain deferred.
 - **CI** runs without the kokoro extra, so the real-engine tests are skipped there.
 
 ## Working on this repo — things that bite

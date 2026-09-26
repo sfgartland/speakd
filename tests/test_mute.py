@@ -327,7 +327,7 @@ def test_status_reports_the_engine() -> None:
         assert status.data["engine"] == {
             "loaded": False,
             "loading": False,
-            "name": "lazy",
+            "name": "kokoro",
             "piper": {"available": False, "voices": []},
         }
     finally:
@@ -342,7 +342,7 @@ def test_an_engine_that_cannot_be_unloaded_reports_as_loaded() -> None:
         assert status.data["engine"] == {
             "loaded": True,
             "loading": False,
-            "name": "fake",
+            "name": "kokoro",
             "piper": {"available": False, "voices": []},
         }
     finally:
