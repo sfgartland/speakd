@@ -44,7 +44,7 @@ def test_outline_of_nothing_is_empty() -> None:
 
 
 def test_page_number_lines() -> None:
-    for line in ("12", "  7 ", "iv", "XIV", "lxxx"):
+    for line in ("12", "  7 ", "iv", "XIV", "lxxx", "xl", "xlv"):
         assert prep.is_page_number(line)
     for line in ("", "Chapter 1", "12 apples", "word", "mix", "did", "civil"):
         assert not prep.is_page_number(line)
@@ -207,14 +207,14 @@ def test_scanned_pdf_with_outline_yields_no_parts(monkeypatch: pytest.MonkeyPatc
     assert prep.main() == 1
 
 
-def test_pages_range_keeps_only_chapters_starting_inside_it(
+def test_pages_range_drops_chapters_wholly_outside_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _mock_pdf(monkeypatch, [f"alpha{chr(96 + n)} beta{chr(96 + n)}" for n in range(1, 7)])
     parts = prep.prepare_pdf(Path("x.pdf"), (4, 6), "auto", False)
     assert [p.splitlines()[0] for p in parts] == ['# Argument: a "turn"']
     parts = prep.prepare_pdf(Path("x.pdf"), (2, 3), "auto", False)
-    assert parts == []
+    assert [p.splitlines()[0] for p in parts] == ["# Introduction"]
 
 
 def test_front_matter_dropped_unless_kept(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -232,8 +232,7 @@ def test_front_matter_dropped_unless_kept(monkeypatch: pytest.MonkeyPatch) -> No
     assert [p.splitlines()[0] for p in dropped] == ["# One", "# Two"]
     assert "cover" not in "".join(dropped)
     kept = prep.prepare_pdf(Path("x.pdf"), None, "auto", False, keep_front_matter=True)
-    assert kept[0] == "cover contents" or kept[0].startswith("cover")
-    assert len(kept) == 3
+    assert [p.splitlines()[0] for p in kept] == ["cover contents", "# One", "# Two"]
 
 
 def test_skill_install_excludes_pycache(tmp_path: Path) -> None:
@@ -265,4 +264,15 @@ def test_skill_install_excludes_pycache(tmp_path: Path) -> None:
             assert (target / "speakd-audiobook" / "scripts" / "prepare_text.py").is_file()
             assert not (target / "speakd-audiobook" / "scripts" / "__pycache__").exists()
     finally:
-        (cache / "junk.pyc").unlink()
+        shutil.rmtree(cache, ignore_errors=True)
+
+
+def test_range_starting_mid_chapter_keeps_its_in_range_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_pdf(monkeypatch, [f"alpha{chr(96 + n)} beta{chr(96 + n)}" for n in range(1, 7)])
+    # Pages 2-3 lie inside "Introduction" (pages 1-3), which started before the range.
+    parts = prep.prepare_pdf(Path("x.pdf"), (2, 5), "auto", False)
+    assert [p.splitlines()[0] for p in parts] == ["# Introduction", '# Argument: a "turn"']
+    assert "alphab" in parts[0] and "alphaa" not in parts[0]
+    assert "alphad" in parts[1] and "alphae" in parts[1] and "alphaf" not in parts[1]

@@ -20,9 +20,9 @@ CHARS_PER_SECOND = 15
 HEADER_SHARE = 0.4
 HEADER_MIN_PAGES = 5
 REFERENCES = re.compile(r"^(References|Bibliography|Works Cited|Literatur(verzeichnis)?)$", re.I)
-# Roman numerals i..lxxxix: front-matter page numbers. A bare character class
+# Roman numerals i..lxxxix, covering xl-xlix: front-matter page numbers. A bare character class
 # would also eat body lines such as "mix", "did" or "civil".
-ARABIC_OR_ROMAN = re.compile(r"^(\d+|(?=[ivxl])l?x{0,3}(ix|iv|v?i{0,3}))$", re.I)
+ARABIC_OR_ROMAN = re.compile(r"^(\d+|(?=[ivxl])(xl|l?x{0,3})(ix|iv|v?i{0,3}))$", re.I)
 # mutool prints "+" or "|" markers, then one tab per depth level; top level
 # is exactly one tab before the quoted title.
 OUTLINE_LINE = re.compile(r'^[+|-]\t"((?:[^"\\]|\\.)*)"\t#page=(\d+)')
@@ -177,9 +177,11 @@ def prepare_pdf(
         if keep_front_matter and starts[0] > first:
             groups.append((None, [ln for p in cleaned[: starts[0] - first] for ln in p]))
         for (title, start), end in zip(outline, bounds, strict=True):
-            if not first <= start <= last_page:
+            # A chapter that overlaps the range keeps its in-range pages;
+            # only chapters wholly outside it are dropped.
+            if start > last_page or end <= first:
                 continue
-            chosen = cleaned[max(start, first) - first : max(end, first) - first]
+            chosen = cleaned[max(start, first) - first : min(end, last_page + 1) - first]
             groups.append((title, [line for page in chosen for line in page]))
     else:
         groups.append((None, [line for page in cleaned for line in page]))
