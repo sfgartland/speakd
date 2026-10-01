@@ -22,6 +22,7 @@ from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginHost
 from speakd.plugins.registry import ServiceRegistry
 from speakd.profiles import Profile, load_profiles, resolve_chain
+from speakd.segmenter import is_only_dots
 from speakd.supervise import Supervisor
 from speakd.synth.piper_engine import PiperEngine, piper_available
 from speakd.transforms.chain import apply_chain
@@ -51,11 +52,31 @@ def _view_of(profile: Profile, host: PluginHost) -> ProfileView:
         result = apply_chain(pieces, chain)
         return list(result.pieces), absent + result.errors
 
+    unit_chain, unit_missing = resolve_chain(profile, host, sentences=True)
+    unit_absent = [
+        f"profile {profile.name!r} wants {name!r} -- no plugin provides it" for name in unit_missing
+    ]
+
+    def prepare_sentences(units: Sequence[Piece]) -> tuple[list[Piece], list[str]]:
+        if not unit_chain:
+            return list(units), unit_absent
+        # One unit at a time: a sentence transform never merges or reorders,
+        # and running the chain over the whole list would let it. A unit whose
+        # spoken text comes back empty, or only dots, is dropped.
+        out: list[Piece] = []
+        errors = list(unit_absent)
+        for unit in units:
+            result = apply_chain([unit], unit_chain)
+            errors.extend(result.errors)
+            out.extend(p for p in result.pieces if not is_only_dots(p.spoken))
+        return out, errors
+
     return ProfileView(
         voice=profile.voice,
         speed=profile.speed,
         interrupt_on=profile.interrupt_on,
         prepare=prepare,
+        prepare_sentences=prepare_sentences,
     )
 
 

@@ -161,3 +161,86 @@ def test_pieces_are_exact_by_default_and_sub_pieces_stay_exact() -> None:
     out = segment([piece(source)])
     assert all(p.exact for p in out)
     assert_spans_are_sound(source, piece(source), out)
+
+
+@pytest.mark.parametrize("abbreviation", ["pp.", "p."])
+def test_a_page_abbreviation_before_a_number_is_not_a_sentence_end(abbreviation: str) -> None:
+    text = f"As argued in {abbreviation} 34-38. Next one."
+    out = segment([piece(text)])
+    assert [p.spoken for p in out] == [f"As argued in {abbreviation} 34-38.", "Next one."]
+    assert_spans_are_sound(text, piece(text), out)
+
+
+def test_a_word_ending_in_p_still_ends_a_sentence_before_a_number() -> None:
+    assert [p.spoken for p in segment([piece("Look at the cap. 3 is next.")])] == [
+        "Look at the cap.",
+        "3 is next.",
+    ]
+
+
+def spoken(text: str) -> list[str]:
+    return [p.spoken for p in segment([piece(text)])]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Wait... what",
+        "Wait.... what",
+        "Wait . . . what",
+        "Wait… what",
+        "It was... 3 of them",
+        "Well..., maybe",
+        "Well... ; maybe",
+    ],
+)
+def test_an_ellipsis_before_a_continuation_is_not_a_break(text: str) -> None:
+    assert spoken(text) == [text]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("It ended... Then we left.", ["It ended...", "Then we left."]),
+        ("It ended.... Then we left.", ["It ended....", "Then we left."]),
+        ("It ended . . . Then we left.", ["It ended . . .", "Then we left."]),
+        ("It ended… Then we left.", ["It ended…", "Then we left."]),
+        ('It ended... "Then" we left.', ["It ended...", '"Then" we left.']),
+        ("It ended...", ["It ended..."]),
+        ("It ended... ", ["It ended..."]),
+    ],
+)
+def test_an_ellipsis_ends_at_most_one_sentence_and_stays_with_it(
+    text: str, expected: list[str]
+) -> None:
+    assert spoken(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["... Then we left.", "Hmm... ...", "Hmm... . . . Then", "A. ... B.", "...", "…", ". . ."],
+)
+def test_no_unit_is_only_dots(text: str) -> None:
+    for unit in spoken(text):
+        assert unit.strip(". …"), f"{unit!r} is only dots, from {text!r}"
+
+
+def test_ellipsis_spans_stay_sound() -> None:
+    text = "It ended... Then . . . we left… Done."
+    out = segment([piece(text)])
+    assert_spans_are_sound(text, piece(text), out)
+
+
+def test_segmenting_a_book_sized_part_is_linear() -> None:
+    """The render verb segments whole parts on the daemon's thread, so a
+    per-candidate scan of the prefix or the rest of the text would hang it."""
+    import time
+
+    block = "A sentence about things, see pp. 3 for more. Wait... what? It ended… Then we left. "
+    text = block * 2500  # ~200k characters
+    start = time.monotonic()
+    out = segment([piece(text)])
+    elapsed = time.monotonic() - start
+    # "pp. 3" and "Wait... what" stay inside their sentences: four units a block.
+    assert len(out) == 2500 * 4
+    assert elapsed < 2.0, f"took {elapsed:.1f}s"

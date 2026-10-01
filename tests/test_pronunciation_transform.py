@@ -61,8 +61,12 @@ def test_longer_acronyms_win_over_shorter_ones() -> None:
     assert say("HTTPS") == "H T T P S"
 
 
-def test_ellipsis_is_collapsed() -> None:
-    assert say("wait... now") == "wait now"
+def test_ellipsis_is_normalised_to_one_character_not_deleted() -> None:
+    assert say("wait... now") == "wait… now"
+    assert say("Hmm....") == "Hmm…"
+    assert say("Hmm . . . what") == "Hmm… what"
+    assert say("Hmm…… what") == "Hmm… what"
+    assert say("wait...now") == "wait… now"
 
 
 def test_output_is_marked_inexact() -> None:
@@ -212,3 +216,13 @@ def test_prose_around_a_url_is_still_rewritten() -> None:
     assert say("The API at https://example.com/x — see settings.json.") == (
         "The A P I at https://example.com/x, see settings dot jason."
     )
+
+
+def test_p_is_read_as_page() -> None:
+    assert say("p. 12") == "page 12"
+    assert say("see p. 3-5") == "see page 3 to 5"
+
+
+def test_p_does_not_bite_a_word_ending_in_p() -> None:
+    assert say("cap. 3") == "cap. 3"
+    assert say("app. 2") == "app. 2"

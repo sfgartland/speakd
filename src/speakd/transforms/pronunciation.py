@@ -40,7 +40,7 @@ doc assigns it to the separately installable vault pack.
 
 Two orderings in `_rewrite` are load-bearing and will not survive being
 rearranged for tidiness. The em dash is taken before the literal table,
-because that table rewrites "..." and "->" and either could otherwise carve a
+because that table rewrites "->" and could otherwise carve a
 dash out of a run of punctuation this rule has not seen yet. And the path rule
 runs before the filename rule, because the filename rule would otherwise
 rewrite the extension inside a path and leave its "dot" sitting beside the
@@ -70,11 +70,23 @@ _LITERAL: tuple[tuple[str, str], ...] = (
     ("&&", " and "),
     ("||", " or "),
     ("→", " to "),
-    ("...", " "),
     ("/dev/null", "dev null"),
     ("stderr", "standard error"),
     ("stdout", "standard output"),
 )
+
+# An ellipsis in any spelling -- three or more dots, spaced or not, or the
+# character itself -- becomes the single character "…". The table once deleted
+# "..." outright, a port from a shell narrator where dots were read as "dot dot
+# dot"; but deleting it also deleted the pause, and the sentence break the
+# segmenter needs ("It ended... Then we left." is two sentences, which only
+# differ from "Wait... what" by what follows the dots). Measured instead of
+# assumed: misaki phonemises "…" as a single punctuation token (hmm… wˌʌt, no
+# words in it) and espeak-ng says nothing for it at all, while three bare dots
+# reach misaki as three separate "." tokens. The leading whitespace is eaten
+# so the ellipsis hugs its word; the trailing space is the usual guard against
+# "wait...now" fusing, and the final whitespace normalisation collapses it.
+_ELLIPSIS = re.compile(r"\s*(?:\.(?:\s*\.){2,}|…+)")
 
 _FILENAME = re.compile(r"([A-Za-z0-9_-]{2,})\.([a-z]{1,10})")
 _CHAINED = re.compile(r"(dot [A-Za-z0-9_-]+)\.([A-Za-z]{1,10})")
@@ -226,11 +238,17 @@ _WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     # normalisation when the source already had one — keeps "pp.34" from
     # concatenating into "pages34".
     (re.compile(r"\bpp\.(?![A-Za-z])"), "pages "),
+    # "p. 12" is "page 12", and the engine reads the letter "p" otherwise.
+    # Only before a digit: a bare "p." is as likely a letter or an initial,
+    # and the \b keeps it off "cap. 3" and "app. 2". After "pp." so that
+    # one is never half-matched; the trailing space is the same guard as
+    # above against "p.12" becoming "page12".
+    (re.compile(r"\bp\.(?=\s*\d)\s*"), "page "),
 )
 
 
 def _rewrite(text: str) -> str:
-    # Ranges first: the literal table rewrites "->" and "..." and there is no
+    # Ranges first: the literal table rewrites "->" and there is no
     # reason to let either reach a range before this rule has seen it.
     text = _NUMERIC_RANGE.sub(_spoken_range, text)
     # Ahead of that table for the same reason: it is free to carve a piece out
@@ -239,6 +257,7 @@ def _rewrite(text: str) -> str:
     text = _EMPTY_CALL.sub("", text)
     for needle, replacement in _LITERAL:
         text = text.replace(needle, replacement)
+    text = _ELLIPSIS.sub("… ", text)
     # Before _FILENAME, which would otherwise rewrite the extension inside a
     # path and leave a "dot" for this rule's comma to land beside.
     text = _PATH.sub(_spoken_path, text)

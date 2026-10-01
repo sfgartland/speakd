@@ -906,3 +906,26 @@ def test_the_render_piper_engine_is_built_with_render_piper_threads(
     d = Daemon(FakeEngine(), StreamingPlayer(FakeSink()), profile_for, settings=settings)
     assert d.render_piper is not None
     assert built == [(Path(str(settings.get("speech.piper_voice_dir"))), 7)]
+
+
+def test_a_part_with_stored_sentences_is_synthesised_from_them(tmp_path: Path) -> None:
+    engine = CountingEngine()
+    queue = RenderQueue(engine, work_root=tmp_path / "renders")
+    job = _job(tmp_path, parts=[Part(title="C", text="raw", sentences=["A heading", "A body."])])
+    queue.submit(job)
+    assert until(lambda: state_of(queue, job.id) in ("done", "failed"))
+    assert engine.calls == ["A heading", "A body."]
+    queue.stop()
+
+
+def test_sentences_round_trip_and_an_old_manifest_without_them_resumes(tmp_path: Path) -> None:
+    job = _job(tmp_path, parts=[Part(title="C", text="One. Two.", sentences=["One.", "Two."])])
+    work_dir = tmp_path / "work"
+    save_manifest(job, work_dir)
+    assert load_manifest(work_dir).parts[0].sentences == ["One.", "Two."]
+
+    old = _job(tmp_path, parts=[Part(title="C", text="One. Two.")])
+    old_dir = tmp_path / "old-work"  # parts.json is written once, so a fresh directory
+    save_manifest(old, old_dir)
+    assert "sentences" not in json.loads((old_dir / "parts.json").read_text())[0]
+    assert load_manifest(old_dir).parts[0].sentences is None
