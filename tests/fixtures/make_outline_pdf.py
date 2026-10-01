@@ -10,7 +10,8 @@ from pathlib import Path
 
 import fitz  # type: ignore[import-not-found]
 
-CHAPTERS = [("Introduction", 1, 3), ("Argument", 4, 6)]
+# Distinct last lines: digits are normalised away when spotting running lines.
+WORDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
 
 doc = fitz.open()
 for number in range(1, 7):
@@ -18,7 +19,7 @@ for number in range(1, 7):
     page.insert_text((72, 40), "Sample Journal", fontsize=10)
     page.insert_text((72, 90), f"Body sentence one on page {number}.", fontsize=11)
     page.insert_text((72, 110), "A second line of the same paragraph", fontsize=11)
-    page.insert_text((72, 125), "continues here.", fontsize=11)
+    page.insert_text((72, 125), f"continues with {WORDS[number - 1]}.", fontsize=11)
     if number == 6:
         page.insert_text((72, 170), "References", fontsize=11)
         page.insert_text((72, 190), "Doe, J. 2001. A cited work.", fontsize=11)

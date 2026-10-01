@@ -20,7 +20,9 @@ CHARS_PER_SECOND = 15
 HEADER_SHARE = 0.4
 HEADER_MIN_PAGES = 5
 REFERENCES = re.compile(r"^(References|Bibliography|Works Cited|Literatur(verzeichnis)?)$", re.I)
-ARABIC_OR_ROMAN = re.compile(r"^(\d+|[ivxlcdm]+)$", re.I)
+# Roman numerals i..lxxxix: front-matter page numbers. A bare character class
+# would also eat body lines such as "mix", "did" or "civil".
+ARABIC_OR_ROMAN = re.compile(r"^(\d+|(?=[ivxl])l?x{0,3}(ix|iv|v?i{0,3}))$", re.I)
 # mutool prints "+" or "|" markers, then one tab per depth level; top level
 # is exactly one tab before the quoted title.
 OUTLINE_LINE = re.compile(r'^[+|-]\t"((?:[^"\\]|\\.)*)"\t#page=(\d+)')
@@ -50,7 +52,7 @@ def running_lines(pages: list[list[str]]) -> set[str]:
         return set()
     counts: Counter[str] = Counter()
     for page in pages:
-        content = [_normalise(line) for line in page if line.strip()]
+        content = [_normalise(line) for line in page if line.strip() and not is_page_number(line)]
         if content:
             counts.update({content[0], content[-1]})
     return {line for line, seen in counts.items() if seen >= HEADER_SHARE * len(pages)}
@@ -104,9 +106,12 @@ def cut_references(lines: list[str]) -> list[str]:
 def prepare_text_file(source: Path, keep_references: bool) -> list[str]:
     """Normalise paragraphs of a text file; existing parts and headings pass through."""
     parts = []
-    for chunk in source.read_text(encoding="utf-8").split("\f"):
+    chunks = source.read_text(encoding="utf-8").split("\f")
+    for index, chunk in enumerate(chunks):
         lines = chunk.splitlines()
-        text = join_paragraphs(lines if keep_references else cut_references(lines))
+        if not keep_references and index == len(chunks) - 1:
+            lines = cut_references(lines)
+        text = join_paragraphs(lines)
         if text:
             parts.append(text)
     return parts
@@ -122,7 +127,14 @@ def parse_pages(spec: str) -> tuple[int, int]:
 
 def _run(command: list[str]) -> str:
     try:
-        done = subprocess.run(command, capture_output=True, text=True, check=True)
+        done = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
     except FileNotFoundError:
         raise SystemExit(f"{command[0]} not found; install poppler/mupdf tools") from None
     except subprocess.CalledProcessError as error:
@@ -138,7 +150,11 @@ def _outline(pdf: Path) -> list[tuple[str, int]]:
 
 
 def prepare_pdf(
-    pdf: Path, pages: tuple[int, int] | None, chapters: str, keep_references: bool
+    pdf: Path,
+    pages: tuple[int, int] | None,
+    chapters: str,
+    keep_references: bool,
+    keep_front_matter: bool = False,
 ) -> list[str]:
     command = ["pdftotext"]
     if pages:
@@ -149,17 +165,20 @@ def prepare_pdf(
     first = pages[0] if pages else 1
     cleaned = strip_pages([text.splitlines() for text in texts])
 
-    # Each group is (title, its pages' lines); pages before the first outline
-    # entry stay as an untitled part rather than being lost.
+    # Each group is (title, its pages' lines). Pages before the first outline
+    # entry are front matter (title page, contents) and are dropped unless
+    # asked for; chapters starting outside --pages are dropped too.
     groups: list[tuple[str | None, list[str]]] = []
     outline = _outline(pdf) if chapters == "auto" else []
     if outline:
         starts = [page for _, page in outline]
         last_page = first + len(cleaned) - 1
         bounds = [*starts[1:], last_page + 1]
-        if starts[0] > first:
+        if keep_front_matter and starts[0] > first:
             groups.append((None, [ln for p in cleaned[: starts[0] - first] for ln in p]))
         for (title, start), end in zip(outline, bounds, strict=True):
+            if not first <= start <= last_page:
+                continue
             chosen = cleaned[max(start, first) - first : max(end, first) - first]
             groups.append((title, [line for page in chosen for line in page]))
     else:
@@ -171,7 +190,7 @@ def prepare_pdf(
     parts = []
     for title, lines in groups:
         body = join_paragraphs(lines)
-        if body or title:
+        if body:
             parts.append(f"# {title}\n\n{body}" if title else body)
     return parts
 
@@ -194,11 +213,18 @@ def main() -> int:
     parser.add_argument("--pages", help="PDF page range, e.g. 12-48")
     parser.add_argument("--chapters", choices=["auto", "none"], default="auto")
     parser.add_argument("--keep-references", action="store_true")
+    parser.add_argument(
+        "--keep-front-matter",
+        action="store_true",
+        help="keep pages before the first outline entry as an untitled leading part",
+    )
     args = parser.parse_args()
 
     if args.source.suffix.lower() == ".pdf":
         pages = parse_pages(args.pages) if args.pages else None
-        parts = prepare_pdf(args.source, pages, args.chapters, args.keep_references)
+        parts = prepare_pdf(
+            args.source, pages, args.chapters, args.keep_references, args.keep_front_matter
+        )
     else:
         parts = prepare_text_file(args.source, args.keep_references)
     if not parts:

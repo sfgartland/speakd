@@ -1,6 +1,7 @@
 """The speakd-audiobook skill's text preparation script."""
 
 import importlib.util
+import os
 import shutil
 import subprocess as sp
 import sys
@@ -43,9 +44,9 @@ def test_outline_of_nothing_is_empty() -> None:
 
 
 def test_page_number_lines() -> None:
-    for line in ("12", "  7 ", "iv", "XIV"):
+    for line in ("12", "  7 ", "iv", "XIV", "lxxx"):
         assert prep.is_page_number(line)
-    for line in ("", "Chapter 1", "12 apples", "word"):
+    for line in ("", "Chapter 1", "12 apples", "word", "mix", "did", "civil"):
         assert not prep.is_page_number(line)
 
 
@@ -62,9 +63,9 @@ def test_running_lines_need_five_pages_and_forty_percent() -> None:
 
 
 def test_strip_pages_removes_running_lines_and_page_numbers() -> None:
-    pages = [["Sample Journal", f"text {n}", "", str(n)] for n in range(1, 6)]
+    pages = [["Sample Journal", f"text {n}", f"w{chr(96 + n)}x", "", str(n)] for n in range(1, 6)]
     out = prep.strip_pages(pages)
-    assert out == [[f"text {n}", ""] for n in range(1, 6)]
+    assert out == [[f"text {n}", f"w{chr(96 + n)}x", ""] for n in range(1, 6)]
 
 
 def test_join_paragraphs_dehyphenates_and_keeps_breaks() -> None:
@@ -142,7 +143,7 @@ def test_pdf_end_to_end_with_outline(tmp_path: Path) -> None:
     assert "Sample Journal" not in text
     assert "References" not in text and "Doe, J." not in text
     assert "Body sentence one on page 3." in text
-    assert "A second line of the same paragraph continues here." in text
+    assert "A second line of the same paragraph continues with charlie." in text
     assert "Introduction" in done.stderr and "Argument" in done.stderr
 
     single = tmp_path / "single.txt"
@@ -165,3 +166,103 @@ def test_pdf_end_to_end_with_outline(tmp_path: Path) -> None:
     body = single.read_text(encoding="utf-8")
     assert "\f" not in body and "# " not in body
     assert "Doe, J." in body and "page 4" not in body
+
+
+def test_running_lines_look_past_page_numbers() -> None:
+    above = [
+        ["(c) 2020 Publisher", f"body {n}", f"more {chr(96 + n)}x", str(n)] for n in range(1, 7)
+    ]
+    below = [[str(n), "Running Title", f"body {n}", f"more {chr(96 + n)}x"] for n in range(1, 7)]
+    assert prep.running_lines(above) == {"(c) #### Publisher"}
+    assert prep.running_lines(below) == {"Running Title"}
+
+
+def test_references_cut_only_in_last_text_chunk(tmp_path: Path) -> None:
+    source = tmp_path / "in.txt"
+    source.write_text(
+        "a\nb\nc\nd\nReferences\nx\n\f# Two\n1\n2\n3\n4\nBibliography\ny\n",
+        encoding="utf-8",
+    )
+    parts = prep.prepare_text_file(source, keep_references=False)
+    assert parts[0].endswith("References x")
+    assert "Bibliography" not in parts[1]
+
+
+def _mock_pdf(monkeypatch: pytest.MonkeyPatch, pages: list[str]) -> None:
+    def fake(command: list[str]) -> str:
+        if command[0] == "mutool":
+            return OUTLINE
+        # Honour -f/-l like pdftotext does.
+        first = int(command[command.index("-f") + 1]) if "-f" in command else 1
+        last = int(command[command.index("-l") + 1]) if "-l" in command else len(pages)
+        return "".join(page + "\f" for page in pages[first - 1 : last])
+
+    monkeypatch.setattr(prep, "_run", fake)
+
+
+def test_scanned_pdf_with_outline_yields_no_parts(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_pdf(monkeypatch, ["", "", "", "", ""])
+    assert prep.prepare_pdf(Path("x.pdf"), None, "auto", False) == []
+    monkeypatch.setattr(sys, "argv", ["prepare_text.py", "x.pdf", "--out", "unused.txt"])
+    assert prep.main() == 1
+
+
+def test_pages_range_keeps_only_chapters_starting_inside_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_pdf(monkeypatch, [f"alpha{chr(96 + n)} beta{chr(96 + n)}" for n in range(1, 7)])
+    parts = prep.prepare_pdf(Path("x.pdf"), (4, 6), "auto", False)
+    assert [p.splitlines()[0] for p in parts] == ['# Argument: a "turn"']
+    parts = prep.prepare_pdf(Path("x.pdf"), (2, 3), "auto", False)
+    assert parts == []
+
+
+def test_front_matter_dropped_unless_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = ["cover", "contents", "intro text", "more", "arg text", "end"]
+    monkeypatch.setattr(
+        prep,
+        "_run",
+        lambda c: (
+            '+\t"One"\t#page=3&zoom=1\n+\t"Two"\t#page=5&zoom=1\n'
+            if c[0] == "mutool"
+            else "".join(p + "\f" for p in pages)
+        ),
+    )
+    dropped = prep.prepare_pdf(Path("x.pdf"), None, "auto", False)
+    assert [p.splitlines()[0] for p in dropped] == ["# One", "# Two"]
+    assert "cover" not in "".join(dropped)
+    kept = prep.prepare_pdf(Path("x.pdf"), None, "auto", False, keep_front_matter=True)
+    assert kept[0] == "cover contents" or kept[0].startswith("cover")
+    assert len(kept) == 3
+
+
+def test_skill_install_excludes_pycache(tmp_path: Path) -> None:
+    cache = SKILL / "scripts" / "__pycache__"
+    cache.mkdir(exist_ok=True)
+    (cache / "junk.pyc").write_bytes(b"x")
+    try:
+        for installer, target in (
+            ("codex", tmp_path / "codex-home" / "skills"),
+            ("opencode", tmp_path / "opencode" / "skills"),
+        ):
+            stub = tmp_path / "bin"
+            stub.mkdir(exist_ok=True)
+            (stub / "codex").write_text("#!/bin/sh\n", encoding="utf-8")
+            (stub / "codex").chmod(0o755)
+            env = {
+                **os.environ,
+                "CODEX_HOME": str(tmp_path / "codex-home"),
+                "XDG_CONFIG_HOME": str(tmp_path),
+                "PATH": f"{stub}:/usr/bin:/bin",
+            }
+            done = sp.run(
+                ["bash", str(ROOT / "clients" / installer / "install.sh")],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            assert done.returncode == 0, done.stderr
+            assert (target / "speakd-audiobook" / "scripts" / "prepare_text.py").is_file()
+            assert not (target / "speakd-audiobook" / "scripts" / "__pycache__").exists()
+    finally:
+        (cache / "junk.pyc").unlink()
