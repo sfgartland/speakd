@@ -65,10 +65,10 @@ file. The dialog offers:
   `speakd-exports/` folder before importing; `folder` leaves the file in a folder
   on your machine (the path is `export_folder`).
 
-**Progress:** while rendering, an item-pane section shows state ("Waiting to render",
-"Rendering", "Paused while speakd speaks", "Done", "Failed", or "Cancelled"), a
-percentage bar, the estimated time left, and a **Cancel** button. Renders keep
-going if Zotero closes and are picked up again on the next start.
+**Progress:** while rendering, an item-pane section shows state ("Waiting for speakd",
+"Waiting to render", "Rendering", "Paused while speakd speaks", "Done", "Failed",
+or "Cancelled"), a percentage bar, the estimated time left, and a **Cancel** button.
+Renders keep going if Zotero closes and are picked up again on the next start.
 
 **When there is no text:** a PDF with no text shows a "no text" message in place of
 rendering.
