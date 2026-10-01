@@ -10,8 +10,10 @@ The one test that needs the real model and the extra skips without them.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -287,6 +289,30 @@ def test_speakd_device_is_ignored_silently(
     assert capsys.readouterr().err == ""
 
 
+@pytest.mark.parametrize(("asked", "sent"), [(0.1, 0.5), (0.5, 0.5), (2.0, 2.0), (3.5, 2.0)])
+def test_speed_is_clamped_to_the_range_the_backend_accepts(
+    fakes: Fakes, asked: float, sent: float
+) -> None:
+    # Profile speed times tempo, or a render job's raw speed, can leave
+    # kokoro-onnx's 0.5-2.0; it raises, which would drop every sentence.
+    engine = KokoroEngine()
+    engine.synthesize("Hello.", voice="v", speed=asked)
+    assert model_of().calls[0][1]["speed"] == sent
+
+
+def test_english_without_the_espeak_fallback_still_speaks(
+    fakes: Fakes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # KPipeline degrades the same way: out-of-dictionary words are skipped.
+    def broken(british: bool) -> Any:
+        raise RuntimeError("no espeak library")
+
+    monkeypatch.setattr(sys.modules["misaki.espeak"], "EspeakFallback", broken)
+    engine = KokoroEngine()
+    assert len(engine.synthesize("Hi.", voice="v", speed=1.0)) > 0
+    assert fakes.g2ps[0].kwargs["fallback"] is None
+
+
 # -- model files ------------------------------------------------------------
 
 
@@ -319,6 +345,54 @@ def test_missing_files_are_downloaded_atomically(
     assert sorted(p.name for p in directory.iterdir()) == [MODEL_FILENAME, VOICES_FILENAME]
     err = capsys.readouterr().err
     assert str(directory) in err and err.count("\n") == 1
+
+
+class FakeResponse:
+    def __init__(self, body: bytes, length: int | None) -> None:
+        self._body = body
+        self.headers = {} if length is None else {"Content-Length": str(length)}
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self, n: int) -> bytes:
+        chunk, self._body = self._body[:n], self._body[n:]
+        return chunk
+
+
+def test_a_truncated_download_is_rejected_and_cleaned_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: FakeResponse(b"abc", 10))
+    with pytest.raises(RuntimeError, match="3 of 10 bytes") as excinfo:
+        kokoro_engine.ensure_model_files(tmp_path)
+    assert MODEL_FILENAME in str(excinfo.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_complete_download_is_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for length in (4, None):
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, _n=length, **k: FakeResponse(b"data", _n)
+        )
+        kokoro_engine.ensure_model_files(tmp_path)
+        assert (tmp_path / MODEL_FILENAME).read_bytes() == b"data"
+        for f in tmp_path.iterdir():
+            f.unlink()
+
+
+def test_the_partial_file_name_is_unique_per_process(tmp_path: Path) -> None:
+    names: list[str] = []
+
+    def fetch(url: str, destination: Path) -> None:
+        names.append(destination.name)
+        destination.write_bytes(b"x")
+
+    kokoro_engine.ensure_model_files(tmp_path, fetch=fetch)
+    assert all(str(os.getpid()) in name for name in names)
 
 
 def test_present_files_are_not_downloaded(tmp_path: Path) -> None:

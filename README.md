@@ -413,8 +413,8 @@ itself rather than guessed as English.
 ## Piper
 
 Kokoro is the default, and the better voice. Piper is the cheap second engine
-you switch to by hand — mostly for battery, where Kokoro's CPU cost is a
-tax, or for German, which Kokoro cannot speak. Because `piper-tts` embeds
+you switch to by hand — mostly for battery, where Kokoro uses much more
+CPU, or for German, which Kokoro cannot speak. Because `piper-tts` embeds
 espeak-ng and is GPL-3.0, it is an extra you install yourself; it is never
 bundled into a speakd distribution:
 

@@ -66,8 +66,14 @@ RELEASE_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/mod
 # sentences (af_heart, speed 1.1) through the old torch engine and this one:
 # speech RMS over samples above 0.01 was 2.74 dB higher here (2.71-2.80 per
 # sentence), so scaling by 10 ** (-2.74 / 20) = 0.73 makes the swap a change of
-# runtime, not of volume.
+# runtime, not of volume. The figure depends on the 0.01 threshold (it decides
+# which quiet samples count as speech), so treat it as good to a few tenths of
+# a dB, not as a physical constant.
 GAIN = 0.73
+
+# What kokoro-onnx accepts; it raises outside this range.
+MIN_SPEED = 0.5
+MAX_SPEED = 2.0
 
 # Kokoro's own language-code table (kokoro.pipeline.LANG_CODES), for the codes
 # that go to espeak-ng: misaki wants the espeak voice name, not the letter.
@@ -87,8 +93,15 @@ def default_model_dir() -> Path:
 
 def _download(url: str, destination: Path) -> None:
     with urllib.request.urlopen(url, timeout=60) as response, destination.open("wb") as out:
+        written = 0
         while chunk := response.read(1 << 20):
             out.write(chunk)
+            written += len(chunk)
+    expected = response.headers.get("Content-Length")
+    # A connection that drops mid-body can end the read loop quietly; without
+    # this check the short file would be moved into place as the model.
+    if expected is not None and written != int(expected):
+        raise OSError(f"got {written} of {expected} bytes")
 
 
 def ensure_model_files(
@@ -107,7 +120,8 @@ def ensure_model_files(
         sys.stderr.write(f"speakd: downloading {names} to {directory} (first run only)\n")
     for path in missing:
         url = f"{RELEASE_URL}/{path.name}"
-        partial = path.with_name(path.name + ".part")
+        # Per process, so two first starts do not write the same file.
+        partial = path.with_name(f"{path.name}.{os.getpid()}.part")
         try:
             directory.mkdir(parents=True, exist_ok=True)
             fetch(url, partial)
@@ -156,12 +170,13 @@ class KokoroEngine:
 
         if code in ("a", "b"):
             british = code == "b"
-            return en.G2P(
-                trf=False,
-                british=british,
-                fallback=espeak.EspeakFallback(british=british),
-                unk="",
-            )
+            try:
+                fallback = espeak.EspeakFallback(british=british)
+            except Exception:
+                # As KPipeline does: without espeak, words missing from the
+                # dictionary are skipped rather than English being unusable.
+                fallback = None
+            return en.G2P(trf=False, british=british, fallback=fallback, unk="")
         if code == "j":
             from misaki import ja
 
@@ -169,6 +184,8 @@ class KokoroEngine:
         if code == "z":
             from misaki import zh
 
+            # Deliberately not KPipeline's None: English words inside Chinese
+            # text are now spoken, through the English G2P, not dropped.
             return zh.ZHG2P(version=None, en_callable=self._english_phonemes)
         return espeak.EspeakG2P(language=_ESPEAK_LANGUAGES[code])
 
@@ -204,6 +221,10 @@ class KokoroEngine:
         if not text.strip():
             return np.zeros(0, dtype=np.float32)
         phonemes, _ = self._g2p_for(lang)(text)
+        # Profile speed times tempo, or a render job's raw speed, can leave
+        # kokoro-onnx's range, and it raises rather than clamps -- which the
+        # pipeline would turn into every sentence silently dropped.
+        speed = min(max(speed, MIN_SPEED), MAX_SPEED)
         try:
             audio, _rate = self._model.create(
                 phonemes, voice=voice, speed=speed, is_phonemes=True, trim=False
