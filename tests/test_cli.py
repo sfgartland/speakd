@@ -861,3 +861,107 @@ def test_render_stops_and_reports_a_failed_job(tmp_path, monkeypatch, capsys):  
     code = main(["render", str(textfile), "--out", str(tmp_path / "a.mp3")])
     assert code != 0
     assert "ffmpeg not found" in capsys.readouterr().err
+
+
+def test_render_extracts_chapter_titles_from_markdown_headings(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Parts whose first non-blank line is a markdown heading get that title."""
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "book.txt"
+    textfile.write_text(
+        "# Chapter One\nChapter one text.\x0c# Chapter Two\nChapter two text.",
+        encoding="utf-8",
+    )
+    out = tmp_path / "book.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-1"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [
+        {"title": "Chapter One", "text": "Chapter one text."},
+        {"title": "Chapter Two", "text": "Chapter two text."},
+    ]
+
+
+def test_render_mixes_titled_and_untitled_parts(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Parts without headings keep "Part N", parts with headings use them."""
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "mixed.txt"
+    textfile.write_text(
+        "No title here\x0c# Chapter Two\nChapter two text.",
+        encoding="utf-8",
+    )
+    out = tmp_path / "mixed.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-2"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [
+        {"title": "Part 1", "text": "No title here"},
+        {"title": "Chapter Two", "text": "Chapter two text."},
+    ]
+
+
+def test_render_single_part_with_heading_uses_heading_as_title(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Single part with no --title: markdown heading becomes the title."""
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "article.txt"
+    textfile.write_text("# My Article\nArticle text.", encoding="utf-8")
+    out = tmp_path / "article.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-3"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [{"title": "My Article", "text": "Article text."}]
+
+
+def test_render_title_flag_wins_over_heading_but_heading_is_removed(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """--title flag takes precedence over heading; heading line still removed."""
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "article.txt"
+    textfile.write_text("# My Article\nArticle text.", encoding="utf-8")
+    out = tmp_path / "article.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-4"}))
+    code = main(
+        [
+            "render",
+            str(textfile),
+            "--out",
+            str(out),
+            "--no-wait",
+            "--title",
+            "Override Title",
+        ]
+    )
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [{"title": "Override Title", "text": "Article text."}]
+    assert sent[0].payload["metadata"] == {"title": "Override Title"}
+
+
+def test_render_blank_parts_are_dropped(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Parts that are only whitespace after heading removal are dropped."""
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "sparse.txt"
+    textfile.write_text(
+        "# Chapter One\nText.\x0c# Chapter Two\n   \x0c# Chapter Three\nMore text.",
+        encoding="utf-8",
+    )
+    out = tmp_path / "sparse.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-5"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [
+        {"title": "Chapter One", "text": "Text."},
+        {"title": "Chapter Three", "text": "More text."},
+    ]
