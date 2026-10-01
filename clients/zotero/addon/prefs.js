@@ -10,3 +10,8 @@ pref("extensions.speakd-reader.export_format_book", "m4b");
 pref("extensions.speakd-reader.export_destination", "attach");
 pref("extensions.speakd-reader.export_folder", "");
 pref("extensions.speakd-reader.export_skip_references", true);
+// The audiobook renders the plugin has started and not yet attached or
+// reported, as JSON (src/export/jobs.ts). Not a setting: the daemon's jobs
+// do not say which item they are for, so this is how a render that goes on
+// while Zotero is closed is found again on the next start.
+pref("extensions.speakd-reader.render_jobs", "[]");

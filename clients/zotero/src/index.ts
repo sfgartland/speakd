@@ -5,7 +5,11 @@
 import { Controls } from "./controls";
 import { captureSegments, zoteroCaptureHost } from "./export/capture";
 import { CHROME_PACKAGE } from "./export/dialog-window";
-import { registerExportEntry } from "./export/entry";
+import { exportItem, registerExportEntry, targetFor, type ExportEntryOptions } from "./export/entry";
+import type { ExportChoice } from "./export/dialog";
+import { Exporter } from "./export/exporter";
+import { notify, zoteroExporterHost } from "./export/host";
+import { registerExportPane } from "./export/pane";
 import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
 import { observeConfig, readConfig } from "./prefs";
@@ -75,6 +79,18 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
     },
     makeAbort,
   });
+  // The renders this plugin started, picked up again from `status` on
+  // every connection: a render goes on while Zotero is closed.
+  const exporter = new Exporter(
+    zoteroExporterHost({ call: (verb, sourceId, payload) => link.call(verb, sourceId, payload), warn }),
+  );
+  link.onEvent((event) => exporter.onEvent(event));
+  let connected = false;
+  link.onChange((state) => {
+    const now = state.stream === "connected";
+    if (now && !connected) exporter.sync().catch((error) => warn("picking up renders failed", error));
+    connected = now;
+  });
   link.configure(readConfig());
   const unobserveConfig = observeConfig(() => link.configure(readConfig()));
   // A quit is heard here, while the network is still up: by the time
@@ -82,6 +98,7 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   const quitObserver = { observe: () => quit() };
   Services.obs.addObserver(quitObserver, "quit-application-granted");
   let unregisterExport = () => {};
+  let unregisterPane = () => {};
   // The export dialog is a window, which only a chrome:// URL can open.
   const chrome = Cc["@mozilla.org/addons/addon-manager-startup;1"]
     .getService(Ci.amIAddonManagerStartup)
@@ -89,6 +106,7 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   const unobserve = () => {
     unobserveConfig();
     unregisterExport();
+    unregisterPane();
     chrome.destruct();
     Services.obs.removeObserver(quitObserver, "quit-application-granted");
   };
@@ -98,20 +116,15 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   const controls = new Controls({ pluginID: data.id, takeover, link, warn });
   controls.register();
   const captureHost = zoteroCaptureHost(takeover);
-  unregisterExport = registerExportEntry({
-    pluginID: data.id,
+  const exportOptions: Omit<ExportEntryOptions, "pluginID"> = {
     captureHost,
-    // The render itself is the next step; until then a confirmed choice is logged.
-    onRequest: (request) => log(`export requested: ${request.title} ${JSON.stringify(request.choice)}`),
-    onProblem: (title, message) => {
-      const progress = new Zotero.ProgressWindow({ closeOnClick: true });
-      progress.changeHeadline(`Export audiobook: ${title}`);
-      progress.addDescription(message);
-      progress.show();
-      progress.startCloseTimer(8000);
-    },
+    onRequest: (request) => exporter.start(request),
+    onProblem: (title, message) => notify(`Export audiobook: ${title}`, message),
     warn,
-  });
+    rtf: () => exporter.rtf,
+  };
+  unregisterExport = registerExportEntry({ pluginID: data.id, ...exportOptions });
+  unregisterPane = registerExportPane({ pluginID: data.id, exporter, warn });
   running = { link, takeover, controls, unobserve, quitting: false };
 
   try {
@@ -125,14 +138,21 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   }
 
   // For scripting, and for checking the plugin from Zotero's console: the
-  // readers it adopted, the daemon link, and an export's segment capture.
-  // Removed on shutdown.
+  // readers it adopted, the daemon link, an export's segment capture, and
+  // an export run with a given choice in place of the dialog. Removed on
+  // shutdown.
   (Zotero as Any).SpeakdReader = {
     version: data.version,
     link,
     handleFor: (reader: unknown) => takeover.handleFor(reader),
     handles: () => takeover.handles(),
     captureSegments: (itemID: number) => captureSegments(itemID, captureHost),
+    exporter,
+    exportItem: async (itemID: number, choice: ExportChoice) => {
+      const target = targetFor(itemID);
+      if (target === null) throw new Error(`item ${itemID} cannot be exported`);
+      await exportItem(target, exportOptions, async () => choice);
+    },
   };
   log(`loaded (${data.version})`);
 }

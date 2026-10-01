@@ -17,9 +17,10 @@ export default defineConfig({
   xpiDownloadLink: "https://github.com/sfgartland/speakd/releases/download/zotero-v{{version}}/{{xpiName}}.xpi",
   build: {
     assets: ["addon/**/*.*"],
-    // No preferences or Fluent files yet, so there is nothing to generate
-    // typings from.
-    fluent: { dts: false },
+    // One Fluent file, for the export pane's header (addon/locale). Its file
+    // and message names already carry the plugin's name, so the scaffold is
+    // not to prefix them again; no preferences typings either.
+    fluent: { dts: false, prefixFluentMessages: false, prefixLocaleFiles: false },
     prefs: { dts: false },
     esbuildOptions: [
       {

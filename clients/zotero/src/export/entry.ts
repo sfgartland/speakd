@@ -1,8 +1,8 @@
 // The "Export audiobook" menu entry on library items: capture the PDF's
 // text, ask what to export, and hand the choice on.
 //
-// What follows the dialog (rendering, progress, attaching) takes the
-// `ExportRequest` this flow produces.
+// What follows the dialog (rendering, progress, attaching: export/exporter.ts)
+// takes the `ExportRequest` this flow produces.
 
 import { dialogItem, type ExportChoice } from "./dialog";
 import { captureSegments, type CaptureHost, type CapturedSegment } from "./capture";
@@ -36,6 +36,8 @@ export interface ExportEntryOptions {
   /** Where a problem is shown: the capture found nothing to read, say. */
   onProblem(title: string, message: string): void;
   warn(message: string, error?: unknown): void;
+  /** The daemon's measured real-time factor, for the dialog's estimate, if known. */
+  rtf?(): number | undefined;
 }
 
 function menuItem(item: Any): MenuItem {
@@ -57,6 +59,9 @@ const lookup = (id: number): MenuItem | null => {
 };
 
 const targetOf = (items: readonly Any[] | undefined) => exportTarget((items ?? []).map(menuItem), lookup);
+
+/** What the menu entry would export for this item alone, or null. */
+export const targetFor = (itemID: number): ExportTarget | null => targetOf([Zotero.Items.get(itemID)].filter(Boolean));
 
 export interface ExportFlowDeps extends Pick<ExportEntryOptions, "captureHost" | "onRequest" | "onProblem" | "warn"> {
   readonly title: string;
@@ -111,17 +116,7 @@ export function registerExportEntry(options: ExportEntryOptions): () => void {
     if (target === null || busy) return;
     busy = true;
     try {
-      const item = Zotero.Items.get(target.itemID) as Any;
-      await exportFlow(target, {
-        title: String(item.getDisplayTitle()),
-        itemType: item.itemType,
-        captureHost: options.captureHost,
-        structure: readStructure,
-        openDialog: (request) => openExportDialog({ ...request, settings: readExportSettings() }),
-        onRequest: options.onRequest,
-        onProblem: options.onProblem,
-        warn: options.warn,
-      });
+      await exportItem(target, options);
     } finally {
       busy = false;
     }
@@ -129,7 +124,7 @@ export function registerExportEntry(options: ExportEntryOptions): () => void {
 
   // Zotero builds the item menu while it is already showing, so a plugin's
   // onShowing may come too late for the first opening; onShown always
-  // follows. No Fluent file: the label is set directly.
+  // follows. The label is set directly, not through Fluent.
   const refresh = (_event: Event, context: Any): void => {
     context.menuElem.setAttribute("label", LABEL);
     context.setVisible(true);
@@ -154,6 +149,29 @@ export function registerExportEntry(options: ExportEntryOptions): () => void {
   return () => {
     Zotero.MenuManager.unregisterMenu(MENU_ID);
   };
+}
+
+/**
+ * Runs the export flow for a target, through the real dialog, or through
+ * `openDialog` instead (for scripting the flow from the console).
+ */
+export async function exportItem(
+  target: ExportTarget,
+  options: Omit<ExportEntryOptions, "pluginID">,
+  openDialog?: ExportFlowDeps["openDialog"],
+): Promise<void> {
+  const item = Zotero.Items.get(target.itemID) as Any;
+  await exportFlow(target, {
+    title: String(item.getDisplayTitle()),
+    itemType: item.itemType,
+    captureHost: options.captureHost,
+    structure: readStructure,
+    openDialog:
+      openDialog ?? ((request) => openExportDialog({ ...request, settings: readExportSettings(), rtf: options.rtf?.() })),
+    onRequest: options.onRequest,
+    onProblem: options.onProblem,
+    warn: options.warn,
+  });
 }
 
 /**
