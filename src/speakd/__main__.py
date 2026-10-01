@@ -22,6 +22,7 @@ from speakd.plugins.builtin import register_builtins
 from speakd.plugins.host import PluginHost
 from speakd.plugins.registry import ServiceRegistry
 from speakd.profiles import Profile, load_profiles, resolve_chain
+from speakd.segmenter import is_only_dots
 from speakd.supervise import Supervisor
 from speakd.synth.piper_engine import PiperEngine, piper_available
 from speakd.transforms.chain import apply_chain
@@ -67,7 +68,7 @@ def _view_of(profile: Profile, host: PluginHost) -> ProfileView:
         for unit in units:
             result = apply_chain([unit], unit_chain)
             errors.extend(result.errors)
-            out.extend(p for p in result.pieces if p.spoken.strip(". …"))
+            out.extend(p for p in result.pieces if not is_only_dots(p.spoken))
         return out, errors
 
     return ProfileView(

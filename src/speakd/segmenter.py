@@ -46,17 +46,30 @@ _ELLIPSIS = re.compile(r"\.(?:\s*\.){2,}|…+")
 # "pp. 34-38" and "p. 12" are a citation, not two sentences: breaking after the
 # abbreviation cut a live utterance mid-citation and, worse, handed the
 # pronunciation rule the halves of a range. Withheld only when a number
-# follows, so "cap. 3" -- a word merely ending in p, which the \b keeps this
-# off -- still ends a sentence.
-_PAGE_ABBREVIATION = re.compile(r"\bpp?\.$")
+# follows, so "cap. 3" -- a word merely ending in p, which the lookbehind keeps
+# this off -- still ends a sentence.
+_PAGE_ABBREVIATION = re.compile(r"(?<!\w)pp?\.")
 # What may follow an ellipsis for the sentence to carry on through it:
 # "Wait... what", "It was... 3 of them", "Well..., maybe".
 _CONTINUES = re.compile(r"[0-9,;]")
+_WORD = re.compile(r"[^\W_]")
 _CLAUSE_END = re.compile(r"(?<=[,;:])\s+")
 
 
-def _has_words(text: str) -> bool:
-    return any(c.isalnum() for c in text)
+def is_only_dots(text: str) -> bool:
+    """Whether `text` is nothing but dots, ellipsis characters and spaces."""
+    return not text.strip(". …")
+
+
+def _ends_with_page_abbreviation(text: str, end: int) -> bool:
+    # Anchored on the few characters before `end`, never the whole prefix: this
+    # runs once per candidate break, and a book's worth of them must stay linear.
+    for width in (3, 2):
+        if end >= width:
+            match = _PAGE_ABBREVIATION.match(text, end - width, end)
+            if match is not None and match.end() == end:
+                return True
+    return False
 
 
 def _sentence_breaks(text: str) -> list[tuple[int, int]]:
@@ -66,26 +79,35 @@ def _sentence_breaks(text: str) -> list[tuple[int, int]]:
     sentence it closes, and it never makes a unit of nothing but punctuation:
     a candidate break with no word on either side is no break, which is also
     what keeps the spaces inside ". . ." from each counting.
+
+    Every check is positional and bounded -- no slicing of the prefix or the
+    rest of the text per candidate -- so this is linear in the text.
     """
     inside_ellipsis: set[int] = set()
     for run in _ELLIPSIS.finditer(text):
         inside_ellipsis.update(range(run.start(), run.end()))
+    last_word = len(text) - 1
+    while last_word >= 0 and not text[last_word].isalnum():
+        last_word -= 1
     breaks: list[tuple[int, int]] = []
     last = 0
+    first_word = _WORD.search(text, last)
     for match in _SENTENCE_END.finditer(text):
         start, end = match.span()
         if start - 1 in inside_ellipsis and start in inside_ellipsis:
             continue  # a space inside a spaced ellipsis
-        after = text[end:]
         if start - 1 in inside_ellipsis:
-            if after[:1].islower() or _CONTINUES.match(after):
+            following = text[end : end + 1]
+            if following.islower() or _CONTINUES.match(text, end):
                 continue
-        elif _PAGE_ABBREVIATION.search(text[:start]) and after[:1].isdigit():
+        elif _ends_with_page_abbreviation(text, start) and text[end : end + 1].isdigit():
             continue
-        if not _has_words(text[last:start]) or not _has_words(after):
+        words_before = first_word is not None and first_word.start() < start
+        if not words_before or last_word < end:
             continue
         breaks.append((start, end))
         last = end
+        first_word = _WORD.search(text, last)
     return breaks
 
 
@@ -160,7 +182,7 @@ def segment(pieces: Sequence[Piece], max_chars: int = DEFAULT_MAX_CHARS) -> list
             # A text that is nothing but an ellipsis has no sentence to attach
             # it to; it is silence either way, and an engine handed bare dots
             # may say something stranger.
-            if not spoken or not spoken.strip(". …"):
+            if not spoken or is_only_dots(spoken):
                 continue
             if exact:
                 span = Span(piece.span.start + offset, piece.span.start + offset + len(chunk))

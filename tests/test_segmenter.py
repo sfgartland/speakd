@@ -229,3 +229,18 @@ def test_ellipsis_spans_stay_sound() -> None:
     text = "It ended... Then . . . we left… Done."
     out = segment([piece(text)])
     assert_spans_are_sound(text, piece(text), out)
+
+
+def test_segmenting_a_book_sized_part_is_linear() -> None:
+    """The render verb segments whole parts on the daemon's thread, so a
+    per-candidate scan of the prefix or the rest of the text would hang it."""
+    import time
+
+    block = "A sentence about things, see pp. 3 for more. Wait... what? It ended… Then we left. "
+    text = block * 2500  # ~200k characters
+    start = time.monotonic()
+    out = segment([piece(text)])
+    elapsed = time.monotonic() - start
+    # "pp. 3" and "Wait... what" stay inside their sentences: four units a block.
+    assert len(out) == 2500 * 4
+    assert elapsed < 2.0, f"took {elapsed:.1f}s"
