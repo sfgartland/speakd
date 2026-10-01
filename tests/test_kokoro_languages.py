@@ -18,7 +18,7 @@ from speakd.synth.kokoro_engine import KokoroEngine
 
 @pytest.fixture(scope="module")
 def engine() -> KokoroEngine:
-    pytest.importorskip("kokoro", reason="requires the 'kokoro' extra")
+    pytest.importorskip("kokoro_onnx", reason="requires the 'kokoro' extra")
     return KokoroEngine()
 
 
