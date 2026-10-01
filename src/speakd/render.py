@@ -77,6 +77,12 @@ class Part:
     text: str
     engine: str = "kokoro"
     voice: str = ""
+    # The part's sentences as the profile prepared them, fixed at submission.
+    # Kept as a list rather than re-derived from `text` because re-segmenting
+    # prepared text is not the identity: a heading with no closing punctuation
+    # would merge into the sentence after it. `None` is a manifest written
+    # before this existed, and means segmenting `text`, as then.
+    sentences: list[str] | None = None
 
 
 @dataclass
@@ -143,17 +149,26 @@ class RenderJob:
         data["out"] = str(self.out)
         return data
 
-    def to_parts(self) -> list[dict[str, str]]:
+    def to_parts(self) -> list[dict[str, Any]]:
         """The parts' titles, text and engines -- written once, at submit,
         to `parts.json`, and never rewritten: this is the piece of a render
         that scales with a book's length, so nothing may touch it again on
         every sentence the way the progress manifest is. A part's engine
         and voice are recorded here, beside its text, because they are part
         of what a resume needs to keep sounding the same."""
-        return [
-            {"title": p.title, "text": p.text, "engine": p.engine, "voice": p.voice}
-            for p in self.parts
-        ]
+        out: list[dict[str, Any]] = []
+        for p in self.parts:
+            entry: dict[str, Any] = {
+                "title": p.title,
+                "text": p.text,
+                "engine": p.engine,
+                "voice": p.voice,
+            }
+            # Only when present, so a part without them round-trips unchanged.
+            if p.sentences is not None:
+                entry["sentences"] = p.sentences
+            out.append(entry)
+        return out
 
     @classmethod
     def from_manifest(cls, data: dict[str, Any], parts: list[Part]) -> RenderJob:
@@ -911,7 +926,7 @@ class RenderQueue:
     def _synthesize(self, job: RenderJob, work_dir: Path) -> None:
         for part_i in range(job.part_index, len(job.parts)):
             part = job.parts[part_i]
-            sentences = _sentences(part.text)
+            sentences = part.sentences if part.sentences is not None else _sentences(part.text)
             start = job.sentence_index if part_i == job.part_index else 0
             pcm_path = work_dir / f"part-{part_i}.pcm"
             # Only ever cuts anything when resuming mid-part after a crash

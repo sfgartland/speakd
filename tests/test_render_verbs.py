@@ -502,3 +502,89 @@ def test_a_render_in_an_unsupported_language_falls_back_to_the_default(tmp_path:
     assert until(lambda: bool(engine.synthesized_langs))
     assert set(engine.synthesized_langs) == {"en"}
     d.render_queue.stop()
+
+
+# --- a render prepares its text exactly as live speech does ---
+
+
+class _CountingEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.texts: list[str] = []
+
+    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> Any:
+        self.texts.append(text)
+        return super().synthesize(text, voice, speed, lang)
+
+
+def _real_profile_daemon(engine: FakeEngine) -> Daemon:
+    from speakd.__main__ import _view_of
+    from speakd.plugins.builtin import register_builtins
+    from speakd.plugins.host import PluginHost
+    from speakd.plugins.registry import ServiceRegistry
+    from speakd.profiles import load_profiles
+
+    host = PluginHost(ServiceRegistry())
+    register_builtins(host)
+    views = {n: _view_of(p, host) for n, p in load_profiles(Path("/nonexistent")).items()}
+    return Daemon(
+        engine,
+        StreamingPlayer(FakeSink()),
+        lambda name: views[name],
+        bus=EventBus(),
+        channels=ChannelTable(),
+    )
+
+
+def test_a_render_runs_the_profile_before_synthesising(tmp_path: Path) -> None:
+    engine = _CountingEngine()
+    d = _real_profile_daemon(engine)
+    parts = [{"title": "T", "text": "**Bold** claim, pp. 3-5. Second sentence."}]
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, parts=parts)))
+    assert response.ok, response.error
+    assert until(lambda: len(engine.texts) >= 2)
+    assert engine.texts[:2] == ["Bold claim, pages 3 to 5.", "Second sentence."]
+    d.render_queue.stop()
+
+
+def test_a_renders_unpunctuated_heading_stays_its_own_sentence(tmp_path: Path) -> None:
+    engine = _CountingEngine()
+    d = _real_profile_daemon(engine)
+    parts = [{"title": "T", "text": "Chapter heading\n\nBody text here."}]
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, parts=parts)))
+    assert response.ok, response.error
+    job = d.render_queue.job(job_id_of(response))
+    assert job is not None
+    stored = job.parts[0].sentences
+    assert stored is not None and len(stored) == 2 and stored[0].startswith("Chapter heading")
+    assert until(lambda: len(engine.texts) >= 2)
+    assert engine.texts[0].startswith("Chapter heading") and "Body" not in engine.texts[0]
+    d.render_queue.stop()
+
+
+def test_a_render_with_ellipses_synthesises_no_dots_only_sentence(tmp_path: Path) -> None:
+    engine = _CountingEngine()
+    d = _real_profile_daemon(engine)
+    text = "It ended... Then we left. Wait... what? Hmm... ... Then. Done… Then . . . go."
+    parts = [{"title": "T", "text": text}]
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, parts=parts)))
+    assert response.ok, response.error
+    job = d.render_queue.job(job_id_of(response))
+    assert job is not None
+    assert until(lambda: job.state in ("done", "failed") or len(engine.texts) >= 4)
+    stored = job.parts[0].sentences or []
+    assert len(stored) >= 4
+    assert all(s.strip(". …") for s in stored)
+    d.render_queue.stop()
+
+
+def test_a_render_cuts_ellipses_the_way_live_speech_does(tmp_path: Path) -> None:
+    engine = _CountingEngine()
+    d = _real_profile_daemon(engine)
+    parts = [{"title": "T", "text": "It ended... Then we left. Wait... what"}]
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, parts=parts)))
+    assert response.ok, response.error
+    job = d.render_queue.job(job_id_of(response))
+    assert job is not None
+    assert job.parts[0].sentences == ["It ended…", "Then we left.", "Wait… what"]
+    d.render_queue.stop()

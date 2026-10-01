@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from traceback import format_exc
 from typing import Protocol, cast, runtime_checkable
@@ -347,6 +347,10 @@ class Connector(Protocol):
     def stop(self) -> None: ...
 
 
+def _pass_units(units: Sequence[Piece]) -> tuple[list[Piece], list[str]]:
+    return list(units), []
+
+
 @dataclass(frozen=True)
 class ProfileView:
     """What the daemon needs from a profile, without importing profiles."""
@@ -355,6 +359,9 @@ class ProfileView:
     speed: float
     interrupt_on: tuple[str, ...]
     prepare: Prepare
+    # Per-sentence transforms, run on the units after segmentation. The default
+    # passes them through, for views with no sentence chain.
+    prepare_sentences: Prepare = field(default=_pass_units)
 
 
 @dataclass(frozen=True)
@@ -1353,8 +1360,15 @@ class Daemon:
         choice = self._render_choice(code)
         if isinstance(choice, Declined):
             return None, code
+        sentences = self._render_sentences(text, profile)
         if choice.engine == "piper":
-            return Part(title=title, text=text, engine="piper", voice=cast(str, choice.voice)), None
+            return Part(
+                title=title,
+                text=text,
+                engine="piper",
+                voice=cast(str, choice.voice),
+                sentences=sentences,
+            ), None
         if code not in self._supported_languages():
             if self.settings.get("speech.unsupported_language") == "decline":
                 return None, code
@@ -1362,8 +1376,22 @@ class Daemon:
                 return None, default
             code = default
         return Part(
-            title=title, text=text, engine="kokoro", voice=self._voice_for(code, profile.voice)
+            title=title,
+            text=text,
+            engine="kokoro",
+            voice=self._voice_for(code, profile.voice),
+            sentences=sentences,
         ), None
+
+    def _render_sentences(self, text: str, profile: ProfileView) -> list[str]:
+        """A part's sentences exactly as live speech prepares them: the
+        profile's chain, segmentation, then its per-sentence transforms.
+        Errors (a profile naming a transform nobody provides) have no
+        listener at submission and are dropped; live speech reports them.
+        """
+        pieces, _ = profile.prepare([Piece(span=Span(0, len(text)), spoken=text)])
+        units, _ = profile.prepare_sentences(segmenter.segment(pieces))
+        return [unit.spoken for unit in units]
 
     _RENDER_FORMATS = ("mp3", "opus", "m4b")
 
@@ -2154,6 +2182,11 @@ class Daemon:
             # showing the whole utterance needs them all up front, and a seek
             # addresses them by the index given here.
             units = segmenter.segment(pieces)
+            # After segmentation, so each unit keeps its own source span
+            # however much the profile rewrites its words.
+            units, unit_errors = job.profile.prepare_sentences(units)
+            for message in unit_errors:
+                self._publish("error", job.source_id, {"message": message})
         # Resolution order (design §2): the payload's own lang, the channel's
         # pinned one, detection, then the default -- first match wins.
         # Detection is skipped, not merely ignored, when either of the first
