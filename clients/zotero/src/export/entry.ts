@@ -6,8 +6,8 @@
 
 import { dialogItem, type ExportChoice } from "./dialog";
 import { captureSegments, type CaptureHost, type CapturedSegment } from "./capture";
-import { openExportDialog } from "./dialog-window";
-import { exportTarget, type MenuItem } from "./menu";
+import { openExportDialog, type ExportDialogRequest } from "./dialog-window";
+import { exportTarget, type ExportTarget, type MenuItem } from "./menu";
 import { readStructure, type PdfStructure } from "./structure";
 import { readExportSettings } from "../prefs";
 
@@ -58,6 +58,50 @@ const lookup = (id: number): MenuItem | null => {
 
 const targetOf = (items: readonly Any[] | undefined) => exportTarget((items ?? []).map(menuItem), lookup);
 
+export interface ExportFlowDeps extends Pick<ExportEntryOptions, "captureHost" | "onRequest" | "onProblem" | "warn"> {
+  readonly title: string;
+  readonly itemType: string;
+  /** The page count and outline of a reader's PDF. */
+  structure(reader: Any): Promise<PdfStructure>;
+  /** Shows the dialog; null when cancelled. */
+  openDialog(request: Omit<ExportDialogRequest, "settings">): Promise<ExportChoice | null>;
+}
+
+/**
+ * Capture the target's text, ask what to export, and pass the choice on.
+ * A capture that fails, or finds no text, is a problem shown and nothing
+ * more: no dialog, no request. Never rejects.
+ */
+export async function exportFlow(target: ExportTarget, deps: ExportFlowDeps): Promise<void> {
+  try {
+    const captured = await captureSegments(target.attachmentID, deps.captureHost);
+    if (!captured.ok) {
+      deps.onProblem(deps.title, captured.problem.error);
+      return;
+    }
+    if (captured.segments.every((segment) => segment.text.trim() === "")) {
+      deps.onProblem(deps.title, "this document has no text to read");
+      return;
+    }
+    const structure = await structureOf(target.attachmentID, captured.segments, deps.captureHost, deps.structure);
+    const choice = await deps.openDialog({
+      item: dialogItem(deps.itemType, deps.title, structure),
+      segments: captured.segments,
+    });
+    if (choice === null) return;
+    await deps.onRequest({
+      itemID: target.itemID,
+      title: deps.title,
+      attachmentID: target.attachmentID,
+      segments: captured.segments,
+      choice,
+    });
+  } catch (error) {
+    deps.warn("the audiobook export failed", error);
+    deps.onProblem("Export audiobook", String(error));
+  }
+}
+
 /** Registers the menu entry. Returns an unregister. */
 export function registerExportEntry(options: ExportEntryOptions): () => void {
   let busy = false;
@@ -68,33 +112,16 @@ export function registerExportEntry(options: ExportEntryOptions): () => void {
     busy = true;
     try {
       const item = Zotero.Items.get(target.itemID) as Any;
-      const title = String(item.getDisplayTitle());
-      const captured = await captureSegments(target.attachmentID, options.captureHost);
-      if (!captured.ok) {
-        options.onProblem(title, captured.problem.error);
-        return;
-      }
-      if (captured.segments.every((segment) => segment.text.trim() === "")) {
-        options.onProblem(title, "this document has no text to read");
-        return;
-      }
-      const structure = await structureOf(target.attachmentID, captured.segments, options.captureHost);
-      const choice = await openExportDialog({
-        item: dialogItem(item.itemType, title, structure),
-        segments: captured.segments,
-        settings: readExportSettings(),
+      await exportFlow(target, {
+        title: String(item.getDisplayTitle()),
+        itemType: item.itemType,
+        captureHost: options.captureHost,
+        structure: readStructure,
+        openDialog: (request) => openExportDialog({ ...request, settings: readExportSettings() }),
+        onRequest: options.onRequest,
+        onProblem: options.onProblem,
+        warn: options.warn,
       });
-      if (choice === null) return;
-      await options.onRequest({
-        itemID: target.itemID,
-        title,
-        attachmentID: target.attachmentID,
-        segments: captured.segments,
-        choice,
-      });
-    } catch (error) {
-      options.warn("the audiobook export failed", error);
-      options.onProblem("Export audiobook", String(error));
     } finally {
       busy = false;
     }
@@ -139,13 +166,14 @@ async function structureOf(
   attachmentID: number,
   segments: readonly CapturedSegment[],
   host: CaptureHost<Any>,
+  read: (reader: Any) => Promise<PdfStructure>,
 ): Promise<PdfStructure> {
   const fallback = { pageCount: Math.max(0, ...segments.map((segment) => segment.pageIndex)) + 1, outline: null };
   let reader = host.find(attachmentID);
   const opened = reader === null;
   try {
     reader ??= await host.open(attachmentID);
-    return reader === null ? fallback : await readStructure(reader);
+    return reader === null ? fallback : await read(reader);
   } catch {
     return fallback;
   } finally {
