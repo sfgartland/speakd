@@ -47,6 +47,34 @@ other channel.
 The bar shows what speakd reports, never a guess: **reading**, **another
 channel is speaking**, **speakd is not running**, or **wrong token**.
 
+## Audio export
+
+**From any Zotero item with text**, right-click **Export audiobook…** to turn a
+PDF, article, or book into an mp3, opus, or m4b audio file with chapters. The
+dialog asks what to export (the whole item or some pages), which format, and
+where to save it.
+
+- **Format:** `export_format_article` (default mp3) for articles, and
+  `export_format_book` (default m4b) for books or papers with multiple chapters.
+- **Destination:** `export_destination` can be `attach` to import the audio into
+  Zotero as a child attachment titled "Audio — <title>", or `folder` to save to
+  a folder on your machine (the path is `export_folder`). "Attach" is the default,
+  and the rendered file is staged in `~/.local/share/speakd/speakd-exports/` before
+  importing, then deleted.
+- **Format support:** the daemon chooses the engine when rendering — Piper first
+  if configured and the part's language has a voice, Kokoro otherwise. It yields
+  to live speech and renders resume if the daemon restarts.
+- **Settings are in the Zotero Config Editor,** under `extensions.speakd-reader.*`:
+  - `export_format_article` — `mp3`, `opus`, or `m4b` (default: mp3)
+  - `export_format_book` — `mp3`, `opus`, or `m4b` (default: m4b)
+  - `export_destination` — `attach` or `folder` (default: attach)
+  - `export_folder` — path when destination is `folder`
+  - `export_skip_references` — skip the item's references section (default: false)
+
+There is no export settings pane yet; edit these prefs through Zotero's Config
+Editor (**Tools → Preferences → Advanced → Config Editor**) or by hand in
+`prefs.js` in your Zotero profile directory.
+
 ## Limits
 
 - **Zotero 10.0.x only** (`strict_max_version: "10.0.*"`). The plugin stands on

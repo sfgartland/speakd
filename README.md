@@ -492,10 +492,11 @@ uv run speakctl render book.txt --out book.m4b --title "A Book" --no-wait
 
 A text file is one part unless it contains form feeds (`\f`), in which case
 each chunk becomes a chapter — titled from `--title` (or the file's own name)
-when there is only one, and "Part 1", "Part 2", ... otherwise. The output's
-extension picks the format. Left to run, `speakctl render` polls and prints
-progress until the job is done or fails; `--no-wait` just prints the job id
-and returns.
+when there is only one, and "Part 1", "Part 2", ... otherwise. A part whose
+first non-blank line is a markdown heading (`# Title`) uses that as its title
+and removes the line from the spoken text. The output's extension picks the
+format. Left to run, `speakctl render` polls and prints progress until the job
+is done or fails; `--no-wait` just prints the job id and returns.
 
 Progress survives a crash or a restart: a work directory under
 `$XDG_STATE_HOME/speakd/renders/<job>/` holds `parts.json` (each part's title
@@ -562,14 +563,25 @@ re-measuring on hardware. That rig reported a clean shutdown for code that
 segfaulted inside ALSA the first time it met a sound card, so its silences are
 not evidence.
 
-## Clients
+## Clients and skills
+
+**Audiobook agent skill** — `clients/claude-code/skills/speakd-audiobook/`
+teaches an agent to turn PDFs, Markdown, or text files into audiobooks through
+`speakctl render`. It prepares text (stripping headers and references, extracting
+chapters from PDF outlines, putting form-feed and `# Title` separators in the
+right places), then renders it to mp3/opus/m4b with chapters. The skill is
+installed automatically when you install the clients (see below for their
+installers), or it can be used standalone in any Claude Code, OpenCode, or
+Codex session.
 
 **Zotero** — [`clients/zotero/`](clients/zotero/) reads a paper
 aloud from inside Zotero 10's reader, with Zotero's own sentence highlight and
 follow-scroll showing what is being spoken. speakd does the speaking; the
 plugin borrows Zotero's Read Aloud segmentation (reading order, headers and
 citations skipped) and its highlight. A paper is a channel like any other,
-`zotero:<item>`, named after its title.
+`zotero:<item>`, named after its title. The plugin also supplies an **Export
+audiobook…** context menu to render papers into mp3, opus, or m4b audio files
+with chapters, attaching the result to the item or saving to a folder.
 
 Zotero's plugin sandbox cannot open a Unix socket, so the daemon also serves
 **loopback HTTP**, on `127.0.0.1:8642`:
@@ -592,21 +604,23 @@ done by a follower process the daemon keeps alive, which tails the transcript;
 two hooks remain, both once per turn, to stop the speech when a new prompt
 arrives and to read the permission prompts aloud. Every hook path exits 0 and
 writes nothing to stdout, so a daemon that is not running costs silence and
-nothing else. See its [README](clients/claude-code/README.md) for the install.
+nothing else. The `speakd-audiobook` skill is included. See its
+[README](clients/claude-code/README.md) for the install.
 
 **OpenCode** — [`clients/opencode/`](clients/opencode/) is a plugin that
 speaks a session's text blocks as they finish, stops the speech on a new
 prompt, and reads the permission prompts aloud — the same three jobs the
 Claude Code hooks do, from inside OpenCode's own plugin runtime. Install it
-once with `clients/opencode/install.sh`; the `speakd-mcp` server comes with
-it, so sessions brief and switch modes exactly as Claude Code's do. See its
-[README](clients/opencode/README.md).
+once with `clients/opencode/install.sh`; the `speakd-mcp` server and the
+`speakd-audiobook` skill come with it, so sessions brief and switch modes
+exactly as Claude Code's do. See its [README](clients/opencode/README.md).
 
 **Codex** — [`clients/codex/`](clients/codex/) installs user hooks for prompt,
 interrupt, permission, and turn-end events, and registers the `speakd-mcp`
 server. A daemon follower reads the main assistant's prose from the local
-transcript. Run `uv sync` and `bash clients/codex/install.sh`, then restart
-Codex and the daemon. See its [README](clients/codex/README.md).
+transcript. The `speakd-audiobook` skill is also installed. Run `uv sync` and
+`bash clients/codex/install.sh`, then restart Codex and the daemon. See its
+[README](clients/codex/README.md).
 
 **Desktop notifications** — a second follower reads chosen notifications
 aloud: email, and WhatsApp through Chrome. It listens to the session bus with

@@ -13,6 +13,8 @@ Last updated 2026-09-26. `main` **is pushed** to https://github.com/sfgartland/s
 | OpenCode | Plugin in `~/.config/opencode/plugins/` + MCP entry in `opencode.json`, via `clients/opencode/install.sh`. Sessions start brief and muted like Claude Code. **Verified live end to end** (speech, briefings, mode switching, channel resolution) | `speakctl mode full --source opencode:<id>` |
 | Briefings | Agents call `brief` over MCP; sessions switch between brief and full per channel | `speakctl mode full --source claude-code:<id>`; the guide is `~/.config/speakd/briefing.md` |
 | Zotero reader | Built, reviewed, verified live in a test Zotero; **not installed in your Zotero yet** | See "Install the Zotero plugin" below |
+| Audio export (Zotero menu) | Built: menu, dialog, render, progress, attach/folder storage | Right-click item → **Export audiobook…**; settings in Config Editor (`extensions.speakd-reader.export_*`) |
+| Audiobook agent skill | Installed by Claude Code, OpenCode, and Codex installers; teaches agents to prepare text and call `speakctl render` | `clients/claude-code/skills/speakd-audiobook/` |
 | Notifications off-switch | `speakctl notify off` stops the reader for good (survives restarts), `on` brings it back, `status` reports it. **Not yet smoke-tested against the live daemon** — takes effect on the daemon's next restart | `speakctl notify off` / `on`; `SPEAKD_NO_NOTIFY` stays the startup hard-off |
 | HTTP transport | `127.0.0.1:8642`, token-protected, for the Zotero plugin | `speakctl http-token` prints the token |
 
@@ -118,11 +120,6 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
 - Depends on `status.languages.supported` being right while the model loads. That's fixed.
 - **Includes Piper Task 6's Zotero half** (the plugin's language-cache
   invalidation on a `speech.engine` setting event) — deferred until phase 3.
-
-### 2. Then, as before
-
-- **Audio export Part B, the Zotero export flow:** `docs/superpowers/plans/2026-09-24-audio-export.md`, Tasks B2–B5.
-  - B1's pure modules are already on main (`clients/zotero/src/export/`).
 
 **How to run the work:** background subagents, one worktree per phase.
 - Sonnet for closely specified tasks.
