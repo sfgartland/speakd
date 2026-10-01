@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from collections.abc import Sequence
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -1904,3 +1905,34 @@ def test_started_announces_every_segment_and_positions_say_which(daemon) -> None
     assert [s["text"] for s in segments] == ["One.", "Two.", "Six."]
     assert [s["index"] for s in segments] == [0, 1, 2]
     assert [e.data["index"] for e in seen if e.kind == "position"] == [0, 1, 2]
+
+
+def test_a_sentence_transform_rewrites_each_unit_but_keeps_its_span() -> None:
+    from speakd.__main__ import _view_of
+    from speakd.plugins.builtin import register_builtins
+    from speakd.plugins.host import PluginHost
+    from speakd.plugins.registry import ServiceRegistry
+    from speakd.profiles import PDF_PROFILE
+
+    host = PluginHost(ServiceRegistry())
+    register_builtins(host)
+    view = _view_of(PDF_PROFILE, host)
+    text = "As argued in pp. 34-38. Next one."
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append)
+    d = Daemon(FakeEngine(), RecordingPlayer(), lambda name: view, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        d.handle(
+            Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": text, "profile": "pdf"})
+        )
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    segments = cast(
+        list[dict[str, Any]], next(e for e in seen if e.kind == "started").data["segments"]
+    )
+    assert [s["text"] for s in segments] == ["As argued in pages 34 to 38.", "Next one."]
+    spans = [(s["span_start"], s["span_end"]) for s in segments]
+    assert [text[a:b] for a, b in spans] == ["As argued in pp. 34-38.", "Next one."]

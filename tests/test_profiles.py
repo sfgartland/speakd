@@ -168,3 +168,39 @@ def test_the_pdf_profile_can_be_overridden(tmp_path: Path) -> None:
     path = tmp_path / "profiles.toml"
     path.write_text('[profile.pdf]\nvoice = "am_michael"\n', encoding="utf-8")
     assert load_profiles(path)["pdf"].voice == "am_michael"
+
+
+def test_load_profiles_reads_sentence_transforms(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.doc]\ntransforms = []\nsentence_transforms = ["pronunciation"]\n')
+    assert load_profiles(path)["doc"].sentence_transforms == ("pronunciation",)
+
+
+def test_pdf_profile_pronounces_per_sentence() -> None:
+    from speakd.profiles import PDF_PROFILE
+
+    assert PDF_PROFILE.transforms == ()
+    assert PDF_PROFILE.sentence_transforms == ("pronunciation",)
+
+
+def test_load_profiles_rejects_a_bare_string_sentence_transforms(tmp_path: Path) -> None:
+    path = tmp_path / "profiles.toml"
+    path.write_text('[profile.bad]\nsentence_transforms = "pronunciation"\n')
+    with pytest.raises(ValueError, match="sentence_transforms must be a list"):
+        load_profiles(path)
+
+
+def test_an_unknown_sentence_transform_is_reported_like_a_chain_one() -> None:
+    from speakd.__main__ import _view_of
+    from speakd.model import Piece, Span
+    from speakd.plugins.builtin import register_builtins
+    from speakd.plugins.host import PluginHost
+    from speakd.plugins.registry import ServiceRegistry
+
+    host = PluginHost(ServiceRegistry())
+    register_builtins(host)
+    view = _view_of(Profile(name="x", sentence_transforms=("nope",)), host)
+    unit = Piece(span=Span(0, 2), spoken="hi")
+    units, errors = view.prepare_sentences([unit])
+    assert units == [unit]
+    assert errors == ["profile 'x' wants 'nope' -- no plugin provides it"]

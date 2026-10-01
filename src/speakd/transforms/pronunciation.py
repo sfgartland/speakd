@@ -226,6 +226,12 @@ _WORDS: tuple[tuple[re.Pattern[str], str], ...] = (
     # normalisation when the source already had one — keeps "pp.34" from
     # concatenating into "pages34".
     (re.compile(r"\bpp\.(?![A-Za-z])"), "pages "),
+    # "p. 12" is "page 12", and the engine reads the letter "p" otherwise.
+    # Only before a digit: a bare "p." is as likely a letter or an initial,
+    # and the \b keeps it off "cap. 3" and "app. 2". After "pp." so that
+    # one is never half-matched; the trailing space is the same guard as
+    # above against "p.12" becoming "page12".
+    (re.compile(r"\bp\.(?=\s*\d)\s*"), "page "),
 )
 
 

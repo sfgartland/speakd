@@ -19,6 +19,9 @@ from speakd.plugins.host import PluginHost, RegisteredTransform
 class Profile:
     name: str
     transforms: tuple[str, ...] = ()
+    # Applied to each sentence unit after segmentation, so a unit keeps its own
+    # source span however much the transform rewrites it.
+    sentence_transforms: tuple[str, ...] = ()
     voice: str = "af_heart"
     speed: float = 1.1
     interrupt_on: tuple[str, ...] = field(default=())
@@ -44,12 +47,34 @@ NOTIFICATION_PROFILE = Profile(
 
 
 # For documents whose reader highlights what is being spoken, the Zotero
-# reader first. No transforms at all: every rewriting transform marks its
-# pieces inexact, which drops each sentence's span to the whole piece, and a
-# highlight that lights a page is no use to follow. The reader cleans its text
-# before enqueueing it instead, keeping its own map of where each character
-# came from.
-PDF_PROFILE = Profile(name="pdf", transforms=())
+# reader first. No transforms over the whole text: every rewriting transform
+# marks its pieces inexact, which drops each sentence's span to the whole
+# piece, and a highlight that lights a page is no use to follow. The reader
+# cleans its text before enqueueing it instead, keeping its own map of where
+# each character came from. Pronunciation runs per sentence instead, after
+# segmentation: each unit already has its own span, and a rewrite leaves that
+# span as the sentence's source range, which is exactly what the highlight needs.
+PDF_PROFILE = Profile(name="pdf", transforms=(), sentence_transforms=("pronunciation",))
+
+
+def _names(profile: str, raw: dict[str, object], key: str) -> tuple[str, ...]:
+    """A profile's list of transform names, validated with the profile's name
+    in every message."""
+    value = raw.get(key, [])
+    if not isinstance(value, list):
+        raise ValueError(f"profile {profile!r}: {key} must be a list, got {type(value).__name__}")
+    for element in value:
+        if not isinstance(element, str):
+            # resolve_chain looks each name up in a dict, so a nested list
+            # surfaced there as "unhashable type: 'list'" -- no profile
+            # name, no file, and a long way from the config that caused it.
+            # A scalar is worse: it is hashable, so it became a nonsense
+            # entry in `missing` and read as a transform nobody provides.
+            raise ValueError(
+                f"profile {profile!r}: {key} must be a list of strings, "
+                f"got {type(element).__name__}"
+            )
+    return tuple(value)
 
 
 def load_profiles(path: Path) -> dict[str, Profile]:
@@ -83,22 +108,8 @@ def load_profiles(path: Path) -> dict[str, Profile]:
             ) from exc
         if speed <= 0:
             raise ValueError(f"profile {name!r}: speed must be greater than 0, got {speed}")
-        transforms = raw.get("transforms", [])
-        if not isinstance(transforms, list):
-            raise ValueError(
-                f"profile {name!r}: transforms must be a list, got {type(transforms).__name__}"
-            )
-        for element in transforms:
-            if not isinstance(element, str):
-                # resolve_chain looks each name up in a dict, so a nested list
-                # surfaced there as "unhashable type: 'list'" -- no profile
-                # name, no file, and a long way from the config that caused it.
-                # A scalar is worse: it is hashable, so it became a nonsense
-                # entry in `missing` and read as a transform nobody provides.
-                raise ValueError(
-                    f"profile {name!r}: transforms must be a list of strings, "
-                    f"got {type(element).__name__}"
-                )
+        transforms = _names(name, raw, "transforms")
+        sentence_transforms = _names(name, raw, "sentence_transforms")
         voice = raw.get("voice", DEFAULT_PROFILE.voice)
         if not isinstance(voice, str):
             # str() would turn a list into "['a', 'b']" -- a plausible-looking
@@ -113,7 +124,8 @@ def load_profiles(path: Path) -> dict[str, Profile]:
             )
         profiles[name] = Profile(
             name=name,
-            transforms=tuple(transforms),
+            transforms=transforms,
+            sentence_transforms=sentence_transforms,
             voice=voice,
             speed=speed,
             interrupt_on=tuple(interrupt_on),
@@ -124,12 +136,17 @@ def load_profiles(path: Path) -> dict[str, Profile]:
 def resolve_chain(
     profile: Profile,
     host: PluginHost,
+    *,
+    sentences: bool = False,
 ) -> tuple[list[RegisteredTransform], list[str]]:
-    """Return the profile's transforms in order, plus the names nobody provides."""
+    """Return the profile's transforms in order, plus the names nobody provides.
+
+    `sentences` resolves the per-sentence chain instead of the whole-text one.
+    """
     available = {t.name: t for t in host.transforms()}
     chain: list[RegisteredTransform] = []
     missing: list[str] = []
-    for name in profile.transforms:
+    for name in profile.sentence_transforms if sentences else profile.transforms:
         transform = available.get(name)
         if transform is None:
             missing.append(name)

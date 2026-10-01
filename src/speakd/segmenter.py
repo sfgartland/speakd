@@ -36,7 +36,12 @@ from speakd.model import Piece, Span
 # in the first place, which belongs in the markdown transform, not here.
 DEFAULT_MAX_CHARS = 90
 
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+# "pp. 34-38" and "p. 12" are a citation, not two sentences: breaking after the
+# abbreviation cut a live utterance mid-citation and, worse, handed the
+# pronunciation rule the halves of a range. The break is withheld only when a
+# number follows, so "the cap. Then" and "cap. 3" -- a word merely ending in p
+# -- still end a sentence (the \b keeps it off them).
+_SENTENCE_END = re.compile(r"(?<=[.!?])(?:(?<!\bpp\.)(?<!\bp\.)\s+|\s+(?!\s*\d))")
 _CLAUSE_END = re.compile(r"(?<=[,;:])\s+")
 
 

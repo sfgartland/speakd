@@ -161,3 +161,18 @@ def test_pieces_are_exact_by_default_and_sub_pieces_stay_exact() -> None:
     out = segment([piece(source)])
     assert all(p.exact for p in out)
     assert_spans_are_sound(source, piece(source), out)
+
+
+@pytest.mark.parametrize("abbreviation", ["pp.", "p."])
+def test_a_page_abbreviation_before_a_number_is_not_a_sentence_end(abbreviation: str) -> None:
+    text = f"As argued in {abbreviation} 34-38. Next one."
+    out = segment([piece(text)])
+    assert [p.spoken for p in out] == [f"As argued in {abbreviation} 34-38.", "Next one."]
+    assert_spans_are_sound(text, piece(text), out)
+
+
+def test_a_word_ending_in_p_still_ends_a_sentence_before_a_number() -> None:
+    assert [p.spoken for p in segment([piece("Look at the cap. 3 is next.")])] == [
+        "Look at the cap.",
+        "3 is next.",
+    ]
