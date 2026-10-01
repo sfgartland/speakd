@@ -9,10 +9,21 @@ authors = [{ name = "Severin Gartland" }]
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-# Kokoro pulls torch; keep it out of the default install so the core stays light.
-# NOTE: misaki (a kokoro dep) requires Python < 3.14.
+# Kokoro runs as an ONNX model (kokoro-onnx, onnxruntime on the CPU) fed by
+# misaki's G2P, so there is no torch: ~0.7 GB less RAM, a far faster load.
+# Optional so the core stays light.
+# NOTE: misaki requires Python < 3.14.
 kokoro = [
-    "kokoro",
+    "kokoro-onnx>=0.6.1,<0.7",
+    # misaki's English dependencies, listed by hand rather than as
+    # `misaki[en]`: that extra also pulls spacy-curated-transformers, which
+    # requires torch and is only used by the transformer G2P (trf=True),
+    # which speakd never selects.
+    "misaki",
+    "espeakng-loader",
+    "num2words",
+    "phonemizer-fork",
+    "spacy",
     "sounddevice",
     "scipy",
     # Kokoro's English pronunciation (misaki) needs spaCy's small English
@@ -74,17 +85,15 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.12"
 strict = true
 
-# Neither optional dependency ships type stubs, and neither is installed in
-# the default environment, so strict mode cannot resolve them. Both are
+# None of these optional dependencies ships type stubs, and none is installed in
+# the default environment, so strict mode cannot resolve them. They are
 # imported inside functions and immediately adapted behind our own typed
 # interfaces (Player, Synthesizer), so nothing untyped escapes those modules.
 [[tool.mypy.overrides]]
 module = [
-    "kokoro.*",
+    "kokoro_onnx.*",
     "misaki.*",
     "sounddevice.*",
-    "torch",
-    "torch.*",
     "lingua.*",
     "piper",
     "piper.*",
@@ -97,6 +106,13 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# kokoro-onnx requires `phonemizer`, which installs into the same `phonemizer/`
+# package directory as misaki's `phonemizer-fork`; with both present the
+# files of one overwrite the other's. misaki's espeak code is written against
+# the fork, so `phonemizer` is made unsatisfiable and never installed.
+override-dependencies = ["phonemizer ; sys_platform == 'never'"]
 
 [tool.uv.sources]
 en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }

@@ -20,8 +20,8 @@ Local machine specifics, kept outside the repo:
 - `~/.config/systemd/user/speakd.service.d/local-device.conf` sets `SPEAKD_DEVICE=cpu`
   **and, since 2026-09-26, `SPEAKD_NO_NOTIFY=1`** (the notifications reader
   was annoying and untrusted; remove those two lines to bring it back).
-  This laptop's NVIDIA GPU is too old for torch's CUDA build. Because the engine
-  falls back to the CPU anyway, plain `uv sync` / `uv run` are safe again.
+  `SPEAKD_DEVICE` is now ignored: Kokoro runs on onnxruntime's CPU backend,
+  with no torch, so plain `uv sync` / `uv run` are safe.
 - `~/.claude/settings.json.before-speakd-plugin` is the backup from before the
   hand-wired hooks were replaced by the plugin.
 - **The Bluetooth speakers eat the first seconds of audio after a silent
@@ -197,7 +197,7 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
 - **The daemon runs as the desktop app's child**, not as a systemd service:
   `packaging/desktop/speakd-gui` (the app-menu entry) starts the shell, which
   starts the daemon, and either one ending ends the other. This machine's
-  daemon environment (`SPEAKD_DEVICE=cpu`, `SPEAKD_NO_NOTIFY=1`) is in
+  daemon environment (`SPEAKD_NO_NOTIFY=1`; a leftover `SPEAKD_DEVICE=cpu` is ignored) is in
   `~/.config/speakd/env`; the old `speakd.service` is stopped and disabled.
 
 ## Where the record is

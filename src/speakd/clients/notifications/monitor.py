@@ -3,8 +3,7 @@
 `busctl --user monitor --json=short` is the source because it is the only one
 measured to survive a real message: `dbus-monitor` prints string arguments
 raw, so a two-line WhatsApp body cannot be delimited back out of it, and a
-D-Bus binding would be a new dependency in a virtualenv whose hand-installed
-torch does not survive a resolver pass.
+D-Bus binding would be a new dependency, and a compiled one.
 
 Every notification crosses this bus twice -- the app to the notification
 daemon, that daemon onward to the shell -- so read naively the stream says

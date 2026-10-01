@@ -29,7 +29,7 @@ done
 [ -x "$venv/bin/speakd" ] || die "no speakd at $venv/bin/speakd
   Build it:  cd $root && uv sync --extra kokoro"
 
-# This machine's settings for the daemon (SPEAKD_DEVICE=cpu, ...): plain
+# This machine's settings for the daemon (SPEAKD_NO_NOTIFY=1, ...): plain
 # KEY=VALUE lines, what the systemd unit's Environment= lines used to carry.
 env_file="${XDG_CONFIG_HOME:-$HOME/.config}/speakd/env"
 if [ -f "$env_file" ]; then
