@@ -151,12 +151,16 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   with 0 enqueues), Task 4 (`82f998b`, `e5fe418`: the right-click menu, the
   export dialog and its settings; `exportFlow` tested, including no-text).
   All reviewed clean.
-- **Task 5** (render round-trip, progress pane, attach, resume across restart;
-  Opus, live in the harness) was **dispatched on 2026-10-01 and may have
-  committed without review**. Check `git log e5fe418..` on the branch and
-  `task-5-report.md` in the ledger dir. If there are commits, the next step is
-  the task review (`review-package` over `e5fe418..HEAD`, Sonnet reviewer). If
-  there are none, re-dispatch from `task-5-brief.md`.
+- **Task 5** (render round-trip, progress pane, attach, resume across restart)
+  is **committed as `6b4a9f5` but not yet reviewed**. All four live checks
+  passed in the harness: the mp3 is attached, the m4b chapters show in
+  ffprobe, cancel works, and a render resumes after quitting Zotero. Next step:
+  the task review (`review-package` over `e5fe418..6b4a9f5`, Sonnet reviewer).
+  The concerns in `task-5-report.md` go to the reviewer:
+  - the daemon's `estimate_seconds` is always 0;
+  - `render_cancel` isn't tied to the client that started the job;
+  - a crash before prefs are saved loses the plugin's job list;
+  - the live runs went around the dialog window.
 - **Then:** Task 6 (docs + gate, Haiku), an Opus whole-branch review (point it
   at the ledger's deferred minors), and merge.
 - **Rulings made on 2026-10-01 (in the ledger):**
