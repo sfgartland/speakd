@@ -95,6 +95,12 @@ describe("initialState", () => {
 });
 
 describe("isFrontBackMatter", () => {
+  it("flags a final references or notes chapter", () => {
+    for (const title of ["References", "Works Cited", "Literatur", "Literaturverzeichnis", "Notes"]) {
+      expect(isFrontBackMatter(title)).toBe(true);
+    }
+  });
+
   it("recognises the usual suspects, case-insensitively", () => {
     for (const title of ["Contents", "table of contents", "Copyright", "Index", "Bibliography", "Acknowledgments", "About the Author"]) {
       expect(isFrontBackMatter(title)).toBe(true);

@@ -35,6 +35,8 @@ export interface ExportEntryOptions {
   onRequest(request: ExportRequest): void | Promise<void>;
   /** Where a problem is shown: the capture found nothing to read, say. */
   onProblem(title: string, message: string): void;
+  /** Shows that something is under way, until the returned function is called. */
+  onBusy(title: string, message: string): () => void;
   warn(message: string, error?: unknown): void;
   /** The daemon's measured real-time factor, for the dialog's estimate, if known. */
   rtf?(): number | undefined;
@@ -63,10 +65,10 @@ const targetOf = (items: readonly Any[] | undefined) => exportTarget((items ?? [
 /** What the menu entry would export for this item alone, or null. */
 export const targetFor = (itemID: number): ExportTarget | null => targetOf([Zotero.Items.get(itemID)].filter(Boolean));
 
-export interface ExportFlowDeps extends Pick<ExportEntryOptions, "captureHost" | "onRequest" | "onProblem" | "warn"> {
+export interface ExportFlowDeps extends Pick<ExportEntryOptions, "captureHost" | "onRequest" | "onProblem" | "onBusy" | "warn"> {
   readonly title: string;
   readonly itemType: string;
-  /** The page count and outline of a reader's PDF. */
+  /** The page count and outline of a reader's PDF, read on the reader the capture used. */
   structure(reader: Any): Promise<PdfStructure>;
   /** Shows the dialog; null when cancelled. */
   openDialog(request: Omit<ExportDialogRequest, "settings">): Promise<ExportChoice | null>;
@@ -79,7 +81,17 @@ export interface ExportFlowDeps extends Pick<ExportEntryOptions, "captureHost" |
  */
 export async function exportFlow(target: ExportTarget, deps: ExportFlowDeps): Promise<void> {
   try {
-    const captured = await captureSegments(target.attachmentID, deps.captureHost);
+    // Zotero builds the text of every page first: a book takes a while.
+    const done = deps.onBusy(deps.title, "Reading the PDF…");
+    let structure = null as PdfStructure | null;
+    let captured;
+    try {
+      captured = await captureSegments(target.attachmentID, deps.captureHost, async (reader) => {
+        structure = await deps.structure(reader).catch(() => null);
+      });
+    } finally {
+      done();
+    }
     if (!captured.ok) {
       deps.onProblem(deps.title, captured.problem.error);
       return;
@@ -88,9 +100,8 @@ export async function exportFlow(target: ExportTarget, deps: ExportFlowDeps): Pr
       deps.onProblem(deps.title, "this document has no text to read");
       return;
     }
-    const structure = await structureOf(target.attachmentID, captured.segments, deps.captureHost, deps.structure);
     const choice = await deps.openDialog({
-      item: dialogItem(deps.itemType, deps.title, structure),
+      item: dialogItem(deps.itemType, deps.title, structure ?? fallbackStructure(captured.segments)),
       segments: captured.segments,
     });
     if (choice === null) return;
@@ -170,31 +181,16 @@ export async function exportItem(
       openDialog ?? ((request) => openExportDialog({ ...request, settings: readExportSettings(), rtf: options.rtf?.() })),
     onRequest: options.onRequest,
     onProblem: options.onProblem,
+    onBusy: options.onBusy,
     warn: options.warn,
   });
 }
 
 /**
- * The PDF's page count and outline, from a reader open on it (the one the
- * user has, or one opened just for this and closed again). Without them
- * (the reader would not open) the page count is the last page with text and
- * there is no outline, so the dialog offers pages only.
+ * Without the PDF's own page count and outline (reading them failed) the
+ * page count is the last page with text and there is no outline, so the
+ * dialog offers pages only.
  */
-async function structureOf(
-  attachmentID: number,
-  segments: readonly CapturedSegment[],
-  host: CaptureHost<Any>,
-  read: (reader: Any) => Promise<PdfStructure>,
-): Promise<PdfStructure> {
-  const fallback = { pageCount: Math.max(0, ...segments.map((segment) => segment.pageIndex)) + 1, outline: null };
-  let reader = host.find(attachmentID);
-  const opened = reader === null;
-  try {
-    reader ??= await host.open(attachmentID);
-    return reader === null ? fallback : await read(reader);
-  } catch {
-    return fallback;
-  } finally {
-    if (opened && reader !== null) host.close(reader);
-  }
+function fallbackStructure(segments: readonly CapturedSegment[]): PdfStructure {
+  return { pageCount: Math.max(0, ...segments.map((segment) => segment.pageIndex)) + 1, outline: null };
 }

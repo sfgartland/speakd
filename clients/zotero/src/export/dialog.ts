@@ -91,7 +91,7 @@ export function availableModes(item: DialogItem): RangeMode[] {
 }
 
 const MATTER_PATTERN =
-  /^(contents|table of contents|copyright|copyright page|title page|half[- ]?title|dedication|epigraph|acknowledg(e)?ments?|index|bibliography|about the authors?|colophon|front matter|back matter)$/i;
+  /^(contents|table of contents|copyright|copyright page|title page|half[- ]?title|dedication|epigraph|acknowledg(e)?ments?|index|bibliography|references|works cited|literatur(verzeichnis)?|notes|about the authors?|colophon|front matter|back matter)$/i;
 
 /** A chapter that is front or back matter, which an audiobook does not want read out. */
 export function isFrontBackMatter(title: string): boolean {

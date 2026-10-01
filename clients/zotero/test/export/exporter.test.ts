@@ -43,7 +43,14 @@ const job = (state: string, change: Record<string, unknown> = {}) => ({
 });
 
 function setup(
-  options: { ledger?: TrackedJob[]; answers?: Record<string, CallResult>; files?: string[]; attachFails?: boolean } = {},
+  options: {
+    ledger?: TrackedJob[];
+    answers?: Record<string, CallResult>;
+    files?: string[];
+    attachFails?: boolean;
+    /** Holds `status`'s answer back until it resolves. */
+    statusGate?: Promise<void>;
+  } = {},
 ) {
   const calls: [string, string, Record<string, unknown>][] = [];
   const notes: [string, string][] = [];
@@ -61,6 +68,7 @@ function setup(
   const host: ExporterHost = {
     call: async (verb, sourceId, payload = {}) => {
       calls.push([verb, sourceId, payload]);
+      if (verb === "status" && options.statusGate) await options.statusGate;
       return answers[verb]!;
     },
     loadLedger: () => ledger,
@@ -204,6 +212,15 @@ describe("Exporter on completion", () => {
     expect(JSON.parse(run.ledger()!)).toEqual([]);
   });
 
+  it("deletes only the temporary file it chose, never a path speakd reports", async () => {
+    const run = setup();
+    await run.exporter.start(request());
+    run.event(job("done", { out: "/home/u/elsewhere.mp3" }));
+    await settle();
+    expect(run.attached).toEqual([[3, "A Paper", "/home/u/elsewhere.mp3"]]);
+    expect(run.removed).toEqual([`${STAGING}/3-1000.mp3`]);
+  });
+
   it("attaches once, however often done is heard", async () => {
     const run = setup({ answers: { status: { kind: "ok", data: { render: { jobs: [job("done")] } } } } });
     await run.exporter.start(request());
@@ -295,6 +312,17 @@ describe("Exporter.sync, on start", () => {
     expect(run.attached).toEqual([]);
     expect(run.notes).toEqual([["Export audiobook: A Paper", "speakd no longer has this render."]]);
     expect(run.exporter.jobsFor(3)).toEqual([]);
+  });
+
+  it("does not judge lost an export started while status was on its way", async () => {
+    let release = () => {};
+    const run = setup({ statusGate: new Promise<void>((resolve) => (release = resolve)) });
+    const syncing = run.exporter.sync();
+    await run.exporter.start(request());
+    release();
+    await syncing;
+    expect(run.exporter.jobsFor(3)).toHaveLength(1);
+    expect(run.notes).toEqual([]);
   });
 
   it("keeps every job while speakd cannot be asked", async () => {

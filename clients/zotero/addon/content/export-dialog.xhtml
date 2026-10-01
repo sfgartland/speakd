@@ -34,7 +34,7 @@
     <label id="mode-chapters"><input type="radio" name="mode" value="chapters"/> Chapters</label>
     <div id="chapters"></div>
     <label id="mode-pages"><input type="radio" name="mode" value="pages"/> Pages</label>
-    <div id="pages-row"><input id="pages" type="text" placeholder="12-48, 60"/></div>
+    <div id="pages-row"><input id="pages" type="text" placeholder="PDF pages, e.g. 12-48"/></div>
     <div id="note" hidden="hidden">This PDF has no outline, so choose the pages to export.</div>
     <label id="references-row"><input id="references" type="checkbox"/> Leave out the references section</label>
   </fieldset>
@@ -116,7 +116,8 @@
       const described = args.describeState(args.segments, args.item, state, args.rtf);
       $("status").className = described.ok ? "" : "error";
       $("status").textContent = described.ok ? "Estimated render time: " + described.estimate : described.error;
-      $("export").disabled = !args.resolveChoice(state, args.item).ok;
+      // A selection with no text cannot be exported, whatever else is set.
+      $("export").disabled = !described.ok || !args.resolveChoice(state, args.item).ok;
     }
 
     for (const radio of document.querySelectorAll("input[name=mode]")) {

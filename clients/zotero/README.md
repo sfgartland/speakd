@@ -51,12 +51,16 @@ channel is speaking**, **speakd is not running**, or **wrong token**.
 
 **On one PDF attachment**, or a regular item (article, book) with exactly one
 PDF child, right-click **Export audiobook…** to render an mp3, opus, or m4b audio
-file. The dialog offers:
+file. Zotero first prepares the PDF's text, which for a long book can take a
+while; a "Reading the PDF…" notice stays up until the dialog opens. The dialog
+offers:
 
-- **Range:** for a book with chapters in its outline, choose **chapters** (with
-  checkboxes), **page range**, or **whole document**; for a book with no outline,
-  choose **page range** only; for an article, choose **whole document** or
-  **page range**.
+- **Range:** for a book (item type Book or Book Section) with chapters in its
+  outline, choose **chapters** (with checkboxes), **page range**, or **whole
+  document**; for a book with no outline, choose **page range** only; for any
+  other item type, choose **whole document** or **page range**. Page ranges are
+  the PDF's own page numbers (the first page is 1), not the numbers printed on
+  the pages. Chapters such as Contents, Index, References or Notes start unticked.
 - **Format:** mp3, opus, or m4b. Books use `export_format_book` (default m4b);
   articles use `export_format_article` (default mp3). This is determined by item
   type, not by whether the document has chapters.
@@ -78,7 +82,8 @@ rendering.
 - `export_format_book` — `mp3`, `opus`, or `m4b` (default: m4b)
 - `export_destination` — `attach` or `folder` (default: attach)
 - `export_folder` — path when destination is `folder`
-- `export_skip_references` — skip the item's references section (default: true)
+- `export_skip_references` — skip the item's references section when exporting
+  the whole document (default: true); chapter and page exports read what you chose
 
 There is no export settings pane yet; edit these prefs through Zotero's Config
 Editor (**Tools → Preferences → Advanced → Config Editor**) or by hand in

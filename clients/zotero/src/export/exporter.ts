@@ -179,6 +179,9 @@ export class Exporter {
    * connection comes back (events missed meanwhile are not replayed).
    */
   async sync(): Promise<void> {
+    // Only the jobs known when status was asked: one started meanwhile is
+    // missing from its answer without being lost.
+    const asked = new Set(this.ledger.map((entry) => entry.job));
     const result = await this.host.call("status", EXPORT_SOURCE, {});
     if (result.kind !== "ok") return;
     const render = result.data.render;
@@ -186,7 +189,8 @@ export class Exporter {
     const reports = (Array.isArray(raw) ? raw : [])
       .map(parseJobReport)
       .filter((report): report is JobReport => report !== null);
-    for (const pickup of pickUp(this.ledger, reports)) {
+    const known = this.ledger.filter((entry) => asked.has(entry.job));
+    for (const pickup of pickUp(known, reports)) {
       switch (pickup.kind) {
         case "watch":
           this.update(pickup.tracked, pickup.report);
@@ -267,7 +271,8 @@ export class Exporter {
         this.host.notify(headline(tracked.title), `Could not attach the audio (${String(error)}); it is at ${out}.`);
         return;
       }
-      await this.host.remove(out).catch((error) => this.host.warn("removing the temporary audio failed", error));
+      // The staging file the plugin chose, never a path speakd reports.
+      await this.host.remove(tracked.out).catch((error) => this.host.warn("removing the temporary audio failed", error));
       this.host.notify(headline(tracked.title), `Attached as “Audio — ${tracked.title}”.`);
     } finally {
       this.forget(tracked.job);

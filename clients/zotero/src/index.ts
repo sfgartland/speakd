@@ -8,7 +8,7 @@ import { CHROME_PACKAGE } from "./export/dialog-window";
 import { exportItem, registerExportEntry, targetFor, type ExportEntryOptions } from "./export/entry";
 import type { ExportChoice } from "./export/dialog";
 import { Exporter } from "./export/exporter";
-import { notify, zoteroExporterHost } from "./export/host";
+import { busy, notify, zoteroExporterHost } from "./export/host";
 import { registerExportPane } from "./export/pane";
 import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
@@ -120,6 +120,7 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
     captureHost,
     onRequest: (request) => exporter.start(request),
     onProblem: (title, message) => notify(`Export audiobook: ${title}`, message),
+    onBusy: (title, message) => busy(`Export audiobook: ${title}`, message),
     warn,
     rtf: () => exporter.rtf,
   };

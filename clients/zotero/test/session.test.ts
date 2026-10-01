@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Problem } from "../src/channel";
-import { CAPTURE_WAIT_MS, CONTROLLER_WAIT_MS, NO_TEXT, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
+import { CAPTURE_TIMEOUT, CAPTURE_WAIT_MS, CONTROLLER_WAIT_MS, NO_TEXT, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
 import type { CallResult, SpeakdEvent } from "../src/speakd";
 import type { SegmentText } from "../src/sections";
 
@@ -573,7 +573,8 @@ describe("ReaderSession.capture", () => {
     expect(CAPTURE_WAIT_MS).toBeGreaterThan(CONTROLLER_WAIT_MS);
     elapse();
     const result = await captured;
-    expect(result.ok).toBe(false);
+    // Not that Read Aloud failed: Zotero was still building the text.
+    expect(result).toEqual({ ok: false, problem: { kind: "zotero", error: CAPTURE_TIMEOUT } });
     expect(hooks.log).toEqual(["takeover on", "takeover off"]);
   });
 

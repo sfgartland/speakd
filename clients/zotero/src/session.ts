@@ -102,9 +102,13 @@ export const CONTROLLER_WAIT_MS = 12_000;
 /**
  * The same wait for a capture. An export is often of a whole book, opened
  * just for it, and Zotero builds the structured text of every page before
- * it hands over a single segment.
+ * it hands over a single segment. A 360-page book took 6-12 s on a desktop,
+ * so this leaves a slow machine a wide margin.
  */
 export const CAPTURE_WAIT_MS = 180_000;
+
+/** Why a capture got no segments within `CAPTURE_WAIT_MS`: Zotero was still at it. */
+export const CAPTURE_TIMEOUT = "the PDF took too long to prepare for reading";
 
 export interface SessionHooks {
   /** Run `task` once the synchronous work under way is done: a microtask. */
@@ -417,7 +421,8 @@ export class ReaderSession {
     if (this.current === null) {
       this.cancelWait = this.hooks.later(() => {
         this.cancelWait = null;
-        this.giveUp({ kind: "zotero", error: "Zotero's Read Aloud did not start" });
+        const error = this.pendingCapture !== null ? CAPTURE_TIMEOUT : "Zotero's Read Aloud did not start";
+        this.giveUp({ kind: "zotero", error });
       }, ms);
     }
     this.changed();

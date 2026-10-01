@@ -23,7 +23,10 @@ function setup(options: { capture: CaptureResult; choice?: ExportChoice | null; 
   const dialogs: unknown[] = [];
   const handle: CaptureHandle = {
     adoption: { kind: "ready" },
-    capture: async () => options.capture,
+    capture: async () => {
+      log.push("capture");
+      return options.capture;
+    },
     onChange: () => () => {},
   };
   let opened = 0;
@@ -43,11 +46,19 @@ function setup(options: { capture: CaptureResult; choice?: ExportChoice | null; 
       return { pageCount: 4, outline: null };
     },
     openDialog: async (request) => {
+      log.push("dialog");
       dialogs.push(request);
       return options.choice === undefined ? CHOICE : options.choice;
     },
     onRequest: (request) => void requests.push(request),
-    onProblem: (title, message) => void problems.push([title, message]),
+    onProblem: (title, message) => {
+      log.push("problem");
+      problems.push([title, message]);
+    },
+    onBusy: (title, message) => {
+      log.push(`busy ${title}: ${message}`);
+      return () => log.push("busy done");
+    },
     warn: () => {},
   };
   return { deps, log, problems, requests, dialogs, opened: () => opened };
@@ -105,24 +116,49 @@ describe("exportFlow", () => {
     expect(run.requests).toHaveLength(1);
   });
 
-  it("closes every background reader it opened, capture's and structure's", async () => {
+  it("opens the PDF once, for both capture and structure, and closes it before the dialog", async () => {
     const run = setup({ capture: { ok: true, segments: [text("Hello.")] } });
     await exportFlow(TARGET, run.deps);
-    expect(run.opened()).toBe(2);
-    expect(run.log.sort()).toEqual(["close background1", "close background2"]);
+    expect(run.opened()).toBe(1);
+    expect(run.log.filter((entry) => entry.startsWith("close") || entry === "dialog")).toEqual([
+      "close background1",
+      "dialog",
+    ]);
   });
 
   it("closes the reader even when the structure read throws", async () => {
     const run = setup({ capture: { ok: true, segments: [text("Hello.")] }, structureFails: true });
     await exportFlow(TARGET, run.deps);
-    expect(run.log.sort()).toEqual(["close background1", "close background2"]);
+    expect(run.log.filter((entry) => entry.startsWith("close"))).toEqual(["close background1"]);
   });
 
   it("opens nothing, and closes nothing, for a reader the user already has", async () => {
     const run = setup({ capture: { ok: true, segments: [text("Hello.")] }, open: { name: "users" } });
     await exportFlow(TARGET, run.deps);
     expect(run.opened()).toBe(0);
-    expect(run.log).toEqual([]);
+    expect(run.log.filter((entry) => entry.startsWith("close"))).toEqual([]);
+  });
+
+  it("says it is reading the PDF while the capture runs, and stops saying so before the dialog", async () => {
+    const run = setup({ capture: { ok: true, segments: [text("Hello.")] } });
+    await exportFlow(TARGET, run.deps);
+    expect(run.log.filter((entry) => !entry.startsWith("close"))).toEqual([
+      "busy A Paper: Reading the PDF…",
+      "capture",
+      "busy done",
+      "dialog",
+    ]);
+  });
+
+  it("stops saying it is reading the PDF before showing a capture problem", async () => {
+    const run = setup({ capture: { ok: false, problem: { kind: "zotero", error: "the reader is closed" } } });
+    await exportFlow(TARGET, run.deps);
+    expect(run.log.filter((entry) => !entry.startsWith("close"))).toEqual([
+      "busy A Paper: Reading the PDF…",
+      "capture",
+      "busy done",
+      "problem",
+    ]);
   });
 
   it("turns a throwing dialog into a problem rather than a rejection", async () => {

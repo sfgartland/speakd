@@ -8,6 +8,7 @@ import { PREF_PREFIX } from "../prefs";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const IOUtils: any;
 declare const PathUtils: any;
+declare const Services: any;
 type Any = any;
 
 const LEDGER_PREF = `${PREF_PREFIX}render_jobs`;
@@ -45,6 +46,15 @@ export function notify(title: string, message: string): void {
   progress.startCloseTimer(8000);
 }
 
+/** A notice that stays up until the returned function closes it. */
+export function busy(title: string, message: string): () => void {
+  const progress = new Zotero.ProgressWindow({ closeOnClick: false });
+  progress.changeHeadline(title);
+  progress.addDescription(message);
+  progress.show();
+  return () => progress.close();
+}
+
 export function zoteroExporterHost(options: Pick<ExporterHost, "call" | "warn">): ExporterHost {
   return {
     call: options.call,
@@ -52,6 +62,9 @@ export function zoteroExporterHost(options: Pick<ExporterHost, "call" | "warn">)
     loadLedger: () => Zotero.Prefs.get(LEDGER_PREF, true),
     saveLedger: (raw) => {
       Zotero.Prefs.set(LEDGER_PREF, raw, true);
+      // Prefs reach disk on a clean quit only: a crash would lose a job
+      // whose render goes on, and its file would never be attached.
+      Services.prefs.savePrefFile(null);
     },
     stagingDir: async () => {
       const dir = stagingPath();

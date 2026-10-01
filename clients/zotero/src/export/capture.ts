@@ -75,8 +75,14 @@ function adopted<R>(host: CaptureHost<R>, handle: CaptureHandle): Promise<Adopti
 /**
  * The segments of PDF attachment `itemID`, in reading order, each with its
  * text, page and paragraph anchor. Never rejects: a failure is a problem.
+ * After a capture that worked, `whileOpen` runs on the reader before a
+ * reader opened for this is closed, so that a large PDF is opened once.
  */
-export async function captureSegments<R>(itemID: number, host: CaptureHost<R>): Promise<CaptureResult> {
+export async function captureSegments<R>(
+  itemID: number,
+  host: CaptureHost<R>,
+  whileOpen?: (reader: R) => Promise<void>,
+): Promise<CaptureResult> {
   let reader = host.find(itemID);
   let opened = false;
   // A reader opened before the plugin started -- a tab Zotero restored --
@@ -96,7 +102,9 @@ export async function captureSegments<R>(itemID: number, host: CaptureHost<R>): 
     const adoption = await adopted(host, handle);
     if (adoption === null) return failed("the PDF did not open in time");
     if (adoption.kind !== "ready") return adoptionProblem(adoption);
-    return await handle.capture();
+    const result = await handle.capture();
+    if (result.ok && whileOpen) await whileOpen(reader);
+    return result;
   } catch (error) {
     return failed(`capturing the segments failed: ${String(error)}`);
   } finally {
