@@ -136,9 +136,10 @@ answer is less than you would hope:
 
 Unloading at runtime gives back 0.42 GiB, not the two gigabytes the model
 occupies: dropping the reference frees the tensors to Python, and torch's
-allocator and CPython's arenas keep the address space. If you want the memory
-genuinely back, disable and then restart the daemon — because the flag persists,
-it comes back up in 32 MB and never builds the model at all.
+allocator and CPython's arenas keep the address space (measured on the former
+torch build). If you want the memory genuinely back, disable and then restart the
+daemon — because the flag persists, it comes back up in 32 MB and never builds
+the model at all.
 
 **`hush` and `cancel` are scoped by the source you name.** With no `--source`
 they stop the whole daemon, as they always did; with one they reach that channel
@@ -412,8 +413,8 @@ itself rather than guessed as English.
 ## Piper
 
 Kokoro is the default, and the better voice. Piper is the cheap second engine
-you switch to by hand — mostly for battery, where Kokoro's torch build is a
-CPU tax, or for German, which Kokoro cannot speak. Because `piper-tts` embeds
+you switch to by hand — mostly for battery, where Kokoro's CPU cost is a
+tax, or for German, which Kokoro cannot speak. Because `piper-tts` embeds
 espeak-ng and is GPL-3.0, it is an extra you install yourself; it is never
 bundled into a speakd distribution:
 
@@ -442,7 +443,7 @@ its memory, and from then on anything Piper cannot speak is declined with `no
 voice for <lang>` rather than silently loading Kokoro again — the same way
 disable already keeps a stray enqueue from undoing the decision by accident.
 So on battery: switch to Piper, disable, and what stays is the 380 MB of a
-Piper voice instead of 1.4 GB of torch.
+Piper voice instead of Kokoro's footprint.
 
 **Two thread settings, deliberately opposite.** `speech.piper_threads` (default
 1) is how many threads live speech synthesises on; measured, one is the cheap
@@ -457,7 +458,7 @@ second of audio; samples of the passage are in `~/Music/speakd-tts-compare/`:
 
 | engine | CPU cost | wall RTF | notes |
 |---|---|---|---|
-| Kokoro | ~2.1 | ~0.5 | best voice; torch, 1.4 GB resident |
+| Kokoro (measured on the former torch build) | ~2.1 | ~0.5 | best voice; 1.4 GB resident under torch |
 | Piper `high` | ~1.4 | ~0.35 | |
 | Piper `medium`, default threads | ~0.25 | ~0.07 | |
 | **Piper `medium`, one thread** | **~0.13** | ~0.13 | ~16× cheaper than Kokoro; 380 MB resident |
@@ -648,27 +649,12 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check . && uv run mypy src tests
 ```
 
-**Where Kokoro runs** is `SPEAKD_DEVICE`: `auto` (the default), `cpu` or `cuda`.
-`auto` uses the GPU when one starts and the CPU otherwise — which matters
-because the torch build on PyPI for Linux is a CUDA build, and an NVIDIA GPU
-older than its cuDNN supports is *visible* to torch and still fails to run the
-model. On such a machine, set it for the service so the GPU is never tried:
-
-```bash
-mkdir -p ~/.config/systemd/user/speakd.service.d
-printf '[Service]\nEnvironment=SPEAKD_DEVICE=cpu\n' \
-  > ~/.config/systemd/user/speakd.service.d/local-device.conf
-systemctl --user daemon-reload && systemctl --user restart speakd
-```
-
-On a machine whose GPU predates the CUDA wheel's minimum (an MX250 is sm_61),
-install CPU torch explicitly and then use `uv run --no-sync`, because a plain
-`uv sync` resolves `torch` back to the CUDA build:
-
-```bash
-uv pip uninstall torch
-uv pip install torch --index-url https://download.pytorch.org/whl/cpu
-```
+**Kokoro runs on the CPU** through onnxruntime: there is no torch and no GPU
+setting. `SPEAKD_DEVICE`, which chose between torch's CPU and CUDA backends, is
+ignored, so an old service override is harmless. The model (`kokoro-v1.0.onnx`
+and `voices-v1.0.bin`, 353 MB) lives in `$XDG_CACHE_HOME/speakd/kokoro-onnx`
+(default `~/.cache/speakd/kokoro-onnx`) and is downloaded there on first start
+when missing.
 
 ## License
 

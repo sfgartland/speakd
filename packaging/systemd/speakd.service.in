@@ -20,8 +20,8 @@ WorkingDirectory=@ROOT@
 # copied the plugin out of the checkout. Harmless for the daemon itself.
 Environment=SPEAKD_HOME=@ROOT@
 
-# Kokoro loads a torch model at startup — roughly half a minute on a laptop
-# CPU. Nothing waits on it: the socket appearing is the readiness signal, and
+# Kokoro loads its ONNX model at startup — a few seconds on a laptop CPU.
+# Nothing waits on it: the socket appearing is the readiness signal, and
 # speakctl prints its own "no daemon" line until then.
 
 # on-failure, not always: `systemctl --user stop speakd` is a decision, not a
