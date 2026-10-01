@@ -36,23 +36,71 @@ from speakd.model import Piece, Span
 # in the first place, which belongs in the markdown transform, not here.
 DEFAULT_MAX_CHARS = 90
 
+# A candidate sentence break: whitespace after terminal punctuation. Which
+# candidates are real is `_sentence_breaks`'s decision.
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+# An ellipsis in any of its spellings: three or more dots, spaced or not, or
+# the single character. Matched as a run so that ". . ." is one thing rather
+# than three full stops with a space after each.
+_ELLIPSIS = re.compile(r"\.(?:\s*\.){2,}|…+")
 # "pp. 34-38" and "p. 12" are a citation, not two sentences: breaking after the
 # abbreviation cut a live utterance mid-citation and, worse, handed the
-# pronunciation rule the halves of a range. The break is withheld only when a
-# number follows, so "the cap. Then" and "cap. 3" -- a word merely ending in p
-# -- still end a sentence (the \b keeps it off them).
-_SENTENCE_END = re.compile(r"(?<=[.!?])(?:(?<!\bpp\.)(?<!\bp\.)\s+|\s+(?!\s*\d))")
+# pronunciation rule the halves of a range. Withheld only when a number
+# follows, so "cap. 3" -- a word merely ending in p, which the \b keeps this
+# off -- still ends a sentence.
+_PAGE_ABBREVIATION = re.compile(r"\bpp?\.$")
+# What may follow an ellipsis for the sentence to carry on through it:
+# "Wait... what", "It was... 3 of them", "Well..., maybe".
+_CONTINUES = re.compile(r"[0-9,;]")
 _CLAUSE_END = re.compile(r"(?<=[,;:])\s+")
 
 
-def _split_keep_offsets(text: str, pattern: re.Pattern[str]) -> list[tuple[int, str]]:
+def _has_words(text: str) -> bool:
+    return any(c.isalnum() for c in text)
+
+
+def _sentence_breaks(text: str) -> list[tuple[int, int]]:
+    """The whitespace runs at which `text` really is cut into sentences.
+
+    An ellipsis is at most one break and always stays at the end of the
+    sentence it closes, and it never makes a unit of nothing but punctuation:
+    a candidate break with no word on either side is no break, which is also
+    what keeps the spaces inside ". . ." from each counting.
+    """
+    inside_ellipsis: set[int] = set()
+    for run in _ELLIPSIS.finditer(text):
+        inside_ellipsis.update(range(run.start(), run.end()))
+    breaks: list[tuple[int, int]] = []
+    last = 0
+    for match in _SENTENCE_END.finditer(text):
+        start, end = match.span()
+        if start - 1 in inside_ellipsis and start in inside_ellipsis:
+            continue  # a space inside a spaced ellipsis
+        after = text[end:]
+        if start - 1 in inside_ellipsis:
+            if after[:1].islower() or _CONTINUES.match(after):
+                continue
+        elif _PAGE_ABBREVIATION.search(text[:start]) and after[:1].isdigit():
+            continue
+        if not _has_words(text[last:start]) or not _has_words(after):
+            continue
+        breaks.append((start, end))
+        last = end
+    return breaks
+
+
+def _split_keep_offsets(text: str, pattern: re.Pattern[str] | None = None) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     pos = 0
-    for match in pattern.finditer(text):
-        chunk = text[pos : match.start()]
+    if pattern is None:
+        spans = _sentence_breaks(text)
+    else:
+        spans = [m.span() for m in pattern.finditer(text)]
+    for start, end in spans:
+        chunk = text[pos:start]
         if chunk.strip():
             out.append((pos, chunk))
-        pos = match.end()
+        pos = end
     tail = text[pos:]
     if tail.strip():
         out.append((pos, tail))
@@ -77,7 +125,7 @@ def _split_words(base: int, text: str, max_chars: int) -> Iterator[tuple[int, st
 
 
 def _units(text: str, max_chars: int) -> Iterator[tuple[int, str]]:
-    for offset, sentence in _split_keep_offsets(text, _SENTENCE_END):
+    for offset, sentence in _split_keep_offsets(text):
         if len(sentence) <= max_chars:
             yield offset, sentence
             continue
@@ -109,7 +157,10 @@ def segment(pieces: Sequence[Piece], max_chars: int = DEFAULT_MAX_CHARS) -> list
         exact = piece.exact and len(piece.spoken) == piece.span.end - piece.span.start
         for offset, chunk in _units(piece.spoken, max_chars):
             spoken = chunk.strip()
-            if not spoken:
+            # A text that is nothing but an ellipsis has no sentence to attach
+            # it to; it is silence either way, and an engine handed bare dots
+            # may say something stranger.
+            if not spoken or not spoken.strip(". …"):
                 continue
             if exact:
                 span = Span(piece.span.start + offset, piece.span.start + offset + len(chunk))

@@ -560,3 +560,19 @@ def test_a_renders_unpunctuated_heading_stays_its_own_sentence(tmp_path: Path) -
     assert until(lambda: len(engine.texts) >= 2)
     assert engine.texts[0].startswith("Chapter heading") and "Body" not in engine.texts[0]
     d.render_queue.stop()
+
+
+def test_a_render_with_ellipses_synthesises_no_dots_only_sentence(tmp_path: Path) -> None:
+    engine = _CountingEngine()
+    d = _real_profile_daemon(engine)
+    text = "It ended... Then we left. Wait... what? Hmm... ... Then. Done… Then . . . go."
+    parts = [{"title": "T", "text": text}]
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, parts=parts)))
+    assert response.ok, response.error
+    job = d.render_queue.job(job_id_of(response))
+    assert job is not None
+    assert until(lambda: job.state in ("done", "failed") or len(engine.texts) >= 4)
+    stored = job.parts[0].sentences or []
+    assert len(stored) >= 4
+    assert all(s.strip(". …") for s in stored)
+    d.render_queue.stop()

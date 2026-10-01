@@ -61,13 +61,13 @@ def _view_of(profile: Profile, host: PluginHost) -> ProfileView:
             return list(units), unit_absent
         # One unit at a time: a sentence transform never merges or reorders,
         # and running the chain over the whole list would let it. A unit whose
-        # spoken text comes back empty is dropped.
+        # spoken text comes back empty, or only dots, is dropped.
         out: list[Piece] = []
         errors = list(unit_absent)
         for unit in units:
             result = apply_chain([unit], unit_chain)
             errors.extend(result.errors)
-            out.extend(p for p in result.pieces if p.spoken.strip())
+            out.extend(p for p in result.pieces if p.spoken.strip(". …"))
         return out, errors
 
     return ProfileView(

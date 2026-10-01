@@ -176,3 +176,56 @@ def test_a_word_ending_in_p_still_ends_a_sentence_before_a_number() -> None:
         "Look at the cap.",
         "3 is next.",
     ]
+
+
+def spoken(text: str) -> list[str]:
+    return [p.spoken for p in segment([piece(text)])]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Wait... what",
+        "Wait.... what",
+        "Wait . . . what",
+        "Wait… what",
+        "It was... 3 of them",
+        "Well..., maybe",
+        "Well... ; maybe",
+    ],
+)
+def test_an_ellipsis_before_a_continuation_is_not_a_break(text: str) -> None:
+    assert spoken(text) == [text]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("It ended... Then we left.", ["It ended...", "Then we left."]),
+        ("It ended.... Then we left.", ["It ended....", "Then we left."]),
+        ("It ended . . . Then we left.", ["It ended . . .", "Then we left."]),
+        ("It ended… Then we left.", ["It ended…", "Then we left."]),
+        ('It ended... "Then" we left.', ["It ended...", '"Then" we left.']),
+        ("It ended...", ["It ended..."]),
+        ("It ended... ", ["It ended..."]),
+    ],
+)
+def test_an_ellipsis_ends_at_most_one_sentence_and_stays_with_it(
+    text: str, expected: list[str]
+) -> None:
+    assert spoken(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["... Then we left.", "Hmm... ...", "Hmm... . . . Then", "A. ... B.", "...", "…", ". . ."],
+)
+def test_no_unit_is_only_dots(text: str) -> None:
+    for unit in spoken(text):
+        assert unit.strip(". …"), f"{unit!r} is only dots, from {text!r}"
+
+
+def test_ellipsis_spans_stay_sound() -> None:
+    text = "It ended... Then . . . we left… Done."
+    out = segment([piece(text)])
+    assert_spans_are_sound(text, piece(text), out)

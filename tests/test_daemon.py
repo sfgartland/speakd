@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -1936,3 +1937,40 @@ def test_a_sentence_transform_rewrites_each_unit_but_keeps_its_span() -> None:
     assert [s["text"] for s in segments] == ["As argued in pages 34 to 38.", "Next one."]
     spans = [(s["span_start"], s["span_end"]) for s in segments]
     assert [text[a:b] for a, b in spans] == ["As argued in pp. 34-38.", "Next one."]
+
+
+ELLIPSIS_TEXT = "It ended... Then we left. Wait... what? Hmm... ... Then. Done… Then . . . go."
+
+
+@pytest.mark.parametrize("profile_name", ["default", "pdf"])
+def test_ellipses_never_make_an_empty_or_dots_only_unit_under_a_real_profile(
+    profile_name: str,
+) -> None:
+    """The segmenter and pronunciation both have views on "...": under the
+    default profile pronunciation runs first and removes it, under pdf the
+    segmenter runs first and pronunciation sees each unit."""
+    from speakd.__main__ import _view_of
+    from speakd.plugins.builtin import register_builtins
+    from speakd.plugins.host import PluginHost
+    from speakd.plugins.registry import ServiceRegistry
+    from speakd.profiles import load_profiles
+
+    host = PluginHost(ServiceRegistry())
+    register_builtins(host)
+    view = _view_of(load_profiles(Path("/nonexistent"))[profile_name], host)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append)
+    d = Daemon(FakeEngine(), RecordingPlayer(), lambda name: view, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        payload: dict[str, object] = {"text": ELLIPSIS_TEXT, "profile": profile_name}
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload=payload))
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    started = next(e for e in seen if e.kind == "started")
+    texts = [str(s["text"]) for s in cast(list[dict[str, Any]], started.data["segments"])]
+    assert len(texts) >= 4
+    for text in texts:
+        assert text.strip(". …"), f"{text!r} is only dots"
