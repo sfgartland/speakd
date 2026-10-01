@@ -861,3 +861,169 @@ def test_render_stops_and_reports_a_failed_job(tmp_path, monkeypatch, capsys):  
     code = main(["render", str(textfile), "--out", str(tmp_path / "a.mp3")])
     assert code != 0
     assert "ffmpeg not found" in capsys.readouterr().err
+
+
+def test_render_extracts_chapter_titles_from_markdown_headings(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Parts whose first non-blank line is a markdown heading get that title."""
+    textfile = tmp_path / "book.txt"
+    textfile.write_text(
+        "# Chapter One\nChapter one text.\x0c# Chapter Two\nChapter two text.",
+        encoding="utf-8",
+    )
+    out = tmp_path / "book.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-1"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [
+        {"title": "Chapter One", "text": "Chapter one text."},
+        {"title": "Chapter Two", "text": "Chapter two text."},
+    ]
+
+
+def test_render_mixes_titled_and_untitled_parts(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Parts without headings keep "Part N", parts with headings use them."""
+    textfile = tmp_path / "mixed.txt"
+    textfile.write_text(
+        "No title here\x0c# Chapter Two\nChapter two text.",
+        encoding="utf-8",
+    )
+    out = tmp_path / "mixed.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-2"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [
+        {"title": "Part 1", "text": "No title here"},
+        {"title": "Chapter Two", "text": "Chapter two text."},
+    ]
+
+
+def test_render_single_part_with_heading_uses_heading_as_title(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Single part with no --title: markdown heading becomes the title."""
+    textfile = tmp_path / "article.txt"
+    textfile.write_text("# My Article\nArticle text.", encoding="utf-8")
+    out = tmp_path / "article.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-3"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [{"title": "My Article", "text": "Article text."}]
+
+
+def test_render_title_flag_wins_over_heading_but_heading_is_removed(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """--title flag takes precedence over heading; heading line still removed."""
+    textfile = tmp_path / "article.txt"
+    textfile.write_text("# My Article\nArticle text.", encoding="utf-8")
+    out = tmp_path / "article.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-4"}))
+    code = main(
+        [
+            "render",
+            str(textfile),
+            "--out",
+            str(out),
+            "--no-wait",
+            "--title",
+            "Override Title",
+        ]
+    )
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [{"title": "Override Title", "text": "Article text."}]
+    assert sent[0].payload["metadata"] == {"title": "Override Title"}
+
+
+def test_render_blank_parts_are_dropped(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Parts that are only whitespace after heading removal are dropped."""
+    textfile = tmp_path / "sparse.txt"
+    textfile.write_text(
+        "# Chapter One\nText.\x0c# Chapter Two\n   \x0c# Chapter Three\nMore text.",
+        encoding="utf-8",
+    )
+    out = tmp_path / "sparse.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-5"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [
+        {"title": "Chapter One", "text": "Text."},
+        {"title": "Chapter Three", "text": "More text."},
+    ]
+
+
+def test_render_part_numbers_use_chunk_index_not_parts_count(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Untitled parts numbered by original chunk position, not final parts count."""
+    textfile = tmp_path / "sparse.txt"
+    textfile.write_text("A\x0c\x0cB", encoding="utf-8")
+    out = tmp_path / "sparse.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-6"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [
+        {"title": "Part 1", "text": "A"},
+        {"title": "Part 3", "text": "B"},
+    ]
+
+
+def test_render_single_part_detection_counts_nonblank_chunks(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Single-part mode triggered by exactly one non-blank chunk."""
+    textfile = tmp_path / "single.txt"
+    textfile.write_text("\x0ctext\x0c", encoding="utf-8")
+    out = tmp_path / "single.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-7"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [{"title": "single", "text": "text"}]
+
+
+def test_render_all_blank_file_is_error(tmp_path, monkeypatch, capsys):  # type: ignore[no-untyped-def]
+    """File with no non-blank chunks produces error without sending request."""
+    from speakd.protocol import Response
+
+    textfile = tmp_path / "blank.txt"
+    textfile.write_text("   \x0c\t\x0c", encoding="utf-8")
+    out = tmp_path / "blank.m4b"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-8"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code != 0
+    assert sent == []
+    err = capsys.readouterr().err
+    assert "nothing to render" in err
+    assert str(textfile) in err
+
+
+def test_render_heading_with_multiple_spaces(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """Headings with multiple spaces or tabs are recognized and title stripped."""
+    textfile = tmp_path / "spaced.txt"
+    textfile.write_text("#   Title With Spaces\nText.", encoding="utf-8")
+    out = tmp_path / "spaced.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-9"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [{"title": "Title With Spaces", "text": "Text."}]
+
+
+def test_render_double_hash_not_a_heading(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """## is not treated as a heading."""
+    textfile = tmp_path / "hash.txt"
+    textfile.write_text("## Not a heading\nText.", encoding="utf-8")
+    out = tmp_path / "hash.mp3"
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"job": "job-10"}))
+    code = main(["render", str(textfile), "--out", str(out), "--no-wait"])
+    assert code == 0
+
+    assert sent[0].payload["parts"] == [{"title": "hash", "text": "## Not a heading\nText."}]

@@ -3,9 +3,8 @@
 Last updated 2026-10-01. `main` **is pushed** to https://github.com/sfgartland/speakd
 (as of `e4aa7d8`, and again with this handoff).
 
-**Resume here first:** the Zotero audiobook plan is half done on
-`feat/zotero-export` — see "In progress" below. Nothing is mid-edit; every
-branch's work is committed.
+**Resume here first:** the Zotero audiobook export is merged. Next is phase 3,
+language in the clients (see "Next"). Nothing is mid-edit.
 
 ## What works now
 
@@ -19,6 +18,8 @@ branch's work is committed.
 | OpenCode | Plugin in `~/.config/opencode/plugins/` + MCP entry in `opencode.json`, via `clients/opencode/install.sh`. Sessions start brief and muted like Claude Code. **Verified live end to end** (speech, briefings, mode switching, channel resolution) | `speakctl mode full --source opencode:<id>` |
 | Briefings | Agents call `brief` over MCP; sessions switch between brief and full per channel | `speakctl mode full --source claude-code:<id>`; the guide is `~/.config/speakd/briefing.md` |
 | Zotero reader | Built, reviewed, verified live in a test Zotero; **not installed in your Zotero yet** | See "Install the Zotero plugin" below |
+| Audio export (Zotero menu) | Built: menu, dialog, render, progress, attach/folder storage | Right-click item → **Export audiobook…**; settings in Config Editor (`extensions.speakd-reader.export_*`) |
+| Audiobook agent skill | Installed by Claude Code, OpenCode, and Codex installers; teaches agents to prepare text and call `speakctl render` | `clients/claude-code/skills/speakd-audiobook/` |
 | Notifications off-switch | `speakctl notify off` stops the reader for good (survives restarts), `on` brings it back, `status` reports it. **Not yet smoke-tested against the live daemon** — takes effect on the daemon's next restart | `speakctl notify off` / `on`; `SPEAKD_NO_NOTIFY` stays the startup hard-off |
 | HTTP transport | `127.0.0.1:8642`, token-protected, for the Zotero plugin | `speakctl http-token` prints the token |
 
@@ -137,42 +138,32 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   splits at "p."/"pp." before a number, and an ellipsis is one "…" pause, at
   most one sentence break.
 
-## In progress: Zotero audiobooks + agent skill
+## Built 2026-10-01: Zotero audiobooks + agent skill (merged)
 
-- **Branch** `feat/zotero-export`, worktree `../speakd-worktrees/zotero-export`.
-- **Plan** `docs/superpowers/plans/2026-10-01-zotero-audiobooks.md` (on that
-  branch). Run with superpowers:subagent-driven-development.
-- **Ledger** `../speakd-worktrees/zotero-export/.superpowers/sdd/2026-10-01-zotero-audiobooks/progress.md`
-  (git-ignored): every ruling, deferred minor and completed task. Read it first.
-- **Done:** Task 1 (`# Title` chapter headings in `speakctl render`), Task 2
-  (the `speakd-audiobook` skill in `clients/claude-code/skills/`, with
-  `scripts/prepare_text.py`; the Codex and OpenCode installers copy it), Task 3
-  (`d62c5f2`: segment capture through Read Aloud playing nothing, verified live
-  with 0 enqueues), Task 4 (`82f998b`, `e5fe418`: the right-click menu, the
-  export dialog and its settings; `exportFlow` tested, including no-text).
-  All reviewed clean.
-- **Task 5** (render round-trip, progress pane, attach, resume across restart)
-  is **committed as `6b4a9f5` but not yet reviewed**. All four live checks
-  passed in the harness: the mp3 is attached, the m4b chapters show in
-  ffprobe, cancel works, and a render resumes after quitting Zotero. Next step:
-  the task review (`review-package` over `e5fe418..6b4a9f5`, Sonnet reviewer).
-  The concerns in `task-5-report.md` go to the reviewer:
-  - the daemon's `estimate_seconds` is always 0;
-  - `render_cancel` isn't tied to the client that started the job;
-  - a crash before prefs are saved loses the plugin's job list;
-  - the live runs went around the dialog window.
-- **Then:** Task 6 (docs + gate, Haiku), an Opus whole-branch review (point it
-  at the ledger's deferred minors), and merge.
-- **Rulings made on 2026-10-01 (in the ledger):**
-  - The export settings are Zotero prefs (`extensions.speakd-reader.export_*`),
-    not daemon `zotero.*` settings. The plugin has no `declare_settings` path
-    yet. **Move them in phase 3**, which builds that path.
-  - Captured segments follow the user's highlight granularity (sentence or
-    paragraph); the parts and references code must tolerate both.
-  - The live smoke checks are recorded in task reports, not committed as
-    scripts.
-- After merging, re-run `clients/codex/install.sh` and
-  `clients/opencode/install.sh` so the skill reaches those agents.
+Plan `docs/superpowers/plans/2026-10-01-zotero-audiobooks.md`, six tasks, each
+reviewed, then an Opus whole-branch review and one fix wave.
+- `speakctl render` takes `# Title` chapter headings per form-feed part.
+- The `speakd-audiobook` skill (`clients/claude-code/skills/`, with
+  `scripts/prepare_text.py`) is copied by the Codex and OpenCode installers.
+  It drops a trailing "References" outline chapter unless `--keep-references`.
+- Zotero: right-click **Export audiobook…** → capture through Read Aloud
+  playing nothing → dialog → render → item-pane progress → attach or folder;
+  renders resume after a Zotero restart. Verified live in the harness,
+  including a 360-page PDF captured in about 6 s (the wait is 180 s).
+- **Carry forward:**
+  - Export settings are Zotero prefs (`extensions.speakd-reader.export_*`),
+    not daemon `zotero.*` settings. **Move them in phase 3**, which builds the
+    plugin's `declare_settings` path.
+  - Parked: the "Reading the PDF…" notice runs inside the export's `try`
+    (`clients/zotero/src/export/entry.ts`); if `Zotero.ProgressWindow` threw,
+    the export would abort. A two-line try/catch fixes it.
+  - Deferred: the daemon's `estimate_seconds` is always 0 (the plugin falls
+    back to a character count); `render_cancel` isn't scoped to the starting
+    client; a failed attach leaves the file in `<profile>/speakd-exports/`
+    with no startup sweep; `##` subheadings in `.md` input are spoken; an
+    all-blank render file exits with the "unreachable" code.
+- Re-run `clients/codex/install.sh` and `clients/opencode/install.sh` so the
+  skill reaches those agents.
 
 ## Next
 
@@ -183,12 +174,6 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
 - Depends on `status.languages.supported` being right while the model loads. That's fixed.
 - **Includes Piper Task 6's Zotero half** (the plugin's language-cache
   invalidation on a `speech.engine` setting event) — deferred until phase 3.
-
-### 2. Then, as before
-
-- **Audio export Part B, the Zotero export flow:** now planned and half done
-  as "In progress" above (it replaces Tasks B2–B5 of
-  `docs/superpowers/plans/2026-09-24-audio-export.md`).
 
 **How to run the work:** background subagents, one worktree per phase.
 - Sonnet for closely specified tasks.

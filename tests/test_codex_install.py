@@ -82,6 +82,12 @@ def test_installer_is_idempotent_with_spaced_checkout_path(tmp_path: Path) -> No
     (client / "hooks").mkdir()
     shutil.copyfile(CLIENT / "hooks" / "speakd-hook.sh", client / "hooks" / "speakd-hook.sh")
 
+    # The installer copies the shared skill from its sibling claude-code client.
+    shutil.copytree(
+        ROOT / "clients" / "claude-code" / "skills",
+        client.parent / "claude-code" / "skills",
+    )
+
     first, home, _ = _install(tmp_path, client)
     second, _, _ = _install(tmp_path, client)
 
@@ -155,3 +161,20 @@ def test_hook_launcher_preserves_context_and_logs_failure(tmp_path: Path) -> Non
     assert done.stdout == "briefing context\n"
     assert done.stderr == ""
     assert "diagnostic" in (state / "codex" / "hook.log").read_text(encoding="utf-8")
+
+
+def test_installer_copies_audiobook_skill_and_replaces_it_on_rerun(tmp_path: Path) -> None:
+    done, home, _ = _install(tmp_path)
+    assert done.returncode == 0, done.stderr
+    skill = home / "skills" / "speakd-audiobook"
+    assert (
+        (skill / "SKILL.md").read_text(encoding="utf-8").startswith("---\nname: speakd-audiobook")
+    )
+    assert (skill / "scripts" / "prepare_text.py").is_file()
+    assert not skill.is_symlink()
+
+    (skill / "stale.txt").write_text("old", encoding="utf-8")
+    again, _, _ = _install(tmp_path)
+    assert again.returncode == 0
+    assert not (skill / "stale.txt").exists()
+    assert (skill / "SKILL.md").is_file()

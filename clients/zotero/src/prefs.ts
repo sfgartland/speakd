@@ -5,6 +5,7 @@
 // `speakctl http-token`: the daemon's token file is not assumed readable
 // from inside Zotero's flatpak.
 
+import { parseSettings, type ExportSettings } from "./export/dialog";
 import type { LinkConfig } from "./link";
 
 export const PREF_PREFIX = "extensions.speakd-reader.";
@@ -33,4 +34,16 @@ export function observeConfig(onChange: () => void): () => void {
   return () => {
     for (const id of ids) Zotero.Prefs.unregisterObserver(id);
   };
+}
+
+/** The audiobook export dialog's defaults, declared in addon/prefs.js as `export_*`. */
+export function readExportSettings(): ExportSettings {
+  const get = (name: string) => Zotero.Prefs.get(`${PREF_PREFIX}${name}`, true);
+  return parseSettings({
+    formatArticle: get("export_format_article"),
+    formatBook: get("export_format_book"),
+    destination: get("export_destination"),
+    folder: get("export_folder"),
+    skipReferences: get("export_skip_references"),
+  });
 }

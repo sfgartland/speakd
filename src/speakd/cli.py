@@ -192,7 +192,10 @@ def _build_parser() -> argparse.ArgumentParser:
     render_cmd = sub.add_parser(
         "render", parents=[common], help="render a text file to an audio file in the background"
     )
-    render_cmd.add_argument("textfile", help="a text file, split into parts on form feeds (\\f)")
+    render_cmd.add_argument(
+        "textfile",
+        help="text file split on form feeds (\\f); heading lines become part titles",
+    )
     render_cmd.add_argument(
         "--out", required=True, help="where to write the result; its extension picks the format"
     )
@@ -974,18 +977,77 @@ _RENDER_FORMATS_BY_EXT = {".mp3": "mp3", ".opus": "opus", ".m4b": "m4b"}
 _RENDER_POLL_SECONDS = 0.5
 
 
+def _extract_chapter_title(text: str) -> tuple[str | None, str]:
+    """Extract a markdown heading from the first non-blank line.
+
+    Only `# ` (single hash followed by space or tab) followed by title text
+    is recognized; `##` and higher are not headings. Returns (title,
+    text_without_heading) where title is the heading text with leading/
+    trailing whitespace stripped, or None; text_without_heading is the
+    input with the heading line removed if found, otherwise unchanged.
+    """
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#") and len(stripped) > 1 and stripped[1] in " \t":
+            # Found a heading: extract title and rebuild text without it
+            title = stripped[2:].strip()
+            remaining_lines = lines[:i] + lines[i + 1 :]
+            remaining_text = "\n".join(remaining_lines)
+            return title, remaining_text
+        # If first non-blank line is not a heading, no title to extract
+        return None, text
+    # All blank lines
+    return None, text
+
+
 def _render_parts(text: str, title: str | None, stem: str) -> list[dict[str, object]]:
     """One part per form-feed-delimited chunk of `text` (design §1: an
     article is a single part, a book one per chapter).
 
-    A single part -- no form feed in the file -- takes `--title` if given,
-    falling back to the file's own name; several parts are titled "Part 1",
-    "Part 2", ... since nothing on the command line names each chapter.
+    Single-part mode is triggered by exactly one non-blank chunk: uses
+    `--title` if given, else the chunk's markdown heading if present, else
+    the file stem. Multi-part mode: each part uses its extracted heading if
+    present, else is titled "Part N" where N is the chunk's 1-based position
+    in the original split (counting dropped blank chunks). Blank parts
+    (only whitespace after heading removal) are dropped; returns empty if
+    no non-blank chunks exist.
     """
     chunks = text.split("\f")
-    if len(chunks) == 1:
-        return [{"title": title or stem, "text": chunks[0]}]
-    return [{"title": f"Part {i + 1}", "text": chunk} for i, chunk in enumerate(chunks)]
+
+    # First pass: identify which chunks are non-blank
+    nonblank_chunk_indices = []
+    for i, chunk in enumerate(chunks):
+        extracted_title, text_without_heading = _extract_chapter_title(chunk)
+        if text_without_heading.strip():
+            nonblank_chunk_indices.append(i)
+
+    # Empty file: no non-blank chunks
+    if not nonblank_chunk_indices:
+        return []
+
+    # Determine single vs. multi-part mode
+    is_single_part = len(nonblank_chunk_indices) == 1
+
+    # Second pass: build parts
+    parts: list[dict[str, object]] = []
+    for i, chunk in enumerate(chunks):
+        extracted_title, text_without_heading = _extract_chapter_title(chunk)
+        cleaned_text = text_without_heading.strip()
+
+        if not cleaned_text:
+            continue
+
+        if is_single_part:
+            part_title = title or extracted_title or stem
+        else:
+            part_title = extracted_title or f"Part {i + 1}"
+
+        parts.append({"title": part_title, "text": cleaned_text})
+
+    return parts
 
 
 def _render_metadata(args: argparse.Namespace) -> dict[str, object]:
@@ -1012,8 +1074,12 @@ def _render(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return _UNREACHABLE
+    parts = _render_parts(text, args.title, textfile.stem)
+    if not parts:
+        print(f"speakctl: nothing to render in {textfile}", file=sys.stderr)
+        return _UNREACHABLE
     payload: dict[str, object] = {
-        "parts": _render_parts(text, args.title, textfile.stem),
+        "parts": parts,
         "out": str(out_path.resolve()),
         "format": fmt,
         "lang": args.lang,

@@ -6,7 +6,7 @@ render uses its voice per language and its settings.
 
 ## Intent
 
-From Zotero, right-click a PDF and choose **Create audio version…** to get an
+From Zotero, right-click a PDF and choose **Export audiobook…** to get an
 audio file of the paper or book, attached back to the item. It is read through
 the same pipeline as live reading: Zotero's Read Aloud segmentation (reading
 order, headers, footers and citations skipped), speakd's cleanup and
@@ -76,7 +76,7 @@ refuses anything else.
 
 ## 2. Zotero: the export flow
 
-**Entry.** `Zotero.MenuManager` adds **Create audio version…** to the item
+**Entry.** `Zotero.MenuManager` adds **Export audiobook…** to the item
 context menu for a PDF attachment, or for a regular item with exactly one PDF.
 
 **Getting the text.** The PDF is opened in a reader tab in the background, and

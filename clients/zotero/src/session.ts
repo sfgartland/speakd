@@ -13,6 +13,10 @@
 // controller before it builds the next, so a controller destroyed with no
 // successor by the end of the tick is a stop.
 //
+// A session can also *capture*: start Zotero's segmentation as a read would,
+// and keep the segments the controller is handed, with the controller never
+// starting the channel. That is how an export gets a document's text.
+//
 // Pure. reader-takeover.ts wraps a core in the content-side object Zotero
 // calls, and supplies the hooks; nothing here touches Zotero.
 
@@ -51,6 +55,32 @@ export interface ChannelLike {
 export interface SegmentInfo {
   readonly text: string;
   readonly anchor: string | null;
+  /** The page it starts on (`sourcePosition.pageIndex`), when Zotero knows. */
+  readonly pageIndex?: number | null;
+}
+
+/** A segment as an export takes it: the shape export/parts.ts reads. */
+export interface CapturedSegment {
+  readonly text: string;
+  readonly pageIndex: number;
+  readonly anchor: string | null;
+}
+
+export type CaptureResult =
+  | { readonly ok: true; readonly segments: readonly CapturedSegment[] }
+  | { readonly ok: false; readonly problem: Problem };
+
+/**
+ * A copy of `segments`, each with a page. One whose page Zotero could not
+ * place is put on its predecessor's: in reading order, which is all a page
+ * range needs of it.
+ */
+export function capturedSegments(segments: readonly SegmentInfo[]): CapturedSegment[] {
+  let page = 0;
+  return segments.map((segment) => {
+    if (typeof segment.pageIndex === "number") page = segment.pageIndex;
+    return { text: segment.text, pageIndex: page, anchor: segment.anchor };
+  });
 }
 
 /** What the plugin's own UI asked for when it started a read. */
@@ -68,6 +98,17 @@ export type Intent =
  * and the takeover must not stay on, hiding Zotero's popup, for it.
  */
 export const CONTROLLER_WAIT_MS = 12_000;
+
+/**
+ * The same wait for a capture. An export is often of a whole book, opened
+ * just for it, and Zotero builds the structured text of every page before
+ * it hands over a single segment. A 360-page book took 6-12 s on a desktop,
+ * so this leaves a slow machine a wide margin.
+ */
+export const CAPTURE_WAIT_MS = 180_000;
+
+/** Why a capture got no segments within `CAPTURE_WAIT_MS`: Zotero was still at it. */
+export const CAPTURE_TIMEOUT = "the PDF took too long to prepare for reading";
 
 export interface SessionHooks {
   /** Run `task` once the synchronous work under way is done: a microtask. */
@@ -130,6 +171,8 @@ export class ControllerCore {
 
   /** The array Zotero built this controller from: what tells a rebuild from a new segmentation. */
   readonly source: unknown;
+  /** A capture's controller: it holds the segments, and never starts the channel. */
+  readonly captureOnly: boolean;
 
   constructor(
     session: ReaderSession,
@@ -138,10 +181,12 @@ export class ControllerCore {
     end: number,
     sink: ControllerSink,
     source: unknown,
+    captureOnly = false,
   ) {
     this.session = session;
     this.segments = segments;
     this.source = source;
+    this.captureOnly = captureOnly;
     this.start = start;
     this.end = end;
     this.sink = sink;
@@ -250,7 +295,9 @@ export class ControllerCore {
     this.sink.emit("Error", null);
   }
 
+  /** Every way a controller starts the channel comes through here: a capture's never does. */
   private begin(from: number): void {
+    if (this.captureOnly) return;
     this.begun = true;
     this.completed = false;
     this.pos = from;
@@ -261,7 +308,8 @@ export class ControllerCore {
     this.lastSkipGranularity = granularity;
     const channel = this.session.channel;
     // ←/→ move whatever is speaking; they are this reader's only while it is.
-    if (this.destroyed || !channel.speaking) return;
+    // A capture's controller moves nothing.
+    if (this.destroyed || this.captureOnly || !channel.speaking) return;
     if (granularity === "sentence") {
       void channel.skip(direction * (accelerate ? 5 : 1));
       return;
@@ -288,6 +336,8 @@ export class ReaderSession {
   private readonly changeListeners = new Set<() => void>();
   /** Cancels the wait for Zotero's controller, while one is on. */
   private cancelWait: (() => void) | null = null;
+  /** While a capture is on: what its promise resolves with, until it has. */
+  private pendingCapture: { settle: ((result: CaptureResult) => void) | null } | null = null;
 
   constructor(channel: ChannelLike, hooks: SessionHooks) {
     this.channel = channel;
@@ -324,6 +374,11 @@ export class ReaderSession {
     return this._problem;
   }
 
+  /** Whether a capture waits for Zotero's segments: what it asked for is to be started. */
+  get capturing(): boolean {
+    return this.pendingCapture !== null && this.pendingCapture.settle !== null;
+  }
+
   /** Whether a controller of the plugin's voice is live in this reader. */
   get live(): boolean {
     return this.current !== null;
@@ -333,6 +388,30 @@ export class ReaderSession {
   want(intent: Intent): void {
     if (this.closed) return;
     this.intent = intent;
+    this.await(CONTROLLER_WAIT_MS);
+  }
+
+  /**
+   * An export wants the document's segments: Zotero's segmentation is about
+   * to be started, and the controller it builds will keep them and play
+   * nothing. Resolves with a copy, or with why there is none; it never rejects.
+   * A read under way already holds them, and is left to go on.
+   */
+  capture(): Promise<CaptureResult> {
+    if (this.closed) return Promise.resolve({ ok: false, problem: { kind: "zotero", error: "the reader is closed" } });
+    if (this.current !== null) return Promise.resolve({ ok: true, segments: capturedSegments(this.current.segments) });
+    if (this._wanted) {
+      return Promise.resolve({ ok: false, problem: { kind: "zotero", error: "a read is starting in this reader" } });
+    }
+    return new Promise((settle) => {
+      this.pendingCapture = { settle };
+      this.intent = null;
+      this.await(CAPTURE_WAIT_MS);
+    });
+  }
+
+  /** Wait up to `ms` for Zotero's controller, with the takeover on. */
+  private await(ms: number): void {
     this._problem = null;
     if (!this._wanted) {
       this._wanted = true;
@@ -342,10 +421,19 @@ export class ReaderSession {
     if (this.current === null) {
       this.cancelWait = this.hooks.later(() => {
         this.cancelWait = null;
-        this.giveUp({ kind: "zotero", error: "Zotero's Read Aloud did not start" });
-      }, CONTROLLER_WAIT_MS);
+        const error = this.pendingCapture !== null ? CAPTURE_TIMEOUT : "Zotero's Read Aloud did not start";
+        this.giveUp({ kind: "zotero", error });
+      }, ms);
     }
     this.changed();
+  }
+
+  /** Resolve the capture under way, if it has not been. */
+  private settleCapture(result: CaptureResult): void {
+    const settle = this.pendingCapture?.settle;
+    if (!settle) return;
+    this.pendingCapture!.settle = null;
+    settle(result);
   }
 
   /**
@@ -359,6 +447,8 @@ export class ReaderSession {
     this.intent = null;
     this._problem = problem;
     this._wanted = false;
+    this.settleCapture({ ok: false, problem });
+    this.pendingCapture = null;
     this.hooks.takeover(false);
     this.changed();
   }
@@ -393,10 +483,20 @@ export class ReaderSession {
       start === previous.position;
     if (rebuild) end = previous.end;
     this.stopWaiting();
-    const core = new ControllerCore(this, segments, start, end, sink, source);
+    // Every controller Zotero builds until the capture ends is the capture's:
+    // a rebuild, say, before the takeover's end has closed Read Aloud.
+    const capture = this.pendingCapture;
+    const core = new ControllerCore(this, segments, start, end, sink, source, capture !== null);
     this.current = this.closed ? null : core;
     if (this.closed) core.destroyed = true;
-    if (rebuild) core.takeOver(previous);
+    if (capture !== null) {
+      // Ended once Zotero is done building the controller: ending closes
+      // Read Aloud, which must not happen under Zotero's feet.
+      this.hooks.defer(() => {
+        if (this.pendingCapture === capture) this.finish();
+      });
+      this.settleCapture({ ok: true, segments: capturedSegments(segments) });
+    } else if (rebuild) core.takeOver(previous);
     else this.hooks.defer(() => core.built());
     this.hooks.defer(() => {
       if (this.current === core) this.hooks.settled();
@@ -467,7 +567,11 @@ export class ReaderSession {
     this.current = null;
     if (core !== null) core.destroyed = true;
     this.intent = null;
-    void this.channel.stop({ always });
+    const capturing = this.pendingCapture !== null;
+    this.settleCapture({ ok: false, problem: { kind: "zotero", error: "the capture was cut short: the reader closed" } });
+    this.pendingCapture = null;
+    // A capture asks nothing of the channel, so it has nothing to stop.
+    if (!capturing || always) void this.channel.stop({ always });
     if (this._wanted) {
       this._wanted = false;
       this.hooks.takeover(false);

@@ -51,5 +51,14 @@ finally:
 print(f"wrote {config_path}")
 PY
 
+# Copied, not linked, so the skill survives the checkout moving; replaced on
+# every run so an updated script reaches the user.
+skill_dir="$codex_home/skills/speakd-audiobook"
+mkdir -p "$codex_home/skills"
+rm -rf "$skill_dir"
+cp -R "$client_dir/../claude-code/skills/speakd-audiobook" "$skill_dir"
+# Bytecode from running the script in the checkout is not part of the skill.
+find "$skill_dir" -name __pycache__ -type d -prune -exec rm -rf {} +
+
 codex mcp add speakd -- bash "$client_dir/speakd-mcp.sh"
 printf 'speakd for Codex installed. Restart Codex and the speakd daemon.\n'
