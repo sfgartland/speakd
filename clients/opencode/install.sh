@@ -15,6 +15,13 @@ config_file="$config_dir/opencode.json"
 mkdir -p "$plugins_dir"
 cp "$root/plugin/speakd.js" "$plugins_dir/speakd.js"
 
+# Copied, not linked, so the skill survives the checkout moving; replaced on
+# every run so an updated script reaches the user.
+skill_dir="$config_dir/skills/speakd-audiobook"
+mkdir -p "$config_dir/skills"
+rm -rf "$skill_dir"
+cp -R "$root/../claude-code/skills/speakd-audiobook" "$skill_dir"
+
 python3 - "$config_file" "$root/speakd-mcp.sh" <<'PY'
 import json
 import sys
