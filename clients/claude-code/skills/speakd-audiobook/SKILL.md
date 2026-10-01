@@ -13,4 +13,4 @@ description: Use when the user wants to make an audiobook or audio version of a 
 4. **Fix what the spot-check shows** with targeted edits, for example a stray header the heuristic missed. Keep `\f` between parts and `# Title` as a part's first line.
 5. **Render** with `speakctl render <work>.txt --out <path> --title "…" --artist "…" --date <year> [--album "…"] [--lang xx] --no-wait`. Use `.m4b` when there is more than one part (chapters), else `.mp3`. Unless the user named a place, write to `~/Audiobooks/<Author> - <Title>.<ext>`.
 6. **Report** the job id and the duration estimate. Progress is the `render.jobs` entry in `speakctl status`. Renders yield to live speech and survive a daemon restart, so there is no need to wait.
-7. **Attaching the result to a Zotero item** is not yours to do: point the user to the speakd Zotero plugin's right-click **Create audio version…**.
+7. **Attaching the result to a Zotero item** is not yours to do: point the user to the speakd Zotero plugin's right-click **Export audiobook…**.

@@ -276,3 +276,37 @@ def test_range_starting_mid_chapter_keeps_its_in_range_text(
     assert [p.splitlines()[0] for p in parts] == ["# Introduction", '# Argument: a "turn"']
     assert "alphab" in parts[0] and "alphaa" not in parts[0]
     assert "alphad" in parts[1] and "alphae" in parts[1] and "alphaf" not in parts[1]
+
+
+def test_trailing_references_chapter_dropped_unless_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pages = ["intro text", "more", "conclusion text", "Smith 2001", "Jones 2003"]
+    outline = (
+        '+\t"Introduction"\t#page=1&zoom=1\n'
+        '+\t"Conclusion"\t#page=3&zoom=1\n'
+        '+\t"References"\t#page=4&zoom=1\n'
+    )
+    monkeypatch.setattr(
+        prep,
+        "_run",
+        lambda c: outline if c[0] == "mutool" else "".join(p + "\f" for p in pages),
+    )
+    dropped = prep.prepare_pdf(Path("x.pdf"), None, "auto", False)
+    assert [p.splitlines()[0] for p in dropped] == ["# Introduction", "# Conclusion"]
+    assert "Smith" not in "".join(dropped)
+    kept = prep.prepare_pdf(Path("x.pdf"), None, "auto", True)
+    assert [p.splitlines()[0] for p in kept] == ["# Introduction", "# Conclusion", "# References"]
+
+
+def test_missing_mutool_is_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fake(command: list[str]) -> str:
+        if command[0] == "mutool":
+            raise prep.ToolMissing("mutool not found; install poppler/mupdf tools")
+        return "body text\f"
+
+    monkeypatch.setattr(prep, "_run", fake)
+    assert prep.prepare_pdf(Path("x.pdf"), None, "auto", False) == ["body text"]
+    assert "mutool" in capsys.readouterr().err

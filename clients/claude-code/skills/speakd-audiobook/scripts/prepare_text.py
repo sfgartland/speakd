@@ -125,6 +125,10 @@ def parse_pages(spec: str) -> tuple[int, int]:
     return start, end
 
 
+class ToolMissing(SystemExit):
+    """An external tool is not installed; exits like any other failure."""
+
+
 def _run(command: list[str]) -> str:
     try:
         done = subprocess.run(
@@ -136,7 +140,7 @@ def _run(command: list[str]) -> str:
             check=True,
         )
     except FileNotFoundError:
-        raise SystemExit(f"{command[0]} not found; install poppler/mupdf tools") from None
+        raise ToolMissing(f"{command[0]} not found; install poppler/mupdf tools") from None
     except subprocess.CalledProcessError as error:
         raise SystemExit(f"{command[0]} failed: {error.stderr.strip()}") from None
     return done.stdout
@@ -145,8 +149,11 @@ def _run(command: list[str]) -> str:
 def _outline(pdf: Path) -> list[tuple[str, int]]:
     try:
         return parse_outline(_run(["mutool", "show", str(pdf), "outline"]))
+    except ToolMissing:
+        print("chapters skipped: mutool (mupdf) is not installed", file=sys.stderr)
+        return []
     except SystemExit:
-        return []  # no outline (or no mutool) just means one part
+        return []  # no outline just means one part
 
 
 def prepare_pdf(
@@ -187,6 +194,10 @@ def prepare_pdf(
         groups.append((None, [line for page in cleaned for line in page]))
 
     if not keep_references and groups:
+        # A whole trailing chapter called "References" goes; otherwise the
+        # list starts somewhere inside the last chapter.
+        while len(groups) > 1 and REFERENCES.match((groups[-1][0] or "").strip()):
+            groups.pop()
         title, lines = groups[-1]
         groups[-1] = (title, cut_references(lines))
     parts = []
