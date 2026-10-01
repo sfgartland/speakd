@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# What the speakd app-menu entry runs: the newest build of the desktop shell in
+# this checkout, which starts the daemon as its own child.
+#
+# The two live and die together, with no service in between: the shell
+# ending ends the daemon, and the daemon ending closes the shell (see
+# clients/gui/app/src-tauri/src/daemon.rs). Run again while it is up, it just
+# shows the window that is already there. Pass --tray to start hidden.
+#
+# Release or debug, whichever was built last, so a `cargo build` after an edit
+# is all it takes for the next launch to be the new one.
+set -euo pipefail
+
+root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
+target="${CARGO_TARGET_DIR:-$root/clients/gui/app/src-tauri/target}"
+venv="${SPEAKD_VENV:-$root/.venv}"
+
+die() { printf 'speakd-gui: %s\n' "$1" >&2; exit 1; }
+
+newest=""
+for candidate in "$target/release/speakd-shell" "$target/debug/speakd-shell"; do
+  [ -x "$candidate" ] || continue
+  if [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; then
+    newest="$candidate"
+  fi
+done
+[ -n "$newest" ] || die "no build of the shell under $target
+  Build it:  cd $root/clients/gui/app/src-tauri && cargo build --release"
+[ -x "$venv/bin/speakd" ] || die "no speakd at $venv/bin/speakd
+  Build it:  cd $root && uv sync --extra kokoro"
+
+# This machine's settings for the daemon (SPEAKD_DEVICE=cpu, ...): plain
+# KEY=VALUE lines, what the systemd unit's Environment= lines used to carry.
+env_file="${XDG_CONFIG_HOME:-$HOME/.config}/speakd/env"
+if [ -f "$env_file" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_file"
+  set +a
+fi
+
+export SPEAKD_HOME="$root"
+export SPEAKD_DAEMON="$venv/bin/speakd"
+cd "$root"
+exec "$newest" "$@"

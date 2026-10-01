@@ -278,6 +278,29 @@ python3 -m http.server 8765 --directory clients/gui   # or a plain tab, on a sim
 The second needs no daemon and no Rust: opened at `/pinned.html` in a browser, the
 page drives itself from a fixture, which is how the frontend is developed.
 
+### As an installed app
+
+```bash
+cd clients/gui/app/src-tauri && cargo build --release
+./packaging/desktop/install-gui.sh
+```
+
+This puts **speakd** in the app menu. Opened from there, the shell starts the
+daemon itself, as its own child, and the two live and die together with no
+service in between: the tray's **Quit** stops both, and if either one crashes
+the other goes with it — the kernel ends the daemon when the shell dies
+(`PR_SET_PDEATHSIG`), and the shell closes when the daemon exits. Closing the
+window only hides it to the tray; opening speakd again shows it. Pass `--tray` to
+`packaging/desktop/speakd-gui` to start hidden, for a login autostart.
+
+Nothing is copied out of the checkout: the entry runs whichever of
+`target/release` and `target/debug` was built most recently, so the next launch
+after a `cargo build` is the new build. Settings the systemd unit used to carry
+as `Environment=` lines go in `~/.config/speakd/env`, as `KEY=VALUE` lines. This
+replaces the systemd service — two daemons cannot share the socket — so disable
+that with `systemctl --user disable --now speakd`. `cargo run` alone still starts
+no daemon and reads whichever one is running.
+
 ## Settings
 
 Typed settings — bool, int, float, string, choice, voice, and voice_map (a

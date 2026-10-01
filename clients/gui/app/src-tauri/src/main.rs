@@ -3,9 +3,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
+mod daemon;
 mod hotkeys;
 
 use std::sync::Arc;
+
+use tauri_plugin_window_state::StateFlags;
 
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemKind},
@@ -21,6 +24,12 @@ const PLAY_PAUSE_ITEM_ID: &str = "play_pause";
 const HUSH_ITEM_ID: &str = "hush";
 const SHOW_HIDE_ITEM_ID: &str = "show_hide";
 const QUIT_ITEM_ID: &str = "quit";
+
+/// Start in the tray, window hidden: for starting speakd at login, say, where
+/// a window jumping in front of whatever the user was doing is not what that
+/// should look like.
+const TRAY_FLAG: &str = "--tray";
+
 
 /// Holds the tray's own menu so `report_state` can find and relabel its
 /// "State: ..." line later. This — and the tooltip text `report_state`
@@ -99,6 +108,13 @@ fn report_state(app: AppHandle, state: String, tray_menu: tauri::State<TrayMenuS
     Ok(())
 }
 
+fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(WINDOW_LABEL) else { return };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
 /// Shared by the tray's Show/Hide item and a left click on the tray icon.
 fn toggle_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window(WINDOW_LABEL) else { return };
@@ -106,13 +122,22 @@ fn toggle_main_window(app: &AppHandle) {
     if visible {
         let _ = window.hide();
     } else {
-        let _ = window.show();
-        let _ = window.set_focus();
+        show_main_window(app);
     }
 }
 
 fn main() {
+    let start_in_tray = std::env::args().any(|a| a == TRAY_FLAG);
+
     tauri::Builder::default()
+        // First, so a second launch hands over and exits before it builds a
+        // tray, grabs hotkeys or starts a second daemon of its own. Opening
+        // speakd again from the app menu thus shows the running window.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if !argv.iter().any(|a| a == TRAY_FLAG) {
+                show_main_window(app);
+            }
+        }))
         // Remembers window position and size between launches, within the
         // range tauri.conf.json allows: 320-800 wide, 300-2000 tall. The
         // 384 x 560 default is the size the design was drawn at, not a
@@ -129,7 +154,14 @@ fn main() {
         // configured height never applied at all, and the metrics row and
         // channel pills sat below the window's own edge with the page
         // scrolling inside it to reach them. A finite maximum fixes it.
-        .plugin(tauri_plugin_window_state::Builder::new().build())
+        //
+        // Everything but visibility: whether the window shows is `--tray`'s
+        // decision (below), not whatever it happened to be at the last exit.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                .build(),
+        )
         .plugin(hotkeys::plugin())
         .invoke_handler(tauri::generate_handler![
             set_always_on_top,
@@ -141,8 +173,14 @@ fn main() {
             bridge::speakd_send,
             bridge::speakd_say
         ])
-        .setup(|app| {
+        .setup(move |app| {
             hotkeys::register(app.handle())?;
+
+            // Before the relay, so it is already coming up when the relay
+            // first looks; the relay retries until its socket appears.
+            if let Some(daemon) = daemon::spawn(app.handle())? {
+                app.manage(daemon);
+            }
 
             // Started before the tray and the window handlers below, so
             // that a window which loads fast still finds a link state to
@@ -204,6 +242,12 @@ fn main() {
             // with show/hide" requirement rather than making the window
             // unrecoverable once it is dismissed.
             if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+                // tauri.conf.json creates it hidden, so `--tray` never flashes
+                // a window on the way to the tray.
+                if !start_in_tray {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
                 let window_to_hide = window.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
@@ -215,6 +259,13 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running speakd-shell");
+        .build(tauri::generate_context!())
+        .expect("error while building speakd-shell")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(daemon) = app.try_state::<daemon::Daemon>() {
+                    daemon.stop();
+                }
+            }
+        });
 }
