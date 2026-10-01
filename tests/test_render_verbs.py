@@ -576,3 +576,15 @@ def test_a_render_with_ellipses_synthesises_no_dots_only_sentence(tmp_path: Path
     assert len(stored) >= 4
     assert all(s.strip(". …") for s in stored)
     d.render_queue.stop()
+
+
+def test_a_render_cuts_ellipses_the_way_live_speech_does(tmp_path: Path) -> None:
+    engine = _CountingEngine()
+    d = _real_profile_daemon(engine)
+    parts = [{"title": "T", "text": "It ended... Then we left. Wait... what"}]
+    response = d.handle(Request(Verb.RENDER, "cli", render_payload(tmp_path, parts=parts)))
+    assert response.ok, response.error
+    job = d.render_queue.job(job_id_of(response))
+    assert job is not None
+    assert job.parts[0].sentences == ["It ended…", "Then we left.", "Wait… what"]
+    d.render_queue.stop()

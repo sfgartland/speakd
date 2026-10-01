@@ -61,8 +61,12 @@ def test_longer_acronyms_win_over_shorter_ones() -> None:
     assert say("HTTPS") == "H T T P S"
 
 
-def test_ellipsis_is_collapsed() -> None:
-    assert say("wait... now") == "wait now"
+def test_ellipsis_is_normalised_to_one_character_not_deleted() -> None:
+    assert say("wait... now") == "wait… now"
+    assert say("Hmm....") == "Hmm…"
+    assert say("Hmm . . . what") == "Hmm… what"
+    assert say("Hmm…… what") == "Hmm… what"
+    assert say("wait...now") == "wait… now"
 
 
 def test_output_is_marked_inexact() -> None:

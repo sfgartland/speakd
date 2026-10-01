@@ -1974,3 +1974,41 @@ def test_ellipses_never_make_an_empty_or_dots_only_unit_under_a_real_profile(
     assert len(texts) >= 4
     for text in texts:
         assert text.strip(". …"), f"{text!r} is only dots"
+
+
+@pytest.mark.parametrize("profile_name", ["default", "pdf"])
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("It ended... Then we left.", ["It ended…", "Then we left."]),
+        ("Wait... what", ["Wait… what"]),
+    ],
+)
+def test_the_default_and_pdf_profiles_agree_on_ellipses(
+    profile_name: str, text: str, expected: list[str]
+) -> None:
+    """Pronunciation runs before segmentation under default and after it under
+    pdf; the ellipsis has to survive the first so both cut the same way."""
+    from speakd.__main__ import _view_of
+    from speakd.plugins.builtin import register_builtins
+    from speakd.plugins.host import PluginHost
+    from speakd.plugins.registry import ServiceRegistry
+    from speakd.profiles import load_profiles
+
+    host = PluginHost(ServiceRegistry())
+    register_builtins(host)
+    view = _view_of(load_profiles(Path("/nonexistent"))[profile_name], host)
+    bus = EventBus()
+    seen: list[Event] = []
+    bus.subscribe(seen.append)
+    d = Daemon(FakeEngine(), RecordingPlayer(), lambda name: view, bus=bus, channels=ChannelTable())
+    d.start()
+    try:
+        payload: dict[str, object] = {"text": text, "profile": profile_name}
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload=payload))
+        assert d.wait_idle(timeout=5.0)
+    finally:
+        d.stop()
+    started = next(e for e in seen if e.kind == "started")
+    segments = cast(list[dict[str, Any]], started.data["segments"])
+    assert [str(s["text"]) for s in segments] == expected
