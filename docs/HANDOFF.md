@@ -1,14 +1,20 @@
 # Handoff — resume here
 
-Last updated 2026-09-26. `main` **is pushed** to https://github.com/sfgartland/speakd
-(as of `331860e`, and again with any later commits).
+Last updated 2026-10-01. `main` **is pushed** to https://github.com/sfgartland/speakd
+(as of `e4aa7d8`, and again with this handoff).
+
+**Resume here first:** the Zotero audiobook plan is half done on
+`feat/zotero-export` — see "In progress" below. Nothing is mid-edit; every
+branch's work is committed.
 
 ## What works now
 
 | Piece | State | How to use |
 |---|---|---|
-| Daemon | Running as the `speakd` user service | `systemctl --user restart speakd`; `speakctl status` |
-| Desktop window | Follow-along text, seek, speed with ramps, replay, preparing highlight, ranked channel list (stars, hide fold), brief/full toggle | `cd clients/gui/app/src-tauri && cargo run` |
+| Daemon + desktop app | **The app runs the daemon as its child** (no systemd service any more; `speakd.service` is stopped and disabled). App menu entry **speakd** → `packaging/desktop/speakd-gui`, which runs the newest release/debug build of the shell. Either process dying takes the other down; tray Quit stops both | Open speakd from the menu; `speakctl status`. Restart = Quit in the tray, reopen |
+| Engine | **Kokoro on onnxruntime, fed by misaki's G2P** (no torch; venv 6.3 GB → 982 MB, daemon ~520 MB RSS, model load ~11 s). Model files in `~/.cache/speakd/kokoro-onnx/`, downloaded on first use | `uv sync --extra kokoro --extra piper --extra lang` is this machine's set of extras |
+| Desktop window | Follow-along text, seek, speed with ramps, replay, preparing highlight, ranked channel list (stars, hide fold), brief/full toggle | the app, or `cd clients/gui/app/src-tauri && cargo run` (connects to a running daemon, starts none) |
+| Codex | Hooks in `~/.codex/hooks.json` + `speakd` MCP server in `~/.codex/config.toml`, via `clients/codex/install.sh` (installed 2026-10-01). Tested by unit tests only, **not yet against a live Codex session** | `speakctl mode full --source codex:<id>` |
 | Claude Code | Installed as a plugin (`speakd@speakd`, user scope): hooks (prompt, Notification, Stop) plus the `speakd-mcp` server | New sessions start **brief and muted**; unmute one in the window. `SPEAKD_HOME` is exported in `~/.zshenv` |
 | OpenCode | Plugin in `~/.config/opencode/plugins/` + MCP entry in `opencode.json`, via `clients/opencode/install.sh`. Sessions start brief and muted like Claude Code. **Verified live end to end** (speech, briefings, mode switching, channel resolution) | `speakctl mode full --source opencode:<id>` |
 | Briefings | Agents call `brief` over MCP; sessions switch between brief and full per channel | `speakctl mode full --source claude-code:<id>`; the guide is `~/.config/speakd/briefing.md` |
@@ -17,11 +23,13 @@ Last updated 2026-09-26. `main` **is pushed** to https://github.com/sfgartland/s
 | HTTP transport | `127.0.0.1:8642`, token-protected, for the Zotero plugin | `speakctl http-token` prints the token |
 
 Local machine specifics, kept outside the repo:
-- `~/.config/systemd/user/speakd.service.d/local-device.conf` sets `SPEAKD_DEVICE=cpu`
-  **and, since 2026-09-26, `SPEAKD_NO_NOTIFY=1`** (the notifications reader
-  was annoying and untrusted; remove those two lines to bring it back).
-  `SPEAKD_DEVICE` is now ignored: Kokoro runs on onnxruntime's CPU backend,
-  with no torch, so plain `uv sync` / `uv run` are safe.
+- `~/.config/speakd/env` (read by the app's launcher) sets `SPEAKD_NO_NOTIFY=1`
+  (the notifications reader was annoying and untrusted; delete the line to
+  bring it back). `SPEAKD_DEVICE` is gone: there is no GPU path any more.
+  The old systemd drop-in in `~/.config/systemd/user/speakd.service.d/` is
+  unused while the service stays disabled.
+- `~/Downloads/speakd-engine-compare/` holds the torch-vs-ONNX A/B the switch
+  was decided on (and the script that made it).
 - `~/.claude/settings.json.before-speakd-plugin` is the backup from before the
   hand-wired hooks were replaced by the plugin.
 - **The Bluetooth speakers eat the first seconds of audio after a silent
@@ -109,6 +117,46 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
 - **CI fixed twice on the way:** lingua's missing stubs (mypy overrides) and
   the piper tests' scipy skips + the HTTP 413 BrokenPipe flake.
 
+## Built 2026-10-01 (merged and pushed)
+
+- **The app owns the daemon** (`6f1257f`, `087b77b`): `clients/gui/app/src-tauri/src/daemon.rs`
+  spawns it with `PR_SET_PDEATHSIG`; a watcher closes the shell when it exits;
+  single-instance (D-Bus) makes a second launch show the window. The launcher
+  waits up to 10 s for a daemon still stopping, and notifies if another holds
+  the socket. `packaging/desktop/install-gui.sh` writes the `.desktop` entry.
+- **The Codex client** (`a5e16b4`), written by Codex on 2026-09-26 and finished
+  here, plus three bug fixes in the Claude Code / OpenCode clients.
+- **ONNX Kokoro** (`28368e6`): same voice and pronunciation (A/B'd by ear),
+  torch gone. Speed clamped to onnx's 0.5–2.0; downloads verified.
+- **Pronunciation for Zotero and renders** (`e4aa7d8`): profiles gained
+  `sentence_transforms` (run per sentence after segmentation, keeping exact
+  sentence spans), and the `pdf` profile uses it for `pronunciation` — so
+  Zotero reading now says "pages 34 to 38". Renders now run the profile's
+  transforms at submission (they ran none before) and store prepared
+  sentences in the manifest. "p. 12" → "page 12". The segmenter no longer
+  splits at "p."/"pp." before a number, and an ellipsis is one "…" pause, at
+  most one sentence break.
+
+## In progress: Zotero audiobooks + agent skill
+
+- **Branch** `feat/zotero-export`, worktree `../speakd-worktrees/zotero-export`.
+- **Plan** `docs/superpowers/plans/2026-10-01-zotero-audiobooks.md` (on that
+  branch). Run with superpowers:subagent-driven-development.
+- **Ledger** `../speakd-worktrees/zotero-export/.superpowers/sdd/2026-10-01-zotero-audiobooks/progress.md`
+  (git-ignored): every ruling, deferred minor and completed task. Read it first.
+- **Done:** Task 1 (`# Title` chapter headings in `speakctl render`), Task 2
+  (the `speakd-audiobook` skill in `clients/claude-code/skills/`, with
+  `scripts/prepare_text.py`; the Codex and OpenCode installers copy it). `main`
+  merged in at `0e6867c`; full suite green there.
+- **Next:** Task 3 (segment capture without playing — live, Opus, test-Zotero
+  harness only), Task 4 (dialog + `zotero.export_*` settings, Sonnet), Task 5
+  (render round-trip, progress pane, attach, resume — live, Opus; the
+  harness's `fakedaemon.py` may need `render`), Task 6 (docs + gate), then an
+  Opus whole-branch review and merge. Export renders should send
+  `profile: "pdf"` so they get the sentence-level pronunciation.
+- After merging, re-run `clients/codex/install.sh` and
+  `clients/opencode/install.sh` so the skill reaches those agents.
+
 ## Next
 
 ### 1. Phase 3, language in the clients
@@ -121,14 +169,24 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
 
 ### 2. Then, as before
 
-- **Audio export Part B, the Zotero export flow:** `docs/superpowers/plans/2026-09-24-audio-export.md`, Tasks B2–B5.
-  - B1's pure modules are already on main (`clients/zotero/src/export/`).
+- **Audio export Part B, the Zotero export flow:** now planned and half done
+  as "In progress" above (it replaces Tasks B2–B5 of
+  `docs/superpowers/plans/2026-09-24-audio-export.md`).
 
 **How to run the work:** background subagents, one worktree per phase.
 - Sonnet for closely specified tasks.
 - Opus for live Zotero work and the whole-branch review before a merge.
 
 ## Deferred and known gaps
+
+- **Housekeeping (needs the user's go-ahead):** ~25 merged worktrees under
+  `../speakd-worktrees/` hold untracked `.superpowers/` reports. Removing them
+  was blocked as destructive; the plan was to copy each `.superpowers/` into
+  `.superpowers/archive/<name>/` first, then `git worktree remove --force` and
+  `git branch -d`. Also removable now: `onnx-hybrid` and `pdf-pronounce`
+  (merged), and `feat/onnx-engine` (superseded by the ONNX hybrid; never merged).
+- **Flaky test:** `test_work_the_daemon_stopped_on_still_says_so` fails about
+  1 run in 3, on main before these changes too.
 
 - **Zotero plugin:**
   - Not verified live: a real mouse selection, real engine timing, OS media
