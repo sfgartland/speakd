@@ -1,0 +1,149 @@
+<?xml version="1.0"?>
+<!-- The audiobook export dialog. src/export/dialog-window.ts opens it with
+     the state and logic of src/export/dialog.ts in window.arguments[0]; this
+     only draws that state and passes the user's edits back. -->
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8"/>
+  <title>Export audiobook</title>
+  <style>
+    body { font: menu; margin: 0; padding: 16px; min-width: 420px; max-width: 560px; }
+    h1 { font-size: 1.1em; margin: 0 0 12px; overflow-wrap: anywhere; }
+    fieldset { border: 1px solid ThreeDShadow; margin: 0 0 12px; padding: 8px 12px; }
+    legend { padding: 0 4px; }
+    label { display: block; margin: 3px 0; }
+    label.inline { display: inline; margin-inline-end: 12px; }
+    #chapters { max-height: 14em; overflow-y: auto; margin: 4px 0 4px 20px; }
+    #pages-row, #folder-row { margin: 4px 0 4px 20px; }
+    #pages { width: 14em; }
+    #folder-path { opacity: 0.8; margin-inline-end: 8px; overflow-wrap: anywhere; }
+    #note { opacity: 0.8; margin: 4px 0 4px 20px; }
+    #status { min-height: 1.4em; margin: 0 0 12px; }
+    #status.error { color: #c0392b; }
+    #buttons { display: flex; justify-content: flex-end; gap: 8px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1 id="title"></h1>
+
+  <fieldset id="range">
+    <legend>Range</legend>
+    <label id="mode-whole"><input type="radio" name="mode" value="whole"/> Whole document</label>
+    <label id="mode-chapters"><input type="radio" name="mode" value="chapters"/> Chapters</label>
+    <div id="chapters"></div>
+    <label id="mode-pages"><input type="radio" name="mode" value="pages"/> Pages</label>
+    <div id="pages-row"><input id="pages" type="text" placeholder="12-48, 60"/></div>
+    <div id="note" hidden="hidden">This PDF has no outline, so choose the pages to export.</div>
+    <label id="references-row"><input id="references" type="checkbox"/> Leave out the references section</label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Output</legend>
+    <label for="format" class="inline">Format</label>
+    <select id="format">
+      <option value="mp3">MP3</option>
+      <option value="opus">Opus</option>
+      <option value="m4b">M4B (audiobook, with chapters)</option>
+    </select>
+    <div style="margin-top: 8px">
+      <label class="inline"><input type="radio" name="destination" value="attach"/> Attach to the item</label>
+      <label class="inline"><input type="radio" name="destination" value="folder"/> Save to a folder</label>
+    </div>
+    <div id="folder-row" hidden="hidden">
+      <span id="folder-path"></span><button id="choose" type="button">Choose…</button>
+    </div>
+  </fieldset>
+
+  <div id="status"></div>
+  <div id="buttons">
+    <button id="cancel" type="button">Cancel</button>
+    <button id="export" type="button" disabled="disabled">Export</button>
+  </div>
+
+  <script>
+    "use strict";
+    const args = window.arguments[0];
+    const $ = (id) => document.getElementById(id);
+    const MODE_LABELS = { whole: "mode-whole", chapters: "mode-chapters", pages: "mode-pages" };
+    const modes = args.availableModes(args.item);
+    let state = args.initialState(args.item, args.settings);
+
+    $("title").textContent = args.item.title;
+    for (const [mode, id] of Object.entries(MODE_LABELS)) $(id).hidden = !modes.includes(mode);
+    $("chapters").hidden = !modes.includes("chapters");
+    $("pages-row").hidden = !modes.includes("pages");
+    $("note").hidden = modes.includes("chapters") || modes.length !== 1;
+    $("mode-pages").hidden = modes.length === 1;
+    if (modes.includes("chapters")) {
+      (args.item.chapters || []).forEach((chapter, index) => {
+        const label = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.addEventListener("change", () => {
+          const checks = [...state.chapterChecks];
+          checks[index] = box.checked;
+          update({ chapterChecks: checks });
+        });
+        label.append(box, " " + chapter.title);
+        $("chapters").append(label);
+      });
+    }
+
+    function update(change) {
+      state = { ...state, ...change };
+      render();
+    }
+
+    function render() {
+      for (const radio of document.querySelectorAll("input[name=mode]")) radio.checked = radio.value === state.mode;
+      for (const radio of document.querySelectorAll("input[name=destination]")) {
+        radio.checked = radio.value === state.destination;
+      }
+      document.querySelectorAll("#chapters input").forEach((box, index) => {
+        box.checked = state.chapterChecks[index] === true;
+        box.disabled = state.mode !== "chapters";
+      });
+      $("pages").disabled = state.mode !== "pages";
+      if ($("pages").value !== state.pages) $("pages").value = state.pages;
+      $("references").checked = state.skipReferences;
+      $("references-row").hidden = state.mode !== "whole";
+      $("format").value = state.format;
+      $("folder-row").hidden = state.destination !== "folder";
+      $("folder-path").textContent = state.folder === "" ? "No folder chosen" : state.folder;
+
+      const described = args.describeState(args.segments, args.item, state, args.rtf);
+      $("status").className = described.ok ? "" : "error";
+      $("status").textContent = described.ok ? "Estimated render time: " + described.estimate : described.error;
+      $("export").disabled = !args.resolveChoice(state, args.item).ok;
+    }
+
+    for (const radio of document.querySelectorAll("input[name=mode]")) {
+      radio.addEventListener("change", () => update({ mode: radio.value }));
+    }
+    for (const radio of document.querySelectorAll("input[name=destination]")) {
+      radio.addEventListener("change", () => update({ destination: radio.value }));
+    }
+    $("pages").addEventListener("input", () => update({ pages: $("pages").value }));
+    $("references").addEventListener("change", () => update({ skipReferences: $("references").checked }));
+    $("format").addEventListener("change", () => update({ format: $("format").value }));
+    $("choose").addEventListener("click", async () => {
+      const folder = await args.pickFolder(window, state.folder);
+      if (folder) update({ folder });
+    });
+    $("cancel").addEventListener("click", () => window.close());
+    $("export").addEventListener("click", () => {
+      const result = args.resolveChoice(state, args.item);
+      if (!result.ok) return;
+      args.done(result.choice);
+      window.close();
+    });
+    window.addEventListener("unload", () => args.done(null));
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") window.close();
+    });
+    render();
+  </script>
+</body>
+</html>

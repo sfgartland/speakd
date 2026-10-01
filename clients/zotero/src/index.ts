@@ -4,6 +4,8 @@
 
 import { Controls } from "./controls";
 import { captureSegments, zoteroCaptureHost } from "./export/capture";
+import { CHROME_PACKAGE } from "./export/dialog-window";
+import { registerExportEntry } from "./export/entry";
 import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
 import { observeConfig, readConfig } from "./prefs";
@@ -12,6 +14,8 @@ import { SpeakdClient, type FetchLike } from "./speakd";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const Services: any;
+declare const Cc: any;
+declare const Ci: any;
 type Any = any;
 
 interface StartupData {
@@ -77,8 +81,15 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   // bootstrap.js hears APP_SHUTDOWN, it has been torn down.
   const quitObserver = { observe: () => quit() };
   Services.obs.addObserver(quitObserver, "quit-application-granted");
+  let unregisterExport = () => {};
+  // The export dialog is a window, which only a chrome:// URL can open.
+  const chrome = Cc["@mozilla.org/addons/addon-manager-startup;1"]
+    .getService(Ci.amIAddonManagerStartup)
+    .registerChrome(Services.io.newURI(`${data.rootURI}manifest.json`), [["content", CHROME_PACKAGE, "content/"]]);
   const unobserve = () => {
     unobserveConfig();
+    unregisterExport();
+    chrome.destruct();
     Services.obs.removeObserver(quitObserver, "quit-application-granted");
   };
 
@@ -86,6 +97,21 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   takeover.install();
   const controls = new Controls({ pluginID: data.id, takeover, link, warn });
   controls.register();
+  const captureHost = zoteroCaptureHost(takeover);
+  unregisterExport = registerExportEntry({
+    pluginID: data.id,
+    captureHost,
+    // The render itself is the next step; until then a confirmed choice is logged.
+    onRequest: (request) => log(`export requested: ${request.title} ${JSON.stringify(request.choice)}`),
+    onProblem: (title, message) => {
+      const progress = new Zotero.ProgressWindow({ closeOnClick: true });
+      progress.changeHeadline(`Export audiobook: ${title}`);
+      progress.addDescription(message);
+      progress.show();
+      progress.startCloseTimer(8000);
+    },
+    warn,
+  });
   running = { link, takeover, controls, unobserve, quitting: false };
 
   try {
@@ -101,7 +127,6 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   // For scripting, and for checking the plugin from Zotero's console: the
   // readers it adopted, the daemon link, and an export's segment capture.
   // Removed on shutdown.
-  const captureHost = zoteroCaptureHost(takeover);
   (Zotero as Any).SpeakdReader = {
     version: data.version,
     link,
