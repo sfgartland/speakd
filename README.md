@@ -51,9 +51,23 @@ goes, and can be interrupted mid-word.
 Built and merged: the speaking pipeline, the plugin host and built-in
 transforms, the streaming player, the daemon, and the Claude Code client — its
 two hooks, its transcript reader, and the follower that speaks a session as it
-is written. The desktop shell is in progress.
+is written. Also built: the desktop shell, which runs the daemon itself.
 
-## Running it at login
+## Running it
+
+On a desktop, run it as an app: the shell starts the daemon as its own child,
+and the two stop together (see [As an installed app](#as-an-installed-app)).
+
+```bash
+cd clients/gui/app/src-tauri && cargo build --release && cd -
+./packaging/desktop/install-gui.sh         # puts speakd in the app menu
+```
+
+To have it at login, in the tray, put a copy of the entry in
+`~/.config/autostart/` with `--tray` added to its `Exec=` line.
+
+Without a display — or for a daemon with no window at all — run it as a user
+service instead. Not both: two daemons cannot share the socket.
 
 ```bash
 ./packaging/systemd/install-service.sh     # writes the unit with this checkout's paths
@@ -67,9 +81,9 @@ It takes about half a minute to load the model. Nothing waits on that: the
 socket appearing at `$XDG_RUNTIME_DIR/speakd/speakd.sock` is the readiness
 signal, and `speakctl` prints its own "no daemon" line until then.
 
-The unit also exports `SPEAKD_HOME`, which is how the Claude Code plugin finds
+The app's launcher and the unit both export `SPEAKD_HOME`, which is how the Claude Code plugin finds
 this checkout after Claude Code has copied it elsewhere. Add the same line to
-your shell profile — hooks run from your shell, not from systemd:
+your shell profile — hooks run from your shell, not from the daemon:
 
 ```bash
 export SPEAKD_HOME=/path/to/speakd

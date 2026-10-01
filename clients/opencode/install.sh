@@ -39,4 +39,4 @@ printf 'speakd for OpenCode installed:\n'
 printf '  plugin:  %s/speakd.js\n' "$plugins_dir"
 printf '  mcp:     speakd in %s\n' "$config_file"
 printf 'Restart OpenCode for the plugin to load. The daemon itself: \n'
-printf '  systemctl --user enable --now speakd   (or: uv run speakd &)\n'
+printf '  open speakd from the app menu (or: systemctl --user start speakd, or uv run speakd &)\n'

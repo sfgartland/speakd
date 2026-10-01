@@ -39,6 +39,24 @@ if [ -f "$env_file" ]; then
   set +a
 fi
 
+# A shell already running takes this launch over (single instance) and shows
+# its window. With none, the socket must be free for the daemon it starts --
+# but a just-quit daemon can take a few seconds over its graceful stop, so
+# give that time rather than fail into a shell that closes at once. Anything
+# still there after that is some other daemon, like the systemd service.
+if ! busctl --user --quiet status com.speakd.desktop.SingleInstance >/dev/null 2>&1; then
+  socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/speakd/speakd.sock"
+  for _ in $(seq 50); do
+    "$venv/bin/speakctl" status >/dev/null 2>&1 || break
+    sleep 0.2
+  done
+  if "$venv/bin/speakctl" status >/dev/null 2>&1; then
+    message="Another speakd daemon is already running on $socket. Stop it first (systemctl --user stop speakd, if it is the service)."
+    command -v notify-send >/dev/null && notify-send -a speakd "speakd is already running" "$message"
+    die "$message"
+  fi
+fi
+
 export SPEAKD_HOME="$root"
 export SPEAKD_DAEMON="$venv/bin/speakd"
 cd "$root"
