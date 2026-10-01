@@ -43,6 +43,9 @@ class Registration:
     # find which session it serves. None for registrations written before
     # this was recorded.
     agent_pid: int | None = None
+    # Snapshot at prompt submission, not at the follower's first poll: a
+    # quick response may already be on disk by the time that poll happens.
+    start_offset: int | None = None
 
 
 def _slug(session_id: str) -> str:
@@ -78,6 +81,12 @@ def register(
 ) -> None:
     """Record that this session is live. Never raises."""
     try:
+        try:
+            start_offset = transcript.stat().st_size if transcript != Path() else None
+        except FileNotFoundError:
+            start_offset = 0
+        except OSError:
+            start_offset = None
         _registration_path(client, session_id).write_text(
             json.dumps(
                 {
@@ -87,6 +96,7 @@ def register(
                     "touched": time.time(),
                     "client": client,
                     "agent_pid": agent_pid,
+                    "start_offset": start_offset,
                 }
             ),
             encoding="utf-8",
@@ -134,6 +144,11 @@ def live(max_idle_seconds: float = DEFAULT_MAX_IDLE_SECONDS) -> list[Registratio
                     cwd=str(body.get("cwd") or ""),
                     touched=float(touched),
                     agent_pid=pid if isinstance(pid := body.get("agent_pid"), int) else None,
+                    start_offset=(
+                        offset
+                        if isinstance(offset := body.get("start_offset"), int) and offset >= 0
+                        else None
+                    ),
                 )
             )
     return found

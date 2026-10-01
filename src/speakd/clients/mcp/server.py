@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -34,9 +35,19 @@ PREAMBLE = (
     "`briefing_status` to see how this session is set, and `set_mode` when "
     'they ask to hear every response ("full") or only briefings ("brief"). '
     "In full mode every response is already read aloud, so do not brief then."
+    " For Codex, include the source_id supplied by the speakd prompt hook on every call."
 )
 
 KINDS = ("done", "problem", "question", "progress")
+
+# A shared host process cannot identify which conversation made a call.
+# Its prompt hook supplies this optional ID; other clients use ancestry.
+_SOURCE_PROPERTY = {
+    "source_id": {
+        "type": "string",
+        "description": "Required for Codex: exact speech channel ID from the speakd prompt hook.",
+    }
+}
 
 TOOLS = [
     {
@@ -48,6 +59,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                **_SOURCE_PROPERTY,
                 "text": {"type": "string", "description": "What to say, as spoken words."},
                 "kind": {"type": "string", "enum": list(KINDS)},
             },
@@ -60,7 +72,7 @@ TOOLS = [
             "This session's voice settings: mode (brief or full), whether it is muted, "
             "and the user's standing guide for what to tell them."
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {"type": "object", "properties": {**_SOURCE_PROPERTY}},
     },
     {
         "name": "set_mode",
@@ -70,7 +82,10 @@ TOOLS = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"mode": {"type": "string", "enum": ["brief", "full"]}},
+            "properties": {
+                **_SOURCE_PROPERTY,
+                "mode": {"type": "string", "enum": ["brief", "full"]},
+            },
             "required": ["mode"],
         },
     },
@@ -140,7 +155,7 @@ class Server:
         arguments = arguments if isinstance(arguments, dict) else {}
         try:
             if name in ("brief", "briefing_status", "set_mode"):
-                self._arrive()
+                self._arrive(arguments.get("source_id"))
             if name == "brief":
                 data = self._brief(arguments)
             elif name == "briefing_status":
@@ -223,7 +238,7 @@ class Server:
         assert self._channel is not None
         return self._channel
 
-    def _arrive(self) -> None:
+    def _arrive(self, source_id: object = None) -> None:
         """Work out which channel this is, and tell the daemon a briefer is on it.
 
         Done at the start of every tool call rather than once. The session can
@@ -233,7 +248,16 @@ class Server:
         briefing would be refused as one, telling the agent to stop. Both are
         a directory listing and two local round trips; a briefing is rare.
         """
-        channel, label = session.resolve(self._client, proc=self._proc)
+        if source_id is None:
+            channel, label = session.resolve(self._client, proc=self._proc)
+            if channel.startswith("codex:") or "codex" in self._client.lower():
+                raise ToolError("Codex calls require source_id from the speakd prompt hook")
+        else:
+            if not isinstance(source_id, str) or not re.fullmatch(
+                r"(?:codex|claude-code|opencode):[A-Za-z0-9_.-]{1,200}", source_id
+            ):
+                raise ToolError("source_id must be the agent session channel supplied by speakd")
+            channel, label = source_id, None
         self._channel, self._label = channel, label
         call(Request(Verb.SET_CAPABILITIES, channel, {"briefs": True}), socket=self._socket)
         if label:

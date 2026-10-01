@@ -188,17 +188,21 @@ export class Speaker {
   _entry(state, messageID) {
     let entry = state.messages.get(messageID);
     if (!entry) {
-      entry = { agent: null, parts: new Map(), spoken: new Set() };
+      entry = { agent: null, parts: new Map(), spoken: new Set(), stale: false };
       state.messages.set(messageID, entry);
     }
     return entry;
   }
 
   onChatMessage(sessionID, agent) {
-    // The first `chat.message` for a session names its main agent; user
-    // prompts routed to sub-agents do not come through this hook.
+    // Users may switch primary agents (for example plan -> build) in the
+    // same session. Child sessions are filtered at the plugin boundary.
     const state = this._session(sessionID);
-    if (!state.mainAgent && agent) state.mainAgent = agent;
+    for (const entry of state.messages.values()) {
+      entry.parts.clear();
+      entry.stale = true;
+    }
+    if (agent) state.mainAgent = agent;
   }
 
   onMessageUpdated(info) {
@@ -209,6 +213,7 @@ export class Speaker {
     }
     const state = this._session(info.sessionID);
     const entry = this._entry(state, info.id);
+    if (entry.stale) return;
     // `agent` is present in OpenCode's stored messages though absent from the
     // SDK's published types; the parent user message is the fallback.
     entry.agent = info.agent ?? state.userAgents.get(info.parentID) ?? this._main(state);
@@ -225,6 +230,7 @@ export class Speaker {
     if (part.type !== "text") return;
     const state = this._session(sessionID);
     const entry = this._entry(state, part.messageID);
+    if (entry.stale) return;
     if (!entry.parts.has(part.id) && entry.spoken.has(part.id)) return;
     if (part.ignored) {
       entry.parts.delete(part.id);
@@ -238,10 +244,9 @@ export class Speaker {
   }
 
   onPartRemoved(sessionID, part) {
-    if (part.type !== "text") return;
     const state = this._session(sessionID);
     const entry = state.messages.get(part.messageID);
-    if (entry) entry.parts.delete(part.id);
+    if (entry) entry.parts.delete(part.partID);
   }
 
   onSessionIdle(sessionID) {
@@ -369,10 +374,35 @@ export function buildPlugin({ client, send, registerFn = register } = {}) {
 
   const speaker = new Speaker({ send: realSend, log });
   const signals = new Signals({ send: realSend, register: registerFn, log });
+  const children = new Set();
+  const knownSessions = new Set();
+  const lookups = new Map();
+
+  async function isChild(sessionID) {
+    if (!sessionID) return false;
+    if (children.has(sessionID)) return true;
+    if (knownSessions.has(sessionID) || !client?.session?.get) return false;
+    if (!lookups.has(sessionID)) {
+      lookups.set(sessionID, client.session.get({ path: { id: sessionID } })
+        .then(({ data }) => {
+          if (!data) return true;
+          knownSessions.add(sessionID);
+          if (data.parentID) children.add(sessionID);
+          return children.has(sessionID);
+        })
+        .catch((err) => {
+          log(`session lookup failed: ${err}`);
+          return true;
+        })
+        .finally(() => lookups.delete(sessionID)));
+    }
+    return lookups.get(sessionID);
+  }
 
   return {
     "chat.message": async (input) => {
       try {
+        if (await isChild(input.sessionID)) return;
         speaker.onChatMessage(input.sessionID, input.agent);
         signals.onChatMessage(input.sessionID);
       } catch (err) {
@@ -381,6 +411,14 @@ export function buildPlugin({ client, send, registerFn = register } = {}) {
     },
     event: async ({ event }) => {
       try {
+        const properties = event.properties;
+        if (event.type === "session.created" || event.type === "session.updated") {
+          knownSessions.add(properties.info.id);
+          if (properties.info.parentID) children.add(properties.info.id);
+          if (children.has(properties.info.id)) return;
+        }
+        const sessionID = properties.sessionID ?? properties.info?.sessionID ?? properties.part?.sessionID;
+        if (await isChild(sessionID)) return;
         switch (event.type) {
           case "message.updated":
             speaker.onMessageUpdated(event.properties.info);
@@ -392,9 +430,7 @@ export function buildPlugin({ client, send, registerFn = register } = {}) {
             break;
           }
           case "message.part.removed": {
-            const part = event.properties.part;
-            if (!part) break;
-            speaker.onPartRemoved(part.sessionID ?? event.properties.sessionID, part);
+            speaker.onPartRemoved(event.properties.sessionID, event.properties);
             break;
           }
           case "session.status":

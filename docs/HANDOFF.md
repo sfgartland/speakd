@@ -191,11 +191,14 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   piper-docs, …) are kept by convention. All of the ones after `notify-off-switch`
   are fully merged; remove them when it suits you.
 - **Commit emails are public** on GitHub (`sfgartland@hotmail.com`).
-- **The main checkout may carry uncommitted work-in-progress** (as of
-  2026-09-26: a Codex client under `clients/codex/` and edits to the opencode
-  client, the mcp server and the cc follower). Check `git status` before
-  assuming main's working tree is clean; Piper work happened in worktrees so
-  the two don't collide.
+- **The main checkout may carry uncommitted work-in-progress.** Check
+  `git status` before assuming main's working tree is clean. (The Codex client
+  that sat there from 2026-09-26 was committed on 2026-10-01.)
+- **The daemon runs as the desktop app's child**, not as a systemd service:
+  `packaging/desktop/speakd-gui` (the app-menu entry) starts the shell, which
+  starts the daemon, and either one ending ends the other. This machine's
+  daemon environment (`SPEAKD_DEVICE=cpu`, `SPEAKD_NO_NOTIFY=1`) is in
+  `~/.config/speakd/env`; the old `speakd.service` is stopped and disabled.
 
 ## Where the record is
 

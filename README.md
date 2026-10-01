@@ -166,13 +166,14 @@ the hooks send those, since an agent waiting at a prompt cannot. Briefings and
 alerts are spoken with the session's name in front, because with several
 sessions running you need to know who is talking.
 
-**New agent sessions start brief and muted** — Claude Code and OpenCode
-alike. Unmute the ones you want to hear; switch one to full when you are
+**New agent sessions start brief and muted** — Claude Code, OpenCode, and
+Codex alike. Unmute the ones you want to hear; switch one to full when you are
 following it closely:
 
 ```bash
 uv run speakctl mode full --source claude-code:<session>   # every response
 uv run speakctl mode full --source opencode:<session>      # same, for OpenCode
+uv run speakctl mode full --source codex:<session>         # same, for Codex
 ```
 
 Only a session with something that can brief for it has a mode; everything
@@ -585,6 +586,12 @@ Claude Code hooks do, from inside OpenCode's own plugin runtime. Install it
 once with `clients/opencode/install.sh`; the `speakd-mcp` server comes with
 it, so sessions brief and switch modes exactly as Claude Code's do. See its
 [README](clients/opencode/README.md).
+
+**Codex** — [`clients/codex/`](clients/codex/) installs user hooks for prompt,
+interrupt, permission, and turn-end events, and registers the `speakd-mcp`
+server. A daemon follower reads the main assistant's prose from the local
+transcript. Run `uv sync` and `bash clients/codex/install.sh`, then restart
+Codex and the daemon. See its [README](clients/codex/README.md).
 
 **Desktop notifications** — a second follower reads chosen notifications
 aloud: email, and WhatsApp through Chrome. It listens to the session bus with

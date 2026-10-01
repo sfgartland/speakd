@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from speakd.clients import registry
 from speakd.clients.claude_code.follow import Follower
 
@@ -60,6 +62,18 @@ def test_text_is_never_spoken_twice(tmp_path, monkeypatch) -> None:  # type: ign
     f.tick()
     f.tick()
     assert spy.spoken() == ["Once."]
+
+
+def test_response_between_registration_and_first_poll_is_not_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = Spy()
+    f, transcript = follower(tmp_path, monkeypatch, spy)
+    with transcript.open("ab") as handle:
+        handle.write(assistant("fast", "Already answered."))
+    f.tick()
+    f.tick()
+    assert spy.spoken() == ["Already answered."]
 
 
 def test_a_partial_line_waits_for_the_rest(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

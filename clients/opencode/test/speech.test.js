@@ -25,6 +25,29 @@ function text(sessionID, messageID, partID, value, extra = {}) {
 }
 
 describe("the speaker", () => {
+  it("keeps speaking when the user changes the main agent", () => {
+    const { speaker, sent } = build();
+    speaker.onChatMessage("ses_1", "plan");
+    speaker.onChatMessage("ses_1", "build");
+    speaker.onMessageUpdated({
+      id: "m1", sessionID: "ses_1", role: "assistant", agent: "build",
+      parentID: "", time: { created: 1 },
+    });
+    speaker.onPartUpdated("ses_1", text("ses_1", "m1", "p1", "Building now.", { time: { end: 2 } }));
+    expect(sent.map((request) => request.payload.text)).toEqual(["Building now."]);
+  });
+
+  it("does not flush the previous turn's pending text after a new prompt", () => {
+    const { speaker, sent } = build();
+    speaker.onChatMessage("ses_1", "build");
+    speaker.onMessageUpdated({ id: "old", sessionID: "ses_1", role: "assistant", agent: "build" });
+    speaker.onPartUpdated("ses_1", text("ses_1", "old", "p1", "Stale text"));
+    speaker.onChatMessage("ses_1", "build");
+    speaker.onPartUpdated("ses_1", text("ses_1", "old", "p1", "Stale text completed", { time: { end: 1 } }));
+    speaker.onSessionIdle("ses_1");
+    expect(sent.filter((request) => request.payload.kind === "response")).toEqual([]);
+  });
+
   it("speaks a text part whole when it finishes", async () => {
     const { speaker, sent } = build();
     speaker.onChatMessage("ses_1", "build");

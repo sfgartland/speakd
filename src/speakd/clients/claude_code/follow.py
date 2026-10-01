@@ -112,9 +112,13 @@ class Follower:
         channel = f"claude-code:{reg.session_id}"
         mark = load(reg.session_id)
         if mark is None or mark.path != str(reg.transcript):
-            self._start_at_end(reg)
+            if reg.start_offset is None:
+                self._start_at_end(reg)
+                self._relabel(reg, channel)
+                return
+            mark = Watermark(path=str(reg.transcript), offset=reg.start_offset, uuid="")
+            save(reg.session_id, mark)
             self._relabel(reg, channel)
-            return
         text, new_mark = new_text(reg.transcript, mark)
         if new_mark is None:
             return

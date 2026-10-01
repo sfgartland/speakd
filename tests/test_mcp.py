@@ -103,7 +103,7 @@ def test_brief_answers_with_the_mode(daemon_socket, tmp_path: Path) -> None:  # 
     proc = spawn(socket, tmp_path)
     assert proc.stdin is not None and proc.stdout is not None
     try:
-        rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
+        rpc(proc, "initialize", {"clientInfo": {"name": "some-agent"}})
         out = call(proc, "brief", {"text": "Tests pass.", "kind": "done"}, 2)
         assert out["isError"] is False
         assert out["structuredContent"]["mode"] == "brief"
@@ -126,7 +126,7 @@ def test_blank_unknown_and_malformed_do_not_crash(daemon_socket, tmp_path: Path)
     proc = spawn(socket, tmp_path)
     assert proc.stdin is not None and proc.stdout is not None
     try:
-        rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
+        rpc(proc, "initialize", {"clientInfo": {"name": "some-agent"}})
         blank = call(proc, "brief", {"text": "  ", "kind": "done"}, 2)
         assert blank["structuredContent"]["spoken"] is False
         assert call(proc, "nope", {}, 3)["isError"] is True
@@ -145,7 +145,7 @@ def test_no_daemon_is_an_answer_not_an_error(tmp_path: Path) -> None:
     proc = spawn(tmp_path / "absent.sock", tmp_path)
     assert proc.stdin is not None
     try:
-        rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
+        rpc(proc, "initialize", {"clientInfo": {"name": "some-agent"}})
         out = call(proc, "brief", {"text": "Hi.", "kind": "done"}, 2)
         assert out["isError"] is False
         assert out["structuredContent"]["spoken"] is False
@@ -200,14 +200,14 @@ def test_a_daemon_that_forgot_the_briefer_is_told_again(daemon_socket, tmp_path:
     proc = spawn(socket, tmp_path)
     assert proc.stdin is not None and proc.stdout is not None
     try:
-        rpc(proc, "initialize", {"clientInfo": {"name": "codex"}})
+        rpc(proc, "initialize", {"clientInfo": {"name": "some-agent"}})
         assert call(proc, "brief", {"text": "One.", "kind": "done"}, 2)["structuredContent"][
             "spoken"
         ]
         channel = next(
             c["source_id"]
             for c in d.handle(Request(verb=Verb.STATUS, source_id="")).data["channels"]
-            if c["source_id"].startswith("agent:codex:")
+            if c["source_id"].startswith("agent:some-agent:")
         )
         d.handle(Request(verb=Verb.SET_CAPABILITIES, source_id=channel, payload={"briefs": False}))
         again = call(proc, "brief", {"text": "Two.", "kind": "done"}, 3)["structuredContent"]

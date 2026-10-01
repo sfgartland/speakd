@@ -94,12 +94,13 @@ def build_profiles() -> Callable[[str], ProfileView]:
 def _agent_defaults(source_id: str) -> dict[str, object]:
     """How an agent session's channel starts: able to brief, and muted.
 
-    Both agents that ship an integration -- `claude-code:<id>` and
-    `opencode:<id>`, exactly one colon -- start silent until chosen, and can
+    Integrated agents -- `claude-code:<id>`, `opencode:<id>`, and
+    `codex:<id>`, exactly one colon -- start silent until chosen, and can
     brief because each ships the MCP server. Several sessions run at once and
     hearing all of them is noise, so each is silent until picked.
     """
-    if source_id.count(":") == 1 and source_id.split(":", 1)[0] in ("claude-code", "opencode"):
+    agents = ("claude-code", "opencode", "codex")
+    if source_id.count(":") == 1 and source_id.split(":", 1)[0] in agents:
         return {"briefs": True, "muted": True}
     return {}
 
@@ -170,6 +171,7 @@ def _close_player(player: Player) -> None:
 # because the next client should be a line here and nothing else.
 CONNECTORS: tuple[tuple[str, str, str], ...] = (
     ("follower", "SPEAKD_NO_FOLLOWER", "speakd.clients.claude_code.follow"),
+    ("codex", "SPEAKD_NO_CODEX", "speakd.clients.codex.follow"),
     ("notify", "SPEAKD_NO_NOTIFY", "speakd.clients.notifications.follow"),
 )
 
