@@ -3,6 +3,7 @@
 // disabling it leaves Zotero as it found it.
 
 import { Controls } from "./controls";
+import { captureSegments, zoteroCaptureHost } from "./export/capture";
 import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
 import { observeConfig, readConfig } from "./prefs";
@@ -98,12 +99,15 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   }
 
   // For scripting, and for checking the plugin from Zotero's console: the
-  // readers it adopted, and the daemon link. Removed on shutdown.
+  // readers it adopted, the daemon link, and an export's segment capture.
+  // Removed on shutdown.
+  const captureHost = zoteroCaptureHost(takeover);
   (Zotero as Any).SpeakdReader = {
     version: data.version,
     link,
     handleFor: (reader: unknown) => takeover.handleFor(reader),
     handles: () => takeover.handles(),
+    captureSegments: (itemID: number) => captureSegments(itemID, captureHost),
   };
   log(`loaded (${data.version})`);
 }

@@ -13,7 +13,9 @@
 //     own read is wanted, speakd's voice is selected, and speakd's voice
 //     hands Zotero a controller of ours instead of Zotero's player;
 //   - builds that controller in the reader's compartment, around a
-//     session.ts ControllerCore.
+//     session.ts ControllerCore;
+//   - captures a document's segments for an export the same way, with a
+//     controller that plays nothing.
 //
 // The reader's Read Aloud popup is hidden (not closed: closing it ends the
 // read) while the plugin's own read runs. Zotero's own Read Aloud, started
@@ -23,8 +25,18 @@
 
 import type { Adoption } from "./bar";
 import { Channel } from "./channel";
+import { adoptionProblem } from "./export/capture";
 import type { Link } from "./link";
-import { NO_TEXT, ReaderSession, resumesOnStart, type ControllerCore, type Intent, type SegmentInfo } from "./session";
+import {
+  NO_TEXT,
+  ReaderSession,
+  capturedSegments,
+  resumesOnStart,
+  type CaptureResult,
+  type ControllerCore,
+  type Intent,
+  type SegmentInfo,
+} from "./session";
 import { VoicePref } from "./voice-pref";
 import { SPEAKD_VOICE_ID, mergeVoices, silentWav } from "./voices";
 
@@ -84,6 +96,8 @@ export interface ReaderHandle {
   setPaused(paused: boolean): void;
   /** One sentence back (-1) or ahead (1). */
   skip(direction: 1 | -1): void;
+  /** The document's segments, through Zotero's Read Aloud, with nothing played. Never rejects. */
+  capture(): Promise<CaptureResult>;
   /** Hear the handle's state change. Returns an unsubscribe. */
   onChange(listener: () => void): () => void;
 }
@@ -97,6 +111,9 @@ class Unadopted implements ReaderHandle {
   stop(): void {}
   setPaused(): void {}
   skip(): void {}
+  capture(): Promise<CaptureResult> {
+    return Promise.resolve(adoptionProblem(this.adoption));
+  }
   onChange(): () => void {
     return () => {};
   }
@@ -381,11 +398,7 @@ class Adopted implements ReaderHandle {
     try {
       if (!session) throw new Error("no session");
       const list = waive(segments);
-      const infos: SegmentInfo[] = [];
-      for (let index = 0; index < list.length; index++) {
-        const segment = waive(list[index]);
-        infos.push({ text: String(segment.text ?? ""), anchor: typeof segment.anchor === "string" ? segment.anchor : null });
-      }
+      const infos = this.readSegments(list);
       const target = new win.EventTarget();
       const sink = {
         emit: (type: string, index: number | null) => {
@@ -414,6 +427,21 @@ class Adopted implements ReaderHandle {
       this.log.warn("building speakd's controller failed", error);
       return Object.getPrototypeOf(voice).getController.call(voice, segments, back, forward);
     }
+  }
+
+  /** Zotero's segments (internals §3.2), copied into the sandbox: `list` is waived. */
+  private readSegments(list: Any): SegmentInfo[] {
+    const infos: SegmentInfo[] = [];
+    for (let index = 0; index < list.length; index++) {
+      const segment = waive(list[index]);
+      const pageIndex = waive(segment.sourcePosition)?.pageIndex;
+      infos.push({
+        text: String(segment.text ?? ""),
+        anchor: typeof segment.anchor === "string" ? segment.anchor : null,
+        pageIndex: typeof pageIndex === "number" ? pageIndex : null,
+      });
+    }
+    return infos;
   }
 
   /** The controller contract the manager uses (internals §7 row 23), on a content EventTarget. */
@@ -601,6 +629,30 @@ class Adopted implements ReaderHandle {
         void session.channel.skip(direction);
       }
     });
+  }
+
+  capture(): Promise<CaptureResult> {
+    try {
+      const { ir, manager: m, session } = this;
+      if (this._adoption.kind !== "ready" || !session) return Promise.resolve(adoptionProblem(this._adoption));
+      // Read Aloud is on -- the plugin's read or Zotero's own -- and the
+      // manager holds the segments already: copied, and the read left alone.
+      if (m.active) {
+        const held = waive(m._segments);
+        if (held && held.length > 0) return Promise.resolve({ ok: true, segments: capturedSegments(this.readSegments(held)) });
+      }
+      // As startRead, but with no `resume`: nothing is to be heard.
+      const captured = session.capture();
+      // Answered already: a read under way had them, or one is starting.
+      if (!session.capturing) return captured;
+      this.voicePref.seed(this.language(), SPEAKD_VOICE_ID);
+      ir.startReadAloudAtPosition(null);
+      return captured;
+    } catch (error) {
+      this.log.warn("capturing the segments failed", error);
+      this.session?.giveUp({ kind: "zotero", error: "Zotero's Read Aloud could not be started" });
+      return Promise.resolve({ ok: false, problem: { kind: "zotero", error: `capturing the segments failed: ${String(error)}` } });
+    }
   }
 
   onChange(listener: () => void): () => void {

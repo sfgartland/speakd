@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Problem } from "../src/channel";
-import { CONTROLLER_WAIT_MS, NO_TEXT, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
+import { CAPTURE_WAIT_MS, CONTROLLER_WAIT_MS, NO_TEXT, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
 import type { CallResult, SpeakdEvent } from "../src/speakd";
 import type { SegmentText } from "../src/sections";
 
@@ -494,5 +494,130 @@ describe("ReaderSession", () => {
     expect(hooks.log).toEqual(["takeover on", "takeover off"]);
     expect(session.wanted).toBe(false);
     expect(session.problem).toEqual({ kind: "empty", error: "this document has no text to read" });
+  });
+});
+
+describe("ReaderSession.capture", () => {
+  // Three pages; the last segment's page is unknown to Zotero.
+  const PAGED: SegmentInfo[] = SEGMENTS.map((segment, index) => ({
+    ...segment,
+    pageIndex: index === 7 ? null : Math.floor(index / 3),
+  }));
+  const createPaged = (session: ReaderSession, sink: { emit(type: string, index: number | null): void }, back: number | null) =>
+    session.createController(PAGED, back, null, sink);
+
+  it("resolves with a copy of every segment, wherever Zotero starts, and starts nothing", async () => {
+    const { channel, hooks, session, emitted, sink, tick } = setup();
+    const captured = session.capture();
+    expect(hooks.log).toEqual(["takeover on"]);
+    expect(session.capturing).toBe(true);
+    const controller = createPaged(session, sink, 4);
+    expect(session.capturing).toBe(false);
+    controller.paused = false;
+    tick();
+    const result = await captured;
+    expect(result).toEqual({
+      ok: true,
+      segments: PAGED.map((segment, index) => ({
+        text: segment.text,
+        // Zotero gave no page for the last: it is read where its predecessor was.
+        pageIndex: index === 7 ? 2 : Math.floor(index / 3),
+        anchor: segment.anchor,
+      })),
+    });
+    expect(channel.log).toEqual([]);
+    expect(emitted).toEqual([]);
+    // Done with Zotero's Read Aloud: the takeover ends, and the popup with it.
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+    expect(session.wanted).toBe(false);
+    expect(session.live).toBe(false);
+  });
+
+  it("never starts the channel from a capture's controller, whatever Zotero asks of it", () => {
+    const { channel, session, sink, tick } = setup();
+    void session.capture();
+    const controller = createPaged(session, sink, 0);
+    controller.paused = true;
+    controller.paused = false;
+    controller.retry();
+    channel.speaking = true;
+    controller.skipAhead("paragraph", false);
+    controller.skipBack("sentence", true);
+    tick();
+    expect(channel.log).toEqual([]);
+  });
+
+  it("keeps a controller Zotero rebuilds during the capture from starting the channel", async () => {
+    const { channel, session, sink, tick } = setup();
+    const captured = session.capture();
+    const first = createPaged(session, sink, 0);
+    first.destroy();
+    createPaged(session, sink, 0);
+    tick();
+    expect((await captured).ok).toBe(true);
+    expect(channel.log).toEqual([]);
+  });
+
+  it("says why when the document has no text", async () => {
+    const { hooks, session } = setup();
+    const captured = session.capture();
+    session.giveUp(NO_TEXT);
+    expect(await captured).toEqual({ ok: false, problem: NO_TEXT });
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+  });
+
+  it("gives up when Zotero builds no controller in time, waiting longer than a read does", async () => {
+    const { hooks, session, timers, elapse } = setup();
+    const captured = session.capture();
+    expect(timers.map((timer) => timer.ms)).toEqual([CAPTURE_WAIT_MS]);
+    expect(CAPTURE_WAIT_MS).toBeGreaterThan(CONTROLLER_WAIT_MS);
+    elapse();
+    const result = await captured;
+    expect(result.ok).toBe(false);
+    expect(hooks.log).toEqual(["takeover on", "takeover off"]);
+  });
+
+  it("says so when the tab closes before the segments come", async () => {
+    const { channel, session } = setup();
+    const captured = session.capture();
+    session.close();
+    const result = await captured;
+    expect(result.ok).toBe(false);
+    // Nothing was asked of the channel, so there is nothing to hush.
+    expect(channel.log).toEqual([]);
+  });
+
+  it("copies the segments of a read under way without disturbing it", async () => {
+    const { channel, hooks, session, sink, tick } = setup();
+    session.want({ kind: "here" });
+    createPaged(session, sink, 0);
+    tick();
+    const result = await session.capture();
+    expect(result.ok && result.segments.map((segment) => segment.text)).toEqual(SEGMENTS.map((segment) => segment.text));
+    expect(channel.log).toEqual(["start 0"]);
+    expect(hooks.log).toEqual(["takeover on"]);
+    expect(session.live).toBe(true);
+  });
+
+  it("refuses to capture while a read of the plugin's own waits for its controller", async () => {
+    const { hooks, session } = setup();
+    session.want({ kind: "here" });
+    const result = await session.capture();
+    expect(result.ok).toBe(false);
+    expect(session.capturing).toBe(false);
+    expect(hooks.log).toEqual(["takeover on"]);
+    expect(session.wanted).toBe(true);
+  });
+
+  it("starts a read normally once the capture is over", async () => {
+    const { channel, session, sink, tick, create } = setup();
+    const captured = session.capture();
+    createPaged(session, sink, 0);
+    tick();
+    await captured;
+    session.want({ kind: "here" });
+    create(3);
+    tick();
+    expect(channel.log).toEqual(["start 3"]);
   });
 });
