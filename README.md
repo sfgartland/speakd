@@ -569,10 +569,8 @@ not evidence.
 teaches an agent to turn PDFs, Markdown, or text files into audiobooks through
 `speakctl render`. It prepares text (stripping headers and references, extracting
 chapters from PDF outlines, putting form-feed and `# Title` separators in the
-right places), then renders it to mp3/opus/m4b with chapters. The skill is
-installed automatically when you install the clients (see below for their
-installers), or it can be used standalone in any Claude Code, OpenCode, or
-Codex session.
+right places), then renders it to mp3/opus/m4b. The skill is installed
+automatically when you install the clients (see below for their installers).
 
 **Zotero** — [`clients/zotero/`](clients/zotero/) reads a paper
 aloud from inside Zotero 10's reader, with Zotero's own sentence highlight and
@@ -580,8 +578,8 @@ follow-scroll showing what is being spoken. speakd does the speaking; the
 plugin borrows Zotero's Read Aloud segmentation (reading order, headers and
 citations skipped) and its highlight. A paper is a channel like any other,
 `zotero:<item>`, named after its title. The plugin also supplies an **Export
-audiobook…** context menu to render papers into mp3, opus, or m4b audio files
-with chapters, attaching the result to the item or saving to a folder.
+audiobook…** context menu to render papers into mp3, opus, or m4b audio files,
+attaching the result to the item or saving to a folder.
 
 Zotero's plugin sandbox cannot open a Unix socket, so the daemon also serves
 **loopback HTTP**, on `127.0.0.1:8642`:

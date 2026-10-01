@@ -49,27 +49,34 @@ channel is speaking**, **speakd is not running**, or **wrong token**.
 
 ## Audio export
 
-**From any Zotero item with text**, right-click **Export audiobook…** to turn a
-PDF, article, or book into an mp3, opus, or m4b audio file with chapters. The
-dialog asks what to export (the whole item or some pages), which format, and
-where to save it.
+**On one PDF attachment**, or a regular item (article, book) with exactly one
+PDF child, right-click **Export audiobook…** to render an mp3, opus, or m4b audio
+file. The dialog offers:
 
-- **Format:** `export_format_article` (default mp3) for articles, and
-  `export_format_book` (default m4b) for books or papers with multiple chapters.
-- **Destination:** `export_destination` can be `attach` to import the audio into
-  Zotero as a child attachment titled "Audio — <title>", or `folder` to save to
-  a folder on your machine (the path is `export_folder`). "Attach" is the default,
-  and the rendered file is staged in `~/.local/share/speakd/speakd-exports/` before
-  importing, then deleted.
-- **Format support:** the daemon chooses the engine when rendering — Piper first
-  if configured and the part's language has a voice, Kokoro otherwise. It yields
-  to live speech and renders resume if the daemon restarts.
+- **Range:** for a book with chapters in its outline, choose **whole document**,
+  **chapters** (with checkboxes), or **page range**; for a book with no chapters
+  or an article, choose **whole document** or **page range**.
+- **Format:** mp3, opus, or m4b. Books use `export_format_book` (default m4b);
+  articles use `export_format_article` (default mp3). This is determined by item
+  type, not by whether the document has chapters.
+- **Destination:** `attach` (default) imports the audio into Zotero as a child
+  attachment titled "Audio — <title>", staged in your Zotero profile's
+  `speakd-exports/` folder before importing; `folder` leaves the file in a folder
+  on your machine (the path is `export_folder`).
+
+**Progress:** while rendering, an item-pane section shows state (queued, rendering,
+encoding), a percentage bar, the estimated time left, and a **Cancel** button.
+Renders keep going if Zotero closes and are picked up again on the next start.
+
+**When there is no text:** a PDF with no text shows a "no text" message in place of
+rendering.
+
 - **Settings are in the Zotero Config Editor,** under `extensions.speakd-reader.*`:
   - `export_format_article` — `mp3`, `opus`, or `m4b` (default: mp3)
   - `export_format_book` — `mp3`, `opus`, or `m4b` (default: m4b)
   - `export_destination` — `attach` or `folder` (default: attach)
   - `export_folder` — path when destination is `folder`
-  - `export_skip_references` — skip the item's references section (default: false)
+  - `export_skip_references` — skip the item's references section (default: true)
 
 There is no export settings pane yet; edit these prefs through Zotero's Config
 Editor (**Tools → Preferences → Advanced → Config Editor**) or by hand in
