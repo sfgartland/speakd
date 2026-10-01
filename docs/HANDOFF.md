@@ -146,14 +146,27 @@ Details and limits are in `clients/zotero/README.md`. Zotero is pinned to 10.0.x
   (git-ignored): every ruling, deferred minor and completed task. Read it first.
 - **Done:** Task 1 (`# Title` chapter headings in `speakctl render`), Task 2
   (the `speakd-audiobook` skill in `clients/claude-code/skills/`, with
-  `scripts/prepare_text.py`; the Codex and OpenCode installers copy it). `main`
-  merged in at `0e6867c`; full suite green there.
-- **Next:** Task 3 (segment capture without playing — live, Opus, test-Zotero
-  harness only), Task 4 (dialog + `zotero.export_*` settings, Sonnet), Task 5
-  (render round-trip, progress pane, attach, resume — live, Opus; the
-  harness's `fakedaemon.py` may need `render`), Task 6 (docs + gate), then an
-  Opus whole-branch review and merge. Export renders should send
-  `profile: "pdf"` so they get the sentence-level pronunciation.
+  `scripts/prepare_text.py`; the Codex and OpenCode installers copy it), Task 3
+  (`d62c5f2`: segment capture through Read Aloud playing nothing, verified live
+  with 0 enqueues), Task 4 (`82f998b`, `e5fe418`: the right-click menu, the
+  export dialog and its settings; `exportFlow` tested, including no-text).
+  All reviewed clean.
+- **Task 5** (render round-trip, progress pane, attach, resume across restart;
+  Opus, live in the harness) was **dispatched on 2026-10-01 and may have
+  committed without review**. Check `git log e5fe418..` on the branch and
+  `task-5-report.md` in the ledger dir. If there are commits, the next step is
+  the task review (`review-package` over `e5fe418..HEAD`, Sonnet reviewer). If
+  there are none, re-dispatch from `task-5-brief.md`.
+- **Then:** Task 6 (docs + gate, Haiku), an Opus whole-branch review (point it
+  at the ledger's deferred minors), and merge.
+- **Rulings made on 2026-10-01 (in the ledger):**
+  - The export settings are Zotero prefs (`extensions.speakd-reader.export_*`),
+    not daemon `zotero.*` settings. The plugin has no `declare_settings` path
+    yet. **Move them in phase 3**, which builds that path.
+  - Captured segments follow the user's highlight granularity (sentence or
+    paragraph); the parts and references code must tolerate both.
+  - The live smoke checks are recorded in task reports, not committed as
+    scripts.
 - After merging, re-run `clients/codex/install.sh` and
   `clients/opencode/install.sh` so the skill reaches those agents.
 
