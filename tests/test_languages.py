@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from speakd import languages
 
 
@@ -136,3 +138,10 @@ def test_resolve_prefers_payload_then_channel_then_detected_then_default() -> No
 
 def test_resolve_treats_empty_strings_as_not_given() -> None:
     assert languages.resolve("", "", "", "en") == languages.Resolution("en", "default")
+
+
+@pytest.mark.parametrize("code", ["nl", "sv", "nb", "da", "pl"])
+def test_normalise_knows_the_languages_the_remote_engine_adds(code: str) -> None:
+    """Gemini speaks these; reading them as "und" would hide that from routing."""
+    assert languages.normalise(code) == code
+    assert languages.normalise(f"{code}-XX") == code
