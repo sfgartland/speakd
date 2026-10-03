@@ -550,7 +550,8 @@ def test_a_voice_with_a_length_cap_never_gets_a_longer_unit(settings: Settings) 
         assert d.wait_idle(timeout=10.0)
     finally:
         d.stop()
-    lengths = [len(str(s["text"])) for e in of(seen, "started") for s in e.data["segments"]]
+    segments = [s for e in of(seen, "started") for s in e.data["segments"]]  # type: ignore[attr-defined]
+    lengths = [len(str(s["text"])) for s in segments]
     assert len(lengths) > 2 and max(lengths) <= 600
     # And the same limit holds for the sentences a render is made of.
     assert all(
