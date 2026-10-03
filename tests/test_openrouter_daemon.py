@@ -522,10 +522,10 @@ def test_gemini_speaks_a_language_qwen_lacks_without_falling_back(settings: Sett
     set_setting(d, "speech.openrouter_voice", "Charon")
     d.start()
     try:
-        request = Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Hallo.", "lang": "hi"})
-        d.handle(request)
-            Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Hallo.", "lang": "hi"})
+        request = Request(
+            verb=Verb.ENQUEUE, source_id="s", payload={"text": "Hallo.", "lang": "hi"}
         )
+        d.handle(request)
         assert d.wait_idle(timeout=10.0)
     finally:
         d.stop()
