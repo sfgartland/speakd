@@ -2582,6 +2582,15 @@ class Daemon:
                 lang = fallback
             voice = self._voice_for(lang, job.profile.voice)
         engine_name = choice.engine
+        if units is not None and engine_name == "openrouter":
+            # A replay reuses the units the utterance was first made of, which
+            # may have been sized for another voice. A voice with a hard
+            # length cap drops the excess in silence, so units over it are
+            # made again (the indices change, but only for a replay that
+            # could not have been spoken whole).
+            cap = max_unit_chars(str(self.settings.get("speech.openrouter_voice")))
+            if cap is not None and any(len(unit.spoken) > cap for unit in units):
+                units = None
         if units is None:
             # Segmented here rather than inside `speak()`, so that `started`
             # can name every sentence before the first is heard. A monitor

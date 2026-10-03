@@ -620,3 +620,24 @@ def test_unloading_kokoro_does_not_cut_off_openrouter_speech(settings: Settings)
     finally:
         d.stop()
     assert [e.data for e in of(seen, "finished")] == [{"cancelled": False, "aborted": False}]
+
+
+def test_a_replay_on_a_capped_voice_is_resegmented_to_the_cap(settings: Settings) -> None:
+    """Units made for Qwen (no cap) must not reach Gemini, which drops the excess."""
+    d, _, seen = lazy_daemon(settings)
+    set_setting(d, "speech.engine", "openrouter")
+    set_setting(d, "speech.openrouter_unit_chars", 600)
+    sentence = " ".join(f"word{n}," for n in range(1, 90)) + " end."
+    assert 600 < len(sentence) < 750
+    d.start()
+    try:
+        enqueue(d, sentence)
+        first = [s["text"] for s in of(seen, "started")[0].data["segments"]]  # type: ignore[attr-defined]
+        assert max(len(str(t)) for t in first) > 600
+        set_setting(d, "speech.openrouter_voice", "Charon")
+        d.handle(Request(verb=Verb.REPLAY, source_id="gui", payload={"index": 0}))
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    again = [s["text"] for s in of(seen, "started")[1].data["segments"]]  # type: ignore[attr-defined]
+    assert max(len(str(t)) for t in again) <= 600
