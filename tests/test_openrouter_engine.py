@@ -346,3 +346,42 @@ def test_the_languages_follow_the_voice() -> None:
     assert "nl" not in e.supported_languages() and "de" in e.supported_languages()
     voice[0] = "Charon"
     assert {"nl", "sv", "nb", "da", "pl", "hi", "de"} <= set(e.supported_languages())
+
+
+def test_refusals_are_counted_per_caller() -> None:
+    """A live 400 and a render's 400 are two unrelated sentences, not a pattern."""
+    e, _ = engine(Script([bad_request(), bad_request()]))
+    with pytest.raises(ValueError) as live:
+        e.synthesize("One.", "v", 1.0, context="live")
+    with pytest.raises(ValueError) as render:
+        e.synthesize("Two.", "v", 1.0, context="render")
+    assert not isinstance(live.value, RemoteEngineError)
+    assert not isinstance(render.value, RemoteEngineError)
+    assert e.available()
+
+
+def test_a_refusal_for_a_cancelled_utterance_is_not_counted() -> None:
+    e, _ = engine(Script([bad_request(), bad_request(), bad_request()]))
+    with pytest.raises(ValueError):
+        e.synthesize("One.", "v", 1.0, cancelled=lambda: True)
+    with pytest.raises(ValueError) as second:
+        e.synthesize("Two.", "v", 1.0)
+    with pytest.raises(ValueError):
+        e.synthesize("Three.", "v", 1.0, cancelled=lambda: True)
+    assert not isinstance(second.value, RemoteEngineError)
+    assert e.available()
+
+
+def test_a_request_in_flight_across_a_reset_cannot_hold_the_engine_off() -> None:
+    holder: list[OpenRouterEngine] = []
+
+    def post(url: str, headers: dict[str, str], body: bytes, timeout: float) -> Reply:
+        holder[0].reset()  # the voice was changed while this request was out
+        return Reply(401, "application/json", b"{}")
+
+    e = OpenRouterEngine(api_key=lambda: "k", post=post, sleep=lambda s: None)
+    holder.append(e)
+    with pytest.raises(RemoteEngineError):
+        e.synthesize("Hello.", "old", 1.0)
+    assert e.available()
+    assert e.status()["last_error"] is None

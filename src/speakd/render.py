@@ -971,7 +971,14 @@ class RenderQueue:
                 with nullcontext() if getattr(engine, "remote", False) else self._synth_lock:
                     # A manifest written before renders carried a resolved language
                     # has `lang` empty; English is what those were spoken in.
-                    audio = engine.synthesize(text, part.voice, job.speed, job.lang or "en")
+                    # A remote engine counts its refusals per caller, and this
+                    # is not the live speaker.
+                    extra: dict[str, Any] = (
+                        {"context": "render"} if getattr(engine, "remote", False) else {}
+                    )
+                    audio = engine.synthesize(
+                        text, part.voice, job.speed, job.lang or "en", **extra
+                    )
                 append_pcm(pcm_path, _pcm16(audio))
                 job.done_seconds += len(audio) / engine.sample_rate
                 is_last_sentence = sent_i == len(sentences) - 1

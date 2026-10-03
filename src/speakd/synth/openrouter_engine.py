@@ -312,10 +312,15 @@ class OpenRouterEngine:
         # back to ignores a transient holdoff -- see `available`.
         self._held_fatal = False
         self._last_error: str | None = None
-        # 400s answered back to back. One is a sentence the provider disliked;
-        # two running are a model or voice it does not know, which every
-        # sentence would meet in turn.
-        self._refused_running = 0
+        # 400s answered back to back, per caller (live speech and a render run
+        # at once, and their sentences have nothing to do with each other).
+        # One is a sentence the provider disliked; two running are a model or
+        # voice it does not know, which every sentence would meet in turn.
+        self._refused_running: dict[str, int] = {}
+        # Bumped by `reset`. A request carries the generation it started in,
+        # so one that was in flight across a settings change (the old voice,
+        # say) cannot count a refusal or hold the engine off afterwards.
+        self._generation = 0
         # Characters sent, for `status`: the provider bills per character.
         self._chars_sent = 0
 
@@ -354,7 +359,8 @@ class OpenRouterEngine:
             self._unavailable_until = 0.0
             self._held_fatal = False
             self._last_error = None
-            self._refused_running = 0
+            self._refused_running = {}
+            self._generation += 1
 
     def status(self) -> dict[str, object]:
         with self._lock:
@@ -371,9 +377,15 @@ class OpenRouterEngine:
     def supported_languages(self) -> list[str]:
         return list(MODEL_LANGUAGES.get(model_for(self._voice()), QWEN_LANGUAGES))
 
-    def _fail(self, reason: str, *, fatal: bool) -> RemoteEngineError:
+    def _fail(
+        self, reason: str, *, fatal: bool, generation: int | None = None
+    ) -> RemoteEngineError:
         holdoff = FATAL_HOLDOFF_SECONDS if fatal else TRANSIENT_HOLDOFF_SECONDS
         with self._lock:
+            if generation is not None and generation != self._generation:
+                # Settings changed while this request was out: whatever it
+                # found says nothing about the engine as it is now.
+                return RemoteEngineError(reason, fatal=fatal)
             self._unavailable_until = self._clock() + holdoff
             self._held_fatal = fatal
             self._last_error = reason
@@ -389,9 +401,12 @@ class OpenRouterEngine:
         lang: str = "en",
         *,
         cancelled: Callable[[], bool] = lambda: False,
+        context: str = "live",
     ) -> np.ndarray:
         """`cancelled` is asked before a retry: an utterance that was hushed
-        while the request was in flight has no one left to wait for it."""
+        while the request was in flight has no one left to wait for it.
+        `context` names the caller (live speech, a render) for the count of
+        refusals running, which is kept apart per caller."""
         if not text.strip():
             return np.zeros(0, dtype=np.float32)
         key = self._api_key()
@@ -415,7 +430,9 @@ class OpenRouterEngine:
             "HTTP-Referer": "https://github.com/sfgartland/speakd",
             "X-Title": "speakd",
         }
-        reply = self._request(headers, body, cancelled)
+        with self._lock:
+            generation = self._generation
+        reply = self._request(headers, body, cancelled, context, generation)
         with self._lock:
             self._chars_sent += len(text)
         if not reply.body:
@@ -423,7 +440,7 @@ class OpenRouterEngine:
         if "json" in reply.content_type.lower():
             # A 200 carrying JSON is an error envelope, not audio; playing it
             # as PCM would be a burst of noise.
-            raise self._fail(_error_message(reply), fatal=False)
+            raise self._fail(_error_message(reply), fatal=False, generation=generation)
         usable = len(reply.body) - len(reply.body) % 2
         pcm = np.frombuffer(reply.body[:usable], dtype="<i2").astype(np.float32) / 32768.0
         rate = _pcm_rate(reply.content_type, self.sample_rate)
@@ -431,7 +448,12 @@ class OpenRouterEngine:
         return trim_silence(np.asarray(audio, dtype=np.float32), self.sample_rate)
 
     def _request(
-        self, headers: dict[str, str], body: bytes, cancelled: Callable[[], bool]
+        self,
+        headers: dict[str, str],
+        body: bytes,
+        cancelled: Callable[[], bool],
+        context: str,
+        generation: int,
     ) -> Reply:
         """POST once, and once more for what may be momentary.
 
@@ -449,38 +471,45 @@ class OpenRouterEngine:
                 if attempt == 0:
                     self._sleep(RETRY_DELAY_SECONDS)
                     continue
-                raise self._fail(f"cannot reach OpenRouter: {exc}", fatal=False) from exc
+                raise self._fail(
+                    f"cannot reach OpenRouter: {exc}", fatal=False, generation=generation
+                ) from exc
             if 200 <= reply.status < 300:
                 with self._lock:
                     self._last_error = None
-                    self._refused_running = 0
+                    self._refused_running[context] = 0
                 return reply
             if reply.status == 400:
                 message = _error_message(reply)
+                if cancelled():
+                    # Nobody is waiting on this answer; it is not evidence.
+                    raise ValueError(message)
                 with self._lock:
-                    self._refused_running += 1
-                    repeated = self._refused_running >= _CONFIG_FAULT_REFUSALS
+                    count = self._refused_running.get(context, 0) + 1
+                    self._refused_running[context] = count
+                    repeated = count >= _CONFIG_FAULT_REFUSALS
                 if "does not exist" in message:
                     # The provider names the fault: no sentence can succeed.
-                    raise self._fail(message, fatal=True)
+                    raise self._fail(message, fatal=True, generation=generation)
                 if repeated:
                     raise self._fail(
                         f"{message} (refused twice running: check the model and voice)",
                         fatal=True,
+                        generation=generation,
                     )
                 raise ValueError(message)
             if reply.status in _TEXT_FAULTS:
                 # This text, not the engine: one bad segment.
                 with self._lock:
-                    self._refused_running = 0
+                    self._refused_running[context] = 0
                 raise ValueError(_error_message(reply))
             if reply.status in _FATAL:
-                raise self._fail(_error_message(reply), fatal=True)
+                raise self._fail(_error_message(reply), fatal=True, generation=generation)
             if attempt == 0 and (reply.status == 429 or reply.status >= 500):
                 if cancelled():
                     raise RemoteEngineError(f"cancelled: {_error_message(reply)}")
                 delay = reply.retry_after if reply.retry_after is not None else RETRY_DELAY_SECONDS
                 self._sleep(min(max(delay, 0.0), MAX_RETRY_DELAY_SECONDS))
                 continue
-            raise self._fail(_error_message(reply), fatal=False)
+            raise self._fail(_error_message(reply), fatal=False, generation=generation)
         raise AssertionError("unreachable")  # pragma: no cover

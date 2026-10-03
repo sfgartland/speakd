@@ -935,11 +935,15 @@ def test_a_remote_engine_is_called_without_the_synth_lock(tmp_path: Path) -> Non
     """The lock serialises one in-process model; a network call needs none."""
     lock = threading.Lock()
     observed: list[bool] = []
+    contexts: list[str] = []
 
     class RemoteEngine(FakeEngine):
         remote = True
 
-        def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
+        def synthesize(
+            self, text: str, voice: str, speed: float, lang: str = "en", *, context: str = ""
+        ) -> np.ndarray:
+            contexts.append(context)
             observed.append(lock.locked())
             return super().synthesize(text, voice, speed, lang)
 
@@ -950,4 +954,5 @@ def test_a_remote_engine_is_called_without_the_synth_lock(tmp_path: Path) -> Non
     assert until(lambda: state_of(queue, job.id) in ("done", "failed"))
     assert state_of(queue, job.id) == "done"
     assert observed == [False, False, False, False]
+    assert contexts == ["render"] * 4
     queue.stop()
