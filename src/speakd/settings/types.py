@@ -163,6 +163,11 @@ def validate(decl: Declaration, value: object) -> object:
             raise SettingError(f"{key}: longer than {MAX_SECRET_CHARS} characters")
         if any(ch.isspace() or not ch.isprintable() for ch in value):
             raise SettingError(f"{key}: must not contain spaces, line breaks or control characters")
+        if not value.isascii():
+            # A key goes into an HTTP header, which is encoded as Latin-1: a
+            # typographic dash from a pasted document would be accepted here
+            # and then fail every request. Said without the character.
+            raise SettingError(f"{key}: must be printable ASCII (was it pasted from a document?)")
         return value
     if decl.type == "voice_map":
         if not isinstance(value, dict):

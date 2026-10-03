@@ -223,3 +223,14 @@ def test_the_secrets_directory_is_tightened_if_it_was_loose(
     os.chmod(secrets, 0o755)
     settings.set(SETTING, KEY)
     assert stat.S_IMODE(secrets.stat().st_mode) == 0o700
+
+
+def test_a_key_outside_printable_ascii_is_refused_without_echoing_it(daemon: Daemon) -> None:
+    """http.client encodes headers as Latin-1; a stray character would fail every sentence."""
+    pasted = "sk-or-v1-abc–def"  # an en dash, as a word processor leaves it
+    reply = set_key(daemon, pasted)
+    assert not reply.ok
+    assert "printable ASCII" in str(reply.error)
+    for part in ("sk-or", "abc", "def", "–"):
+        assert part not in str(reply.error)
+    assert not daemon.remote.has_key()
