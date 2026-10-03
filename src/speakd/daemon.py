@@ -2195,10 +2195,10 @@ class Daemon:
         # The same exemption for OpenRouter: it keeps Kokoro unloaded by
         # design, and `disabled` only means "do not load Kokoro", so neither
         # may stop an engine that does not need it.
-        remote_ready = (
-            str(self.settings.get("speech.engine")) == "openrouter"
-            and self._remote_choice()["remote_voice"] is not None
-        )
+        # Usable or not: an unusable one must reach `choose_engine`, which
+        # declines with the real reason and the alert flag. Dropped here as
+        # "disabled", the listener would get neither the chime nor the cause.
+        remote_ready = str(self.settings.get("speech.engine")) == "openrouter"
         if (
             not piper_ready
             and not remote_ready

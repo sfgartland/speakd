@@ -560,3 +560,41 @@ def test_a_voice_with_a_length_cap_never_gets_a_longer_unit(settings: Settings) 
             one_long_sentence + " " + short, d.profile_for("x"), "openrouter"
         )
     )
+
+
+def test_a_held_off_remote_is_declined_with_its_reason_and_an_alert(settings: Settings) -> None:
+    """Not dropped at the gate as "disabled": the listener must hear why."""
+    remote = Remote(fail_from=0, status=401)
+    d, _, seen = lazy_daemon(settings, remote)
+    set_setting(d, "speech.engine", "openrouter")
+    player = d.player
+    assert isinstance(player, RecordingPlayer)
+    d.start()
+    try:
+        enqueue(d, "First try.")
+        d._last_alert = float("-inf")  # the first chime is not what is under test
+        request = Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Again."})
+        response = d.handle(request)
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    assert response.data["spoken"] is True
+    reasons = [str(e.data["reason"]) for e in of(seen, "declined")]
+    assert len(reasons) == 1 and "HTTP 401" in reasons[0]
+    assert chimes(player) == 2
+
+
+def test_a_second_alert_inside_the_interval_stays_silent(settings: Settings) -> None:
+    remote = Remote(fail_from=0, status=401)
+    d, _, seen = lazy_daemon(settings, remote)
+    set_setting(d, "speech.engine", "openrouter")
+    player = d.player
+    assert isinstance(player, RecordingPlayer)
+    d.start()
+    try:
+        enqueue(d, "First try.")
+        enqueue(d, "Again.")
+    finally:
+        d.stop()
+    assert len(of(seen, "declined")) == 1
+    assert chimes(player) == 1
