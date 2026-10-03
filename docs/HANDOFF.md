@@ -240,6 +240,15 @@ Known gaps carried with the branch, none blocking:
 - A render through OpenRouter ignores the profile speed (no player stretch),
   and fails (resumably) on an outage. A 500k-char book costs about $7.50 on Flash.
 - With `on_failure=local`, Kokoro may get one 300-char unit after the switch.
+- Renders through OpenRouter, and players that cannot time-stretch, ignore the
+  profile's speed.
+- One failed sentence fails a whole OpenRouter render (it resumes, but does not
+  skip the sentence).
+- The urllib timeout (20 s) applies per socket operation, not to the whole
+  request, so a slow trickle of bytes can outlast it.
+- The default profile's prepare step marks pieces as not `exact`, so every unit
+  of an utterance reports the whole text as its span (`0..len`) on every engine,
+  Kokoro included; follow-along highlighting needs per-unit spans from it.
 - The secret file is not encrypted (keyring would need a dependency). The
   socket keeps its default permissions, so another local user could at most
   overwrite the key, never read it.
