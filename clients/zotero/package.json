@@ -1,6 +1,6 @@
 {
   "name": "speakd-reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read PDFs aloud in Zotero 10 through speakd, with Zotero's own sentence highlight",
   "private": true,
   "license": "MIT",
