@@ -324,11 +324,16 @@ def test_status_reports_the_engine() -> None:
     daemon.start()
     try:
         status = daemon.handle(Request(verb=Verb.STATUS, source_id=""))
-        assert status.data["engine"] == {
+        engine_status = status.data["engine"]
+        assert isinstance(engine_status, dict)
+        # The remote engine's block depends on whether this machine has a key.
+        engine_status.pop("openrouter")
+        assert engine_status == {
             "loaded": False,
             "loading": False,
             "name": "kokoro",
             "piper": {"available": False, "voices": []},
+            "model_needed": True,
         }
     finally:
         daemon.stop()
@@ -339,11 +344,16 @@ def test_an_engine_that_cannot_be_unloaded_reports_as_loaded() -> None:
     daemon, _engine, _ = build()
     try:
         status = daemon.handle(Request(verb=Verb.STATUS, source_id=""))
-        assert status.data["engine"] == {
+        engine_status = status.data["engine"]
+        assert isinstance(engine_status, dict)
+        # The remote engine's block depends on whether this machine has a key.
+        engine_status.pop("openrouter")
+        assert engine_status == {
             "loaded": True,
             "loading": False,
             "name": "kokoro",
             "piper": {"available": False, "voices": []},
+            "model_needed": True,
         }
     finally:
         daemon.stop()

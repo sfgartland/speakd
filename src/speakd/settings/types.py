@@ -21,7 +21,12 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # A voice_map's keys: lower-case BCP-47 primary tags, with an optional region.
 _LANG_RE = re.compile(r"^[a-z]{2}(-[a-z]{2})?$")
 
-_TYPES = frozenset({"bool", "int", "float", "string", "choice", "voice", "voice_map"})
+_TYPES = frozenset({"bool", "int", "float", "string", "choice", "voice", "voice_map", "secret"})
+
+# The longest secret accepted. Generous for any API key or token; the bound is
+# there so a paste of the wrong thing (a whole file) is refused rather than
+# stored and sent.
+MAX_SECRET_CHARS = 4096
 
 
 class SettingError(Exception):
@@ -147,6 +152,18 @@ def validate(decl: Declaration, value: object) -> object:
         if not isinstance(value, str) or not value:
             raise SettingError(f"{key}: a voice must be a non-empty string")
         return value
+    if decl.type == "secret":
+        # Never `{value!r}` in these messages, unlike every type above: an
+        # error goes back to the client and may be shown, logged or pasted
+        # into a bug report, and a near-miss of a key is still most of a key.
+        if not isinstance(value, str):
+            raise SettingError(f"{key}: expected a string")
+        value = value.strip()
+        if len(value) > MAX_SECRET_CHARS:
+            raise SettingError(f"{key}: longer than {MAX_SECRET_CHARS} characters")
+        if any(ch.isspace() or not ch.isprintable() for ch in value):
+            raise SettingError(f"{key}: must not contain spaces, line breaks or control characters")
+        return value
     if decl.type == "voice_map":
         if not isinstance(value, dict):
             raise SettingError(f"{key}: expected a map from language code to voice")
@@ -172,11 +189,15 @@ def _bounded(
 
 
 def to_json(decl: Declaration) -> dict[str, object]:
-    """What the `settings` verb returns for one declaration."""
+    """What the `settings` verb returns for one declaration.
+
+    A secret's default is reported as `False` -- not set -- because that is
+    the shape its value always takes on the wire (see `Settings.values`).
+    """
     return {
         "key": decl.key,
         "type": decl.type,
-        "default": decl.default,
+        "default": False if decl.type == "secret" else decl.default,
         "label": decl.label,
         "help": decl.help,
         "options": list(decl.options) if decl.options is not None else None,
