@@ -25,6 +25,7 @@ from speakd.model import Piece, Span
 from speakd.pipeline import speak
 from speakd.player import RecordingPlayer
 from speakd.protocol import Request, Verb
+from speakd.render import RenderJob
 from speakd.settings.registry import Settings
 from speakd.settings.store import SettingsStore
 from speakd.synth.fake import FakeEngine
@@ -407,7 +408,9 @@ def test_a_language_openrouter_lacks_is_spoken_in_the_default_language(settings:
     settings.set("speech.engine", "openrouter")
     d.start()
     try:
-        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Okay then.", "lang": "hi"}))
+        d.handle(
+            Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Okay then.", "lang": "hi"})
+        )
         assert d.wait_idle(timeout=10.0)
     finally:
         d.stop()
@@ -428,9 +431,65 @@ def test_a_language_openrouter_lacks_is_declined_when_the_policy_says_decline(
     settings.set("speech.unsupported_language", "decline")
     d.start()
     try:
-        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Okay then.", "lang": "hi"}))
+        d.handle(
+            Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Okay then.", "lang": "hi"})
+        )
         assert d.wait_idle(timeout=10.0)
     finally:
         d.stop()
     assert [e.data["reason"] for e in of(seen, "declined")] == ["no voice for hi"]
     assert remote.inputs == []
+
+
+# ---- switching to OpenRouter under live speech and renders
+
+
+class HoldingPlayer(RecordingPlayer):
+    """Stays inside play() until stopped, so an utterance is in flight."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.playing = threading.Event()
+        self.release = threading.Event()
+
+    def play(self, audio: np.ndarray, sample_rate: int) -> None:
+        self.playing.set()
+        self.release.wait(timeout=10.0)
+
+    def stop(self) -> None:
+        self.release.set()
+
+
+def test_switching_to_openrouter_silences_a_kokoro_utterance_in_flight(
+    settings: Settings,
+) -> None:
+    d, kokoro, seen = lazy_daemon(settings)
+    player = HoldingPlayer()
+    d.player = player
+    kokoro.load()
+    d.start()
+    try:
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": LONG_TEXT}))
+        assert player.playing.wait(timeout=5.0)
+        set_setting(d, "speech.engine", "openrouter")
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    assert not kokoro.loaded
+    assert [e.data for e in of(seen, "finished")] == [{"cancelled": True, "aborted": False}]
+
+
+def test_kokoro_stays_loaded_while_a_render_still_needs_it(settings: Settings) -> None:
+    d, kokoro, _ = lazy_daemon(settings)
+    kokoro.load()
+    needed = [True]
+    d.render_queue.needs = lambda engine: needed[0] and engine == "kokoro"  # type: ignore[method-assign]
+    set_setting(d, "speech.engine", "openrouter")
+    assert kokoro.loaded, "a paused render would never resume"
+    needed[0] = False
+    d._on_render_update(
+        RenderJob(
+            id="r", parts=[], out=Path("r.mp3"), format="mp3", lang="en", voice="v", state="done"
+        )
+    )
+    assert not kokoro.loaded

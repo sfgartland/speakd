@@ -789,6 +789,19 @@ class RenderQueue:
         with self._lock:
             return [job.state_dict() for job in self._jobs.values()]
 
+    def needs(self, engine: str) -> bool:
+        """Whether an unfinished render still has a part for `engine` to speak.
+
+        Asked before an engine is unloaded: a render left waiting on an
+        unloaded model sits in `paused` until somebody loads it again.
+        """
+        with self._lock:
+            return any(
+                job.state not in ("done", "failed", "cancelled")
+                and any(part.engine == engine for part in job.parts[job.part_index :])
+                for job in self._jobs.values()
+            )
+
     def job(self, job_id: str) -> RenderJob | None:
         with self._lock:
             return self._jobs.get(job_id)

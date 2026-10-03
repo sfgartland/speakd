@@ -1152,6 +1152,23 @@ class Daemon:
             return
         if not kokoro_wanted(self.settings):
             if engine.loaded:
+                if self.render_queue.needs("kokoro"):
+                    # A render with Kokoro parts left would sit in `paused`
+                    # on the unloaded model for good. The unload waits for
+                    # the render to end (`_on_render_update` asks again),
+                    # which is the cheaper surprise than a stuck export.
+                    return
+                # Silenced before the model goes, as `_set_engine_loaded`
+                # does: an utterance in flight is made of Kokoro's output,
+                # and an unloaded LazyEngine answers with empty arrays, so
+                # it would go on "speaking" silence to its end. The queue is
+                # kept (drain=False): what waits will choose its engine anew.
+                try:
+                    self._stop_speaking("", drain=False, reason=_DISCARDED_MUTED)
+                except Exception as exc:  # noqa: BLE001 - the setting already changed
+                    self._publish(
+                        "error", "", {"message": f"could not silence the player: {exc!r}"}
+                    )
                 engine.unload()
                 self._publish("engine", "", {"state": "unloaded"})
             return
@@ -1433,6 +1450,9 @@ class Daemon:
             self._render_last_state.pop(job.id, None)
             self._render_last_published.pop(job.id, None)
         self._publish("render", "", job.state_dict())
+        if job.state in ("done", "failed", "cancelled"):
+            # An unload that `_fit_kokoro_to_engine` put off for this render.
+            self._fit_kokoro_to_engine()
 
     def _voice_for_render(self, lang: str, profile: ProfileView) -> str:
         """The one seam a render's voice comes from: the same choice live
