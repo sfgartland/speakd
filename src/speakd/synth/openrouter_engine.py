@@ -66,6 +66,7 @@ DEFAULT_VOICE = "loongjohn"
 VOICE_MODELS: dict[str, str] = {
     "loongjohn": "qwen/qwen-audio-3.0-tts-flash",
     "longanlingxin": "qwen/qwen-audio-3.0-tts-plus",
+    "Charon": "google/gemini-3.8-flash-tts",
 }
 
 
@@ -77,7 +78,7 @@ def model_for(voice: str) -> str:
 # What Qwen-Audio-3.0-TTS speaks, as this project's codes. It detects the
 # language from the text itself, so none of this is sent: it is what the
 # daemon's language check reads before choosing the engine.
-SUPPORTED: tuple[str, ...] = (
+QWEN_LANGUAGES: tuple[str, ...] = (
     "en",
     "en-gb",
     "de",
@@ -91,6 +92,23 @@ SUPPORTED: tuple[str, ...] = (
     "zh",
     "ar",
 )
+
+# Gemini TTS speaks a good deal more, and detects the language itself too.
+GEMINI_LANGUAGES: tuple[str, ...] = (
+    *QWEN_LANGUAGES,
+    "hi",
+    "nl",
+    "pl",
+    "sv",
+    "da",
+    "nb",
+)
+
+MODEL_LANGUAGES: dict[str, tuple[str, ...]] = {
+    "qwen/qwen-audio-3.0-tts-flash": QWEN_LANGUAGES,
+    "qwen/qwen-audio-3.0-tts-plus": QWEN_LANGUAGES,
+    "google/gemini-3.8-flash-tts": GEMINI_LANGUAGES,
+}
 
 # A request's whole life, connect to last byte. Long enough for a few
 # hundred characters on a slow upstream; short enough that a stalled
@@ -340,7 +358,7 @@ class OpenRouterEngine:
             }
 
     def supported_languages(self) -> list[str]:
-        return list(SUPPORTED)
+        return list(MODEL_LANGUAGES.get(model_for(self._voice()), QWEN_LANGUAGES))
 
     def _fail(self, reason: str, *, fatal: bool) -> RemoteEngineError:
         holdoff = FATAL_HOLDOFF_SECONDS if fatal else TRANSIENT_HOLDOFF_SECONDS

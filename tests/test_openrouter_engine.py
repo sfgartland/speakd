@@ -98,6 +98,7 @@ def test_the_request_names_model_voice_and_pcm_and_never_a_speed() -> None:
     [
         ("loongjohn", "qwen/qwen-audio-3.0-tts-flash"),
         ("longanlingxin", "qwen/qwen-audio-3.0-tts-plus"),
+        ("Charon", "google/gemini-3.8-flash-tts"),
         ("", DEFAULT_MODEL),
     ],
 )
@@ -337,3 +338,11 @@ def test_a_refusal_between_good_requests_stays_one_bad_segment() -> None:
                 e.synthesize(text, "v", 1.0)
             assert not isinstance(info.value, RemoteEngineError)
     assert e.available()
+
+
+def test_the_languages_follow_the_voice() -> None:
+    voice = ["loongjohn"]
+    e = OpenRouterEngine(voice=lambda: voice[0], api_key=lambda: "k", post=Script([]))
+    assert "nl" not in e.supported_languages() and "de" in e.supported_languages()
+    voice[0] = "Charon"
+    assert {"nl", "sv", "nb", "da", "pl", "hi", "de"} <= set(e.supported_languages())

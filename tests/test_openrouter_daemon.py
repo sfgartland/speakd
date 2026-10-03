@@ -513,3 +513,21 @@ def test_the_voice_is_one_of_two_and_a_stale_model_key_is_ignored(settings: Sett
     status = d.handle(Request(verb=Verb.STATUS, source_id="", payload={}))
     openrouter = status.data["engine"]["openrouter"]  # type: ignore[index]
     assert openrouter["model"] == "qwen/qwen-audio-3.0-tts-plus"
+
+
+def test_gemini_speaks_a_language_qwen_lacks_without_falling_back(settings: Settings) -> None:
+    remote = Remote()
+    d, _, seen = lazy_daemon(settings, remote)
+    set_setting(d, "speech.engine", "openrouter")
+    set_setting(d, "speech.openrouter_voice", "Charon")
+    d.start()
+    try:
+        d.handle(
+            Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Hallo.", "lang": "hi"})
+        )
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    assert not of(seen, "language") and not of(seen, "declined")
+    assert of(seen, "started")[0].data["lang"] == "hi"
+    assert remote.inputs == ["Hallo."]

@@ -222,8 +222,9 @@ _CORE_OPENROUTER_SETTINGS: tuple[dict[str, object], ...] = (
         "default": OPENROUTER_DEFAULT_VOICE,
         "label": "OpenRouter voice",
         "help": (
-            "loongjohn is served by Qwen-Audio 3.0 TTS Flash, longanlingxin by "
-            "Plus: the voice decides the model."
+            "The voice decides the model: loongjohn is Qwen-Audio 3.0 TTS Flash, "
+            "longanlingxin is Qwen Plus, Charon is Google Gemini TTS (which "
+            "speaks more languages)."
         ),
         "options": list(OPENROUTER_VOICE_MODELS),
     },

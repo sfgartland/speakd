@@ -510,13 +510,18 @@ setting, for a service unit or secrets manager that injects it;
 encrypted: other users cannot read it, but programs running as you can, as they
 could a session keyring.
 
-`speech.openrouter_voice` chooses between two voices, and the voice decides the
-model, since each voice belongs to one model and the other refuses it:
-`loongjohn` (the default) is served by `qwen/qwen-audio-3.0-tts-flash`, and
-`longanlingxin` by `qwen/qwen-audio-3.0-tts-plus`. `speakctl status` reports the
-model in use. An older `speech.openrouter_model` in `settings.toml` is ignored.
-Qwen detects the language itself and speaks German, Russian, Korean and Arabic
-besides Kokoro's set.
+`speech.openrouter_voice` chooses one of three voices, and the voice decides the
+model, since each voice belongs to one model and the others refuse it:
+
+| Voice | Model | Languages | Cost, roughly |
+|---|---|---|---|
+| `loongjohn` (default) | `qwen/qwen-audio-3.0-tts-flash` | Kokoro's set plus German, Russian, Korean, Arabic | $15 per million characters, about $0.69 per hour of speech (about 46k characters) |
+| `longanlingxin` | `qwen/qwen-audio-3.0-tts-plus` | the same | $20 per million characters, about $0.92 per hour |
+| `Charon` | `google/gemini-3.8-flash-tts` | those and Hindi, Dutch, Polish, Swedish, Danish, Norwegian | about $0.80 per hour |
+
+`speakctl status` reports the model in use, and the languages it lists follow the
+voice. An older `speech.openrouter_model` in `settings.toml` is ignored. Each
+model detects the language itself.
 
 **Units are long.** A hosted model is far faster than real time, so where a
 local engine gets one sentence at a time, OpenRouter gets whole sentences merged
