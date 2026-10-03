@@ -350,6 +350,16 @@ control and the field reverts to what the daemon actually holds, so it never
 claims a setting that did not take. A setting flagged `restart` says so,
 in place, rather than pretending the change is already live.
 
+**Unit length.** Speech is synthesised a unit at a time, normally one
+sentence. A sentence up to a quarter over the 90-character cap is kept whole
+rather than split, and one that must be split is cut into even parts — at
+clause boundaries first — so no unit is a lone trailing word. On a machine fast
+enough to synthesise well ahead of playback, `speech.merge_chars` (default 0,
+off) also joins short sentences after the first into units up to that length,
+which reads more naturally; on a slow one leave it off, since the next unit has
+to be made while the current one plays. The remote engine has its own, larger
+unit length (see [OpenRouter](#openrouter)).
+
 Zotero's loopback HTTP is scoped the same way the socket trusts a client to
 scope itself: a request may read its own owner's settings and `speech`'s, and
 may set only its own owner's keys — `set_setting` on `speech.*` over HTTP is
@@ -464,6 +474,42 @@ second of audio; samples of the passage are in `~/Music/speakd-tts-compare/`:
 | **Piper `medium`, one thread** | **~0.13** | ~0.13 | ~16× cheaper than Kokoro; 380 MB resident |
 | Piper `low` | ~0.17 | ~0.04 | 16 kHz, audibly duller |
 | Supertonic 3 (dropped) | 0.6–1.5 | 0.27–0.62 | archived; no text normaliser |
+
+## OpenRouter
+
+A hosted engine, for when the voice matters more than staying offline:
+Qwen-Audio-3.0-TTS (Flash by default, Plus by setting) through OpenRouter's
+OpenAI-style speech endpoint. It needs no extra — the request is plain
+`urllib` — only a key, which is deliberately not a setting (settings are
+readable by every client):
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...        # for the daemon's environment, or:
+install -m 600 /dev/stdin ~/.config/speakd/openrouter-key <<< "sk-or-..."
+uv run speakctl set speech.engine openrouter
+```
+
+`speech.openrouter_model` and `speech.openrouter_voice` choose the model and its
+voice ID (as OpenRouter lists it for that model). Qwen detects the language
+itself and speaks German, Russian, Korean and Arabic besides Kokoro's set.
+
+**Units are long.** A hosted model is far faster than real time, so where a
+local engine gets one sentence at a time, OpenRouter gets whole sentences merged
+up to `speech.openrouter_unit_chars` (default 300) per request — better prosody,
+fewer seams. The first unit is still one sentence, for time to first audio. It
+bills per character, so the number of requests costs nothing; what a stop
+wastes is what was already synthesised ahead — at most about two units.
+
+**Speed is the player's.** Qwen ignores a speed parameter, so audio is made at
+its natural pace and the time-stretch applies the profile's speed and the
+listener's tempo. A tempo change never sends anything again.
+
+**Failure is local, not silent.** A refused key, empty credits, rate limiting
+or an outage that outlasts one quick retry ends the remote part of the
+utterance: the rest is said by Kokoro (or Piper) from the next unit, with one
+`error` event, and the engine holds itself off for a minute (ten for a key or
+credit problem; changing any `speech.openrouter_*` setting ends it early).
+`speakctl status` shows the engine's state, last error and characters sent.
 
 ## Audio files
 

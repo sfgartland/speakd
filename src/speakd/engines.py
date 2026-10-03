@@ -1,7 +1,8 @@
 """Which engine speaks an utterance, chosen after language resolution.
 
 One pure function, `choose_engine`, reads the resolved language and the
-settings and answers Piper-with-a-voice or Kokoro -- first match wins, per
+settings and answers the remote engine, Piper-with-a-voice or Kokoro -- first
+match wins, per
 the design (§2, "Choosing the engine per utterance"). Piper speaks when
 `speech.engine` is piper, the language maps to a voice, that voice's files
 exist (checked by an injected callable: file I/O is the daemon's business,
@@ -14,7 +15,7 @@ carries `voice = None` -- "phase 2 chooses as before".
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 
 
@@ -40,13 +41,26 @@ def choose_engine(
     piper_has_voice: Callable[[str], bool],
     piper_ok: bool,
     kokoro_loaded: bool,
+    *,
+    remote_voice: str | None = None,
+    remote_languages: Collection[str] = (),
 ) -> EngineChoice | Declined:
-    """The engine for one resolved language: Piper, else Kokoro, else declined.
+    """The engine for one resolved language: the remote engine, Piper,
+    Kokoro, or declined.
 
     Pure: everything slow or stateful (file existence, whether the piper
-    extra is importable, Kokoro's load switch) arrives as an argument, so
+    extra is importable, Kokoro's load switch, whether the remote engine has
+    a key and is not held off after a failure) arrives as an argument, so
     this runs in tests with no engine, no model and no audio device.
+
+    `remote_voice` is None when the remote engine is not usable right now;
+    otherwise it speaks `remote_languages` whenever `speech.engine` names it.
+    Anything it cannot take falls through to the local engines exactly as
+    though it were not configured -- which is also what makes a remote outage
+    quietly local rather than silent.
     """
+    if engine_setting == "openrouter" and remote_voice is not None and lang in remote_languages:
+        return EngineChoice("openrouter", remote_voice)
     voice = piper_voices.get(lang)
     if engine_setting == "piper" and piper_ok and voice is not None and piper_has_voice(voice):
         return EngineChoice("piper", voice)
