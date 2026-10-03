@@ -374,3 +374,21 @@ def until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.002)
     return predicate()
+
+
+def test_openrouter_speaks_while_kokoro_is_unloaded_and_even_disabled(settings: Settings) -> None:
+    """The admission gate must not mistake the unloaded model for no voice."""
+    d, kokoro, seen = lazy_daemon(settings)
+    set_setting(d, "speech.engine", "openrouter")
+    state.save(replace(state.load(), disabled=True))
+    assert not kokoro.loaded
+    d.start()
+    try:
+        request = Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Hello."})
+        response = d.handle(request)
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    assert response.data["spoken"] is True
+    assert not of(seen, "declined")
+    assert [e.data["engine"] for e in of(seen, "started")] == ["openrouter"]

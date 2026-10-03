@@ -2167,13 +2167,25 @@ class Daemon:
             and self.piper is not None
             and piper_available()
         )
-        if not piper_ready and isinstance(self.engine, Loadable) and not self.engine.loaded:
+        # The same exemption for OpenRouter: it keeps Kokoro unloaded by
+        # design, and `disabled` only means "do not load Kokoro", so neither
+        # may stop an engine that does not need it.
+        remote_ready = (
+            str(self.settings.get("speech.engine")) == "openrouter"
+            and self._remote_choice()["remote_voice"] is not None
+        )
+        if (
+            not piper_ready
+            and not remote_ready
+            and isinstance(self.engine, Loadable)
+            and not self.engine.loaded
+        ):
             # Disabled, or still loading: either way there is no model to say
             # this with. Dropped for the same reason as a mute, and it covers
             # the load as well as the disable deliberately — an enable that
             # queued thirty seconds of arrivals would speak them all at once
             # the moment the model landed. When piper is the engine and is
-            # usable, the job goes through instead: `choose_engine` decides
+            # usable (or OpenRouter is), the job goes through instead: `choose_engine` decides
             # per utterance whether it can be spoken, and declines with its
             # own reason when it needs the unloaded Kokoro.
             self._publish(
