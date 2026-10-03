@@ -309,7 +309,9 @@ def set_setting(d: Daemon, key: str, value: object) -> None:
     assert response.ok, response.error
 
 
-def lazy_daemon(settings: Settings) -> tuple[Daemon, LazyEngine, list[Event]]:
+def lazy_daemon(
+    settings: Settings, remote: Remote | None = None
+) -> tuple[Daemon, LazyEngine, list[Event]]:
     kokoro = LazyEngine(FakeEngine, sample_rate=24000)
     d = Daemon(
         kokoro,
@@ -318,8 +320,9 @@ def lazy_daemon(settings: Settings) -> tuple[Daemon, LazyEngine, list[Event]]:
         bus=EventBus(),
         channels=ChannelTable(),
         settings=settings,
-        remote=OpenRouterEngine(api_key=lambda: "sk", post=Remote()),
+        remote=OpenRouterEngine(api_key=lambda: "sk", post=remote or Remote()),
     )
+    settings.set("speech.detect_language", False)
     seen: list[Event] = []
     d.bus.subscribe(seen.append)
     return d, kokoro, seen
@@ -392,3 +395,42 @@ def test_openrouter_speaks_while_kokoro_is_unloaded_and_even_disabled(settings: 
     assert response.data["spoken"] is True
     assert not of(seen, "declined")
     assert [e.data["engine"] for e in of(seen, "started")] == ["openrouter"]
+
+
+# ---- a language the remote engine does not speak
+
+
+def test_a_language_openrouter_lacks_is_spoken_in_the_default_language(settings: Settings) -> None:
+    """A short English line misdetected as another language must still be heard."""
+    remote = Remote()
+    d, kokoro, seen = lazy_daemon(settings, remote)
+    settings.set("speech.engine", "openrouter")
+    d.start()
+    try:
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Okay then.", "lang": "hi"}))
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    assert not of(seen, "declined")
+    assert remote.inputs == ["Okay then."]
+    language = of(seen, "language")
+    assert language and language[0].data["used"] == "en"
+    assert language[0].data["engine"] == "openrouter"
+    assert of(seen, "started")[0].data["lang"] == "en"
+
+
+def test_a_language_openrouter_lacks_is_declined_when_the_policy_says_decline(
+    settings: Settings,
+) -> None:
+    remote = Remote()
+    d, _, seen = lazy_daemon(settings, remote)
+    settings.set("speech.engine", "openrouter")
+    settings.set("speech.unsupported_language", "decline")
+    d.start()
+    try:
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": "Okay then.", "lang": "hi"}))
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    assert [e.data["reason"] for e in of(seen, "declined")] == ["no voice for hi"]
+    assert remote.inputs == []

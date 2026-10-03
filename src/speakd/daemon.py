@@ -1109,16 +1109,18 @@ class Daemon:
         self._publish("declined", source_id, {"reason": reason})
         self._publish("finished", source_id, {"cancelled": False, "aborted": True})
 
-    def _unsupported_language(self, source_id: str, requested: str) -> str | None:
+    def _unsupported_language(
+        self, source_id: str, requested: str, engine: str = "kokoro"
+    ) -> str | None:
         """Apply `speech.unsupported_language` for a language nothing can speak.
 
         Returns the language to speak instead, or None having already
         published `declined` and `finished` for a caller that must now stop
         -- the same two-event shape `_decline` gives, kept separate because
         this decision needs the text prepared and the language resolved,
-        which only `_speak` has. The fallback is always spoken by Kokoro,
-        whichever engine was in play: Piper only ever speaks languages its
-        own map names.
+        which only `_speak` has. The fallback is spoken by Kokoro, or by the
+        remote engine when `engine` says that is what stood in the way:
+        Piper only ever speaks languages its own map names.
         """
         mode = self.settings.get("speech.unsupported_language")
         if mode == "decline":
@@ -1132,7 +1134,7 @@ class Daemon:
                 "requested": requested,
                 "used": default_lang,
                 "reason": "unsupported",
-                "engine": "kokoro",
+                "engine": engine,
             },
         )
         return default_lang
@@ -2494,15 +2496,34 @@ class Daemon:
         def piper_has_voice(voice: str) -> bool:
             return piper is not None and piper.has_voice(voice)
 
-        choice = choose_engine(
-            lang,
-            str(self.settings.get("speech.engine")),
-            piper_voices,
-            piper_has_voice,
-            piper_ok,
-            kokoro_loaded,
-            **self._remote_choice(),
-        )
+        def choose(for_lang: str) -> EngineChoice | Declined:
+            return choose_engine(
+                for_lang,
+                str(self.settings.get("speech.engine")),
+                piper_voices,
+                piper_has_voice,
+                piper_ok,
+                kokoro_loaded,
+                **self._remote_choice(),
+            )
+
+        choice = choose(lang)
+        if (
+            isinstance(choice, Declined)
+            and not choice.alert
+            and str(self.settings.get("speech.engine")) == "openrouter"
+            and lang not in self.remote.supported_languages()
+        ):
+            # The language is one the remote engine does not speak and no
+            # local model is loaded to take it -- often a short English line
+            # the detector took for Dutch. That is the unsupported-language
+            # case like any other, so the same policy applies as on the
+            # Kokoro path rather than the text being dropped unheard.
+            fallback = self._unsupported_language(job.source_id, lang, "openrouter")
+            if fallback is None:
+                return
+            lang = fallback
+            choice = choose(lang)
         if isinstance(choice, Declined):
             self._decline(job.source_id, choice.reason)
             if choice.alert:
