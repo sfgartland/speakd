@@ -47,7 +47,6 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import gcd
-from pathlib import Path
 
 import numpy as np
 
@@ -100,32 +99,18 @@ _TEXT_FAULTS = frozenset({400, 404, 413, 422})
 # Statuses that will not get better by asking again.
 _FATAL = frozenset({401, 402, 403})
 
-_KEY_ENV = "OPENROUTER_API_KEY"
+KEY_ENV = "OPENROUTER_API_KEY"
+
+# The `secret` setting the key is entered in (see `speakd.settings.secrets`
+# for how a secret is kept: its own 0600 file, never reported back).
+KEY_SETTING = "speech.openrouter_api_key"
+
+NO_KEY = f"no OpenRouter key: enter one in Settings ({KEY_SETTING}) or set {KEY_ENV}"
 
 
-def default_key_path() -> Path:
-    """Where the key may live when not in the environment: 0600, one line."""
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "speakd" / "openrouter-key"
-
-
-def read_api_key(path: Path | None = None) -> str | None:
-    """`$OPENROUTER_API_KEY`, else the key file, else None.
-
-    Never a setting: settings are readable by every client over the socket
-    and the HTTP transport, and a key in them would be handed to anything
-    that asked for `status`. Read on every request rather than once, so a key
-    written after the daemon started is picked up without a restart.
-    """
-    key = os.environ.get(_KEY_ENV, "").strip()
-    if key:
-        return key
-    try:
-        text = (path or default_key_path()).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return text or None
+def env_api_key() -> str | None:
+    """`$OPENROUTER_API_KEY`, or None. The daemon tries it before the setting."""
+    return os.environ.get(KEY_ENV, "").strip() or None
 
 
 class RemoteEngineError(Exception):
@@ -248,7 +233,9 @@ class OpenRouterEngine:
         self,
         model: Callable[[], str] = lambda: DEFAULT_MODEL,
         *,
-        api_key: Callable[[], str | None] = read_api_key,
+        # Called on every request, never cached, so a key entered or cleared
+        # while the daemon runs takes effect at the next sentence.
+        api_key: Callable[[], str | None] = env_api_key,
         post: Post = _urllib_post,
         endpoint: str = ENDPOINT,
         timeout: float = TIMEOUT_SECONDS,
@@ -299,7 +286,7 @@ class OpenRouterEngine:
     def unavailable_reason(self) -> str:
         """Why `available()` says no, in words a listener can act on."""
         if not self.has_key():
-            return f"no OpenRouter key: set {_KEY_ENV} or write it to {default_key_path()}"
+            return NO_KEY
         with self._lock:
             return self._last_error or "OpenRouter is unavailable"
 
@@ -341,7 +328,7 @@ class OpenRouterEngine:
         key = self._api_key()
         if not key:
             raise self._fail(
-                f"no OpenRouter key: set {_KEY_ENV} or write it to {default_key_path()}",
+                NO_KEY,
                 fatal=True,
             )
         body = json.dumps(

@@ -55,8 +55,10 @@ from speakd.synth.openrouter_engine import (
     DEFAULT_VOICE as OPENROUTER_DEFAULT_VOICE,
 )
 from speakd.synth.openrouter_engine import (
+    KEY_SETTING,
+    NO_KEY,
     OpenRouterEngine,
-    default_key_path,
+    env_api_key,
 )
 from speakd.synth.piper_engine import PiperEngine, piper_available
 from speakd.tempo import Tempo
@@ -202,11 +204,22 @@ _CORE_PIPER_SETTINGS: tuple[dict[str, object], ...] = (
     },
 )
 
-# The OpenRouter settings (remote engine). The key is deliberately not among
-# them: settings are readable by every client, so the key comes from
-# `$OPENROUTER_API_KEY` or a file beside the settings (see
-# `openrouter_engine.read_api_key`).
+# The OpenRouter settings (remote engine). The key is a `secret` setting:
+# typed into the window like any other, but kept in its own 0600 file rather
+# than settings.toml, and reported to every client -- the socket, the HTTP
+# transport, the `setting` event -- only as set or not set
+# (`speakd.settings.secrets`).
 _CORE_OPENROUTER_SETTINGS: tuple[dict[str, object], ...] = (
+    {
+        "name": "openrouter_api_key",
+        "type": "secret",
+        "default": "",
+        "label": "OpenRouter API key",
+        "help": (
+            "Kept in a private file, never shown again once saved. "
+            "OPENROUTER_API_KEY in the daemon's environment takes precedence."
+        ),
+    },
     {
         "name": "openrouter_model",
         "type": "string",
@@ -585,7 +598,8 @@ class Daemon:
         # a change to the setting applies to the next sentence.
         if remote is None:
             remote = OpenRouterEngine(
-                model=lambda: str(self.settings.get("speech.openrouter_model"))
+                model=lambda: str(self.settings.get("speech.openrouter_model")),
+                api_key=self._openrouter_key,
             )
         self.remote = remote
         # When the last failure alert sounded; see `_alert`.
@@ -1009,7 +1023,7 @@ class Daemon:
             status["name"] = "openrouter"
         else:
             status["name"] = "kokoro"
-        status["openrouter"] = self.remote.status()
+        status["openrouter"] = {**self.remote.status(), "key_source": self._openrouter_key_source()}
         # Whether the local model has any use under the current settings, so
         # a control surface can say "not needed" instead of offering to load
         # three gigabytes nothing would speak with.
@@ -1450,6 +1464,22 @@ class Daemon:
             kokoro_loaded,
             **self._remote_choice(),
         )
+
+    def _openrouter_key(self) -> str | None:
+        """The key: the environment first, then the secret setting.
+
+        The environment wins so a deployment that injects the key (a service
+        unit, a secrets manager) is never overridden by a stale entry typed
+        into the window; `status` says which one is in use.
+        """
+        return env_api_key() or self.settings.secret(KEY_SETTING)
+
+    def _openrouter_key_source(self) -> str | None:
+        if env_api_key():
+            return "environment"
+        if self.settings.get(KEY_SETTING):
+            return "settings"
+        return None
 
     def _remote_fallback(self) -> bool:
         """Whether a remote failure may be said by a local engine instead."""
@@ -1915,10 +1945,7 @@ class Daemon:
             # be stored and then quietly never used.
             return Response(
                 ok=False,
-                error=(
-                    "no OpenRouter key: set OPENROUTER_API_KEY for the daemon "
-                    f"or write the key to {default_key_path()}"
-                ),
+                error=NO_KEY,
             )
         previous = (
             self.settings.get(key) if key in ("speech.engine", "speech.piper_voice_dir") else None

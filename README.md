@@ -319,8 +319,9 @@ no daemon and reads whichever one is running.
 
 ## Settings
 
-Typed settings — bool, int, float, string, choice, voice, and voice_map (a
-table from language code to voice) — declared by core, by in-process plugins,
+Typed settings — bool, int, float, string, choice, voice, voice_map (a
+table from language code to voice), and secret (an API key: stored privately,
+reported only as set or not; see [OpenRouter](#openrouter)) — declared by core, by in-process plugins,
 and by clients, and stored in one file: `$XDG_CONFIG_HOME/speakd/settings.toml`.
 A key is always `<owner>.<name>`; core's owners are `speech`, `http` and
 `render`, and a client's is its source id up to the first `:` — `zotero:K`
@@ -480,14 +481,34 @@ second of audio; samples of the passage are in `~/Music/speakd-tts-compare/`:
 A hosted engine, for when the voice matters more than staying offline:
 Qwen-Audio-3.0-TTS (Flash by default, Plus by setting) through OpenRouter's
 OpenAI-style speech endpoint. It needs no extra — the request is plain
-`urllib` — only a key, which is deliberately not a setting (settings are
-readable by every client):
+`urllib` — only an API key. Enter it in the window's Settings, or:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...        # for the daemon's environment, or:
-install -m 600 /dev/stdin ~/.config/speakd/openrouter-key <<< "sk-or-..."
+uv run speakctl set speech.openrouter_api_key   # asks for it, without echo
 uv run speakctl set speech.engine openrouter
 ```
+
+**How the key is kept.** It is a `secret` setting, which differs from every
+other setting in three ways:
+
+- It is stored in its own file, `~/.config/speakd/secrets/speech.openrouter_api_key`
+  (mode 0600, in a 0700 directory, private from the moment it is created), and
+  never in `settings.toml` — the file people copy between machines and keep in
+  dotfile repositories.
+- It is never sent back out. Every client — the window, `speakctl`, the
+  Zotero plugin over HTTP, anything subscribed to events — sees only whether a
+  key is set. The window's field is write-only: it empties as soon as the key
+  is sent and then just says "saved". Error messages about a rejected key never
+  repeat it.
+- `speakctl` reads it from a hidden prompt (or piped stdin), since a key given
+  as an argument is visible to every user in `ps` and stays in shell history.
+  Passing it as an argument still works, with a warning.
+
+`OPENROUTER_API_KEY` in the daemon's environment takes precedence over the
+setting, for a service unit or secrets manager that injects it;
+`speakctl status` says which one is in use (`key_source`). The file is not
+encrypted: other users cannot read it, but programs running as you can, as they
+could a session keyring.
 
 `speech.openrouter_model` and `speech.openrouter_voice` choose the model and its
 voice ID (as OpenRouter lists it for that model). Qwen detects the language

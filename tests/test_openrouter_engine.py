@@ -10,7 +10,6 @@ from __future__ import annotations
 import http.client
 import json
 from collections.abc import Sequence
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -23,7 +22,7 @@ from speakd.synth.openrouter_engine import (
     OpenRouterEngine,
     RemoteEngineError,
     Reply,
-    read_api_key,
+    env_api_key,
 )
 
 
@@ -234,16 +233,11 @@ def test_reset_ends_a_holdoff() -> None:
 # ---- the key
 
 
-def test_the_key_comes_from_the_environment_first(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    key_file = tmp_path / "key"
-    key_file.write_text("from-file\n")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "from-env")
-    assert read_api_key(key_file) == "from-env"
+def test_the_default_key_is_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", " from-env ")
+    assert env_api_key() == "from-env"
     monkeypatch.delenv("OPENROUTER_API_KEY")
-    assert read_api_key(key_file) == "from-file"
-    assert read_api_key(tmp_path / "absent") is None
+    assert env_api_key() is None
 
 
 # ---- the choice

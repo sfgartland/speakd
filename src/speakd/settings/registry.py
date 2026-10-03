@@ -13,6 +13,7 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
+from speakd.settings.secrets import SecretStore
 from speakd.settings.store import SettingsStore
 from speakd.settings.types import Declaration, SettingError, parse_declaration, to_json, validate
 
@@ -43,8 +44,20 @@ class _Subscription:
 
 
 class Settings:
-    def __init__(self, store: SettingsStore) -> None:
+    """Declarations by owner, their effective values, and change events.
+
+    A `secret` setting is the one exception to "a value is what was stored":
+    its value lives in a `SecretStore`, never in `settings.toml`, and every
+    way out of here -- `values`, `get`, `set`'s return and its change
+    listeners -- reports it only as `True` (set) or `False` (not set). The
+    value itself is reachable through `secret()` alone, which no verb calls.
+    """
+
+    def __init__(self, store: SettingsStore, secrets: SecretStore | None = None) -> None:
         self._store = store
+        # Beside the values file by default, so a test's tmp_path store gets
+        # a tmp_path secrets directory without asking.
+        self._secrets = secrets or SecretStore(store.values_path.parent / "secrets")
         # owner -> name -> Declaration. Split this way, rather than one flat
         # dict keyed by the full "owner.name", so `undeclare` and `schema`
         # can act on exactly one owner without scanning every key.
@@ -132,7 +145,10 @@ class Settings:
         result: dict[str, object] = {}
         for o in owners:
             for decl in self._by_owner.get(o, {}).values():
-                result[decl.key] = self._effective(decl, stored)
+                if decl.type == "secret":
+                    result[decl.key] = self._secrets.has(decl.key)
+                else:
+                    result[decl.key] = self._effective(decl, stored)
         return result
 
     def _effective(self, decl: Declaration, stored: dict[str, object]) -> object:
@@ -152,7 +168,21 @@ class Settings:
         decl = self._declaration(key)
         if decl is None:
             raise SettingError(f"{key}: no such setting is declared")
+        if decl.type == "secret":
+            return self._secrets.has(key)
         return self._effective(decl, self._store.load_values())
+
+    def secret(self, key: str) -> str | None:
+        """A secret setting's value, or None when it is not set.
+
+        For the code that sends it where it is meant to go, and nothing else:
+        no verb, event or status calls this. Raises on a key that is not a
+        declared secret, so a typo cannot quietly read some other setting.
+        """
+        decl = self._declaration(key)
+        if decl is None or decl.type != "secret":
+            raise SettingError(f"{key}: no such secret is declared")
+        return self._secrets.read(key)
 
     def set(self, key: str, value: object) -> object:
         """Validate, persist, and notify -- in that order, so a value that
@@ -161,7 +191,16 @@ class Settings:
         if decl is None:
             raise SettingError(f"{key}: no such setting is declared")
         validated = validate(decl, value)
-        self._store.write_value(key, validated)
+        if decl.type == "secret":
+            # Empty clears it. Listeners and the caller hear set-or-not,
+            # never the value: a listener publishes on the bus.
+            if validated:
+                self._secrets.write(key, str(validated))
+            else:
+                self._secrets.delete(key)
+            validated = bool(validated)
+        else:
+            self._store.write_value(key, validated)
         for listener in list(self._listeners):
             listener(key, validated)
         return validated

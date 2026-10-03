@@ -332,6 +332,12 @@ export class SimulatedSource {
         options: ["kokoro", "piper", "openrouter"], min: null, max: null, step: null, multiline: false, restart: false,
       },
       {
+        key: "speech.openrouter_api_key", type: "secret", default: false,
+        label: "OpenRouter API key",
+        help: "Kept in a private file, never shown again once saved. OPENROUTER_API_KEY in the daemon's environment takes precedence.",
+        options: null, min: null, max: null, step: null, multiline: false, restart: false,
+      },
+      {
         key: "speech.rate", type: "float", default: 1.0,
         label: "Rate", help: "The listener's speed multiplier.",
         options: null, min: 0.5, max: 2.0, step: 0.05, multiline: false, restart: false,
@@ -682,6 +688,16 @@ export class SimulatedSource {
           result[lang] = voice;
         }
         return result;
+      }
+      case "secret": {
+        // As the daemon: never the value in a message, and what is kept and
+        // reported is only whether one is set.
+        if (typeof value !== "string") fail("expected a string");
+        const trimmed = value.trim();
+        if (/[\s\x00-\x1f\x7f]/.test(trimmed)) {
+          fail("must not contain spaces, line breaks or control characters");
+        }
+        return trimmed.length > 0;
       }
       default:
         return fail(`unknown type ${decl.type}`);
