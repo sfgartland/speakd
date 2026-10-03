@@ -27,8 +27,8 @@ from speakd.player import RecordingPlayer
 from speakd.protocol import Request, Verb
 from speakd.render import RenderJob
 from speakd.settings.registry import Settings
-from speakd.settings.types import SettingError
 from speakd.settings.store import SettingsStore
+from speakd.settings.types import SettingError
 from speakd.synth.fake import FakeEngine
 from speakd.synth.lazy import LazyEngine
 from speakd.synth.openrouter_engine import OpenRouterEngine, Reply

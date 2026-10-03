@@ -746,7 +746,7 @@ def test_a_remote_engine_does_not_wait_for_the_synth_lock() -> None:
     class Fine(FakeEngine):
         remote = True
 
-        def synthesize(  # type: ignore[override]
+        def synthesize(
             self, text: str, voice: str, speed: float, lang: str = "en", *, cancelled: object = None
         ) -> np.ndarray:
             return super().synthesize(text, voice, speed, lang)
