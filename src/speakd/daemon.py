@@ -517,6 +517,9 @@ class _Current:
     units: tuple[Piece, ...]
     index: int = 0
     seek_to: int | None = None
+    # Which engine is making the audio, so an unload of Kokoro knows whether
+    # it is pulling the model out from under this utterance.
+    engine: str = ""
 
 
 class Daemon:
@@ -1158,8 +1161,17 @@ class Daemon:
                 # and an unloaded LazyEngine answers with empty arrays, so
                 # it would go on "speaking" silence to its end. The queue is
                 # kept (drain=False): what waits will choose its engine anew.
+                # Only when Kokoro is what is speaking: this also runs when a
+                # deferred unload finally goes ahead, or the failure mode
+                # changed, while OpenRouter is mid-sentence, and that is no
+                # reason to cut it off.
+                with self._idle:
+                    kokoro_speaking = self._current is not None and self._current.engine == (
+                        "kokoro"
+                    )
                 try:
-                    self._stop_speaking("", drain=False, reason=_DISCARDED_MUTED)
+                    if kokoro_speaking:
+                        self._stop_speaking("", drain=False, reason=_DISCARDED_MUTED)
                 except Exception as exc:  # noqa: BLE001 - the setting already changed
                     self._publish(
                         "error", "", {"message": f"could not silence the player: {exc!r}"}
@@ -2615,7 +2627,7 @@ class Daemon:
         # Installed only now, past the early return above, which would
         # otherwise leave it pointing at an utterance that never spoke --
         # and seek and replay treating that as the one in the room.
-        current = _Current(units=tuple(units))
+        current = _Current(units=tuple(units), engine=engine_name)
         with self._idle:
             self._current = current
         # A stop aimed at playback that has already ended -- the hush during
@@ -2758,6 +2770,7 @@ class Daemon:
                     engine = self.engine
                     voice = self._voice_for(lang, job.profile.voice)
                     engine_name = "kokoro"
+                    current.engine = engine_name
                     cache = AudioCache()
                     continue
                 if result.remote_error is not None and not self._remote_fallback():
@@ -2821,6 +2834,7 @@ class Daemon:
                             lang = fallback
                         voice = self._voice_for(lang, job.profile.voice)
                     engine_name = fallback_choice.engine
+                    current.engine = engine_name
                     played = result.timeline.segments
                     if played:
                         start = played[-1].index + 1

@@ -598,3 +598,25 @@ def test_a_second_alert_inside_the_interval_stays_silent(settings: Settings) -> 
         d.stop()
     assert len(of(seen, "declined")) == 1
     assert chimes(player) == 1
+
+
+def test_unloading_kokoro_does_not_cut_off_openrouter_speech(settings: Settings) -> None:
+    """The unload can run late (a render ended, the failure mode changed)."""
+    d, kokoro, seen = lazy_daemon(settings)
+    player = HoldingPlayer()
+    d.player = player
+    kokoro.load()
+    set_setting(d, "speech.openrouter_on_failure", "local")
+    set_setting(d, "speech.engine", "openrouter")
+    d.start()
+    try:
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": LONG_TEXT}))
+        assert player.playing.wait(timeout=5.0)
+        set_setting(d, "speech.openrouter_on_failure", "alert")
+        assert not kokoro.loaded
+        assert not player.release.is_set(), "the player was stopped"
+        player.release.set()
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    assert [e.data for e in of(seen, "finished")] == [{"cancelled": False, "aborted": False}]
