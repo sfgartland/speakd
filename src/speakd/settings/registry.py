@@ -63,6 +63,9 @@ class Settings:
         # can act on exactly one owner without scanning every key.
         self._by_owner: dict[str, dict[str, Declaration]] = {}
         self._listeners: list[Callable[[str, object], None]] = []
+        # (key, stored value) pairs already warned about: every `get` re-reads
+        # the store, so a stale value would otherwise warn on each read.
+        self._warned_stale: set[tuple[str, str]] = set()
         # Persisted client schemas exist before any client of this run has
         # declared anything, so an offline client's settings still show and
         # can still be edited. A `declare()` later in the same owner's name
@@ -161,7 +164,10 @@ class Settings:
             # a settings.toml edited by hand into something that no longer
             # fits. Either way, a warning and the default -- never a daemon
             # that fails to start over one bad value.
-            _warn(f"{decl.key}: stored value no longer valid ({exc}); using the default")
+            marker = (decl.key, repr(stored[decl.key]))
+            if marker not in self._warned_stale:
+                self._warned_stale.add(marker)
+                _warn(f"{decl.key}: stored value no longer valid ({exc}); using the default")
             return decl.default
 
     def get(self, key: str) -> object:

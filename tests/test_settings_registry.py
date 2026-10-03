@@ -159,3 +159,29 @@ def test_values_with_no_owner_covers_every_declared_owner(store: SettingsStore) 
     values = settings.values()
     assert values["speech.default_language"] == "en"
     assert values["zotero.section_chars"] == 1800
+
+
+def test_a_stale_stored_value_warns_once_not_on_every_read(
+    store: SettingsStore, capsys: pytest.CaptureFixture[str]
+) -> None:
+    settings = Settings(store)
+    settings.declare(
+        "zotero",
+        [{"name": "section_chars", "type": "int", "default": 1800, "label": "n", "help": "h"}],
+        persist=True,
+    )
+    settings.set("zotero.section_chars", 2000)
+    settings.declare(
+        "zotero",
+        [{"name": "section_chars", "type": "bool", "default": False, "label": "n", "help": "h"}],
+        persist=True,
+    )
+    capsys.readouterr()
+    for _ in range(5):
+        settings.get("zotero.section_chars")
+        settings.values("zotero")
+    assert len(capsys.readouterr().err.splitlines()) == 1
+    # A different stale value is news again.
+    store.write_value("zotero.section_chars", 3000)
+    settings.get("zotero.section_chars")
+    assert len(capsys.readouterr().err.splitlines()) == 1
