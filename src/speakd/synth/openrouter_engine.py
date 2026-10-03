@@ -23,6 +23,9 @@ stretched rather than synthesised again.
 
 - A request the provider refused for *this text* (400, 413, 422) raises an
   ordinary exception, which the pipeline already records as one bad segment.
+  Except that a 400 saying the model does not exist, or two 400s running
+  (a bad voice answers every sentence alike), is a wrong setting, not a bad
+  sentence, and is an engine failure so it is alerted rather than repeated.
 - Anything that says the engine itself is unusable right now -- no key, a key
   refused (401/403), credits gone (402), rate limiting or an upstream outage
   that outlasts one retry (429, 5xx), or no network at all -- raises
@@ -96,6 +99,9 @@ FATAL_HOLDOFF_SECONDS = 600.0
 
 # Statuses that mean the request itself, not the engine, was at fault.
 _TEXT_FAULTS = frozenset({400, 404, 413, 422})
+# Consecutive 400s that mean the settings, not the text. A bad voice answers
+# a bare "Provider returned 400"; only a bad model says so in words.
+_CONFIG_FAULT_REFUSALS = 2
 # Statuses that will not get better by asking again.
 _FATAL = frozenset({401, 402, 403})
 
@@ -262,6 +268,10 @@ class OpenRouterEngine:
         # back to ignores a transient holdoff -- see `available`.
         self._held_fatal = False
         self._last_error: str | None = None
+        # 400s answered back to back. One is a sentence the provider disliked;
+        # two running are a model or voice it does not know, which every
+        # sentence would meet in turn.
+        self._refused_running = 0
         # Characters sent, for `status`: the provider bills per character.
         self._chars_sent = 0
 
@@ -300,6 +310,7 @@ class OpenRouterEngine:
             self._unavailable_until = 0.0
             self._held_fatal = False
             self._last_error = None
+            self._refused_running = 0
 
     def status(self) -> dict[str, object]:
         with self._lock:
@@ -398,9 +409,26 @@ class OpenRouterEngine:
             if 200 <= reply.status < 300:
                 with self._lock:
                     self._last_error = None
+                    self._refused_running = 0
                 return reply
+            if reply.status == 400:
+                message = _error_message(reply)
+                with self._lock:
+                    self._refused_running += 1
+                    repeated = self._refused_running >= _CONFIG_FAULT_REFUSALS
+                if "does not exist" in message:
+                    # The provider names the fault: no sentence can succeed.
+                    raise self._fail(message, fatal=True)
+                if repeated:
+                    raise self._fail(
+                        f"{message} (refused twice running: check the model and voice)",
+                        fatal=True,
+                    )
+                raise ValueError(message)
             if reply.status in _TEXT_FAULTS:
                 # This text, not the engine: one bad segment.
+                with self._lock:
+                    self._refused_running = 0
                 raise ValueError(_error_message(reply))
             if reply.status in _FATAL:
                 raise self._fail(_error_message(reply), fatal=True)

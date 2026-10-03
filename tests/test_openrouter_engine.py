@@ -286,3 +286,43 @@ def test_a_cancelled_utterance_is_not_retried_after_a_dropped_socket() -> None:
         e.synthesize("Hello.", "v", 1.0, cancelled=lambda: True)
     assert len(script.requests) == 1 and sleeps == []
     assert e.available()
+
+
+# ---- a wrong model or voice is a configuration fault
+
+
+def bad_request(message: str = "Provider returned 400") -> Reply:
+    body = json.dumps({"error": {"message": message, "code": 400}}).encode()
+    return Reply(400, "application/json", body)
+
+
+def test_a_model_that_does_not_exist_is_an_engine_failure_at_once() -> None:
+    e, _ = engine(Script([bad_request("Model qwen/nosuch-model does not exist")]))
+    with pytest.raises(RemoteEngineError, match="does not exist") as info:
+        e.synthesize("Hello.", "v", 1.0)
+    assert info.value.fatal
+    assert not e.available()
+
+
+def test_two_refusals_running_are_a_configuration_fault() -> None:
+    """A bad voice answers every request alike; one bad sentence does not."""
+    e, _ = engine(Script([bad_request(), bad_request()]))
+    with pytest.raises(ValueError) as first:
+        e.synthesize("One.", "v", 1.0)
+    assert not isinstance(first.value, RemoteEngineError)
+    with pytest.raises(RemoteEngineError, match="model and voice") as second:
+        e.synthesize("Two.", "v", 1.0)
+    assert second.value.fatal
+    assert not e.available()
+
+
+def test_a_refusal_between_good_requests_stays_one_bad_segment() -> None:
+    e, _ = engine(Script([bad_request(), ok(), bad_request(), ok()]))
+    for text, good in (("One.", False), ("Two.", True), ("Three.", False), ("Four.", True)):
+        if good:
+            assert e.synthesize(text, "v", 1.0).size > 0
+        else:
+            with pytest.raises(ValueError) as info:
+                e.synthesize(text, "v", 1.0)
+            assert not isinstance(info.value, RemoteEngineError)
+    assert e.available()
