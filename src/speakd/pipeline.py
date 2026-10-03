@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -333,10 +334,9 @@ def speak(
                 fixed = bool(getattr(engine, "fixed_speed", False))
                 # A remote engine can stop waiting on a hushed utterance: it
                 # is told, so it skips a retry nobody will hear.
+                remote = bool(getattr(engine, "remote", False))
                 extra: dict[str, Any] = (
-                    {"cancelled": lambda: cancel.is_set() or stop.is_set()}
-                    if getattr(engine, "remote", False)
-                    else {}
+                    {"cancelled": lambda: cancel.is_set() or stop.is_set()} if remote else {}
                 )
                 if fixed:
                     made_at = 1.0 / speed if speed > 0 else 1.0
@@ -350,7 +350,11 @@ def speak(
                 # previous segment, and the lock must never be held for
                 # longer than a synthesize.
                 try:
-                    with lock:
+                    # Not for a remote engine: the lock keeps one in-process
+                    # model from running twice at once, and a network request
+                    # has no such model -- holding it would make a render's
+                    # sentence and a live one wait on each other's round trip.
+                    with nullcontext() if remote else lock:
                         started = time.monotonic()
                         audio = engine.synthesize(
                             unit.spoken, voice, 1.0 if fixed else speed * made_at, lang, **extra

@@ -929,3 +929,25 @@ def test_sentences_round_trip_and_an_old_manifest_without_them_resumes(tmp_path:
     save_manifest(old, old_dir)
     assert "sentences" not in json.loads((old_dir / "parts.json").read_text())[0]
     assert load_manifest(old_dir).parts[0].sentences is None
+
+
+def test_a_remote_engine_is_called_without_the_synth_lock(tmp_path: Path) -> None:
+    """The lock serialises one in-process model; a network call needs none."""
+    lock = threading.Lock()
+    observed: list[bool] = []
+
+    class RemoteEngine(FakeEngine):
+        remote = True
+
+        def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
+            observed.append(lock.locked())
+            return super().synthesize(text, voice, speed, lang)
+
+    queue = RenderQueue(RemoteEngine(), lock, busy=lambda: False, work_root=tmp_path / "renders")
+    job = _job(tmp_path)
+    queue.submit(job)
+
+    assert until(lambda: state_of(queue, job.id) in ("done", "failed"))
+    assert state_of(queue, job.id) == "done"
+    assert observed == [False, False, False, False]
+    queue.stop()

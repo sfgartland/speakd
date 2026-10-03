@@ -735,3 +735,30 @@ def test_a_remote_failure_without_a_hush_still_surfaces() -> None:
     engine = CancellingRemote(threading.Event())
     result = speak([piece("One thing.")], engine, RecordingPlayer())
     assert result.remote_error is not None
+
+
+def test_a_remote_engine_does_not_wait_for_the_synth_lock() -> None:
+    """A render holding the lock must not stall a network request behind it."""
+    lock = threading.Lock()
+    lock.acquire()
+    result: list[SpeechResult] = []
+
+    class Fine(FakeEngine):
+        remote = True
+
+        def synthesize(  # type: ignore[override]
+            self, text: str, voice: str, speed: float, lang: str = "en", *, cancelled: object = None
+        ) -> np.ndarray:
+            return super().synthesize(text, voice, speed, lang)
+
+    worker = threading.Thread(
+        target=lambda: result.append(
+            speak([piece("One.")], Fine(), RecordingPlayer(), synth_lock=lock)
+        ),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=3.0)
+    lock.release()
+    assert not worker.is_alive()
+    assert len(result[0].timeline.segments) == 1

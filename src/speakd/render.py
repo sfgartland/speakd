@@ -34,6 +34,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
@@ -951,7 +952,10 @@ class RenderQueue:
                 # live pipeline's producer takes the same one, so a live
                 # sentence never runs against a render sentence -- and never
                 # waits on more of the render than this one call.
-                with self._synth_lock:
+                # Not taken for a remote engine, which has no in-process model
+                # to protect and would only make live speech wait on a
+                # sentence's network round trip.
+                with nullcontext() if getattr(engine, "remote", False) else self._synth_lock:
                     # A manifest written before renders carried a resolved language
                     # has `lang` empty; English is what those were spoken in.
                     audio = engine.synthesize(text, part.voice, job.speed, job.lang or "en")
