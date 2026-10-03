@@ -532,3 +532,30 @@ def test_gemini_speaks_a_language_qwen_lacks_without_falling_back(settings: Sett
     assert not of(seen, "language") and not of(seen, "declined")
     assert of(seen, "started")[0].data["lang"] == "hi"
     assert remote.inputs == ["Hallo."]
+
+
+def test_a_voice_with_a_length_cap_never_gets_a_longer_unit(settings: Settings) -> None:
+    """Gemini drops whatever it is given past about 80 s of audio, without an error."""
+    d, _, seen = lazy_daemon(settings)
+    set_setting(d, "speech.engine", "openrouter")
+    set_setting(d, "speech.openrouter_voice", "Charon")
+    set_setting(d, "speech.openrouter_unit_chars", 600)
+    one_long_sentence = " ".join(f"word{n}," for n in range(1, 80)) + " end."
+    assert 600 < len(one_long_sentence) < 750
+    short = " ".join(f"Sentence number {n} is here." for n in range(1, 40))
+    d.start()
+    try:
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": one_long_sentence}))
+        d.handle(Request(verb=Verb.ENQUEUE, source_id="s", payload={"text": short}))
+        assert d.wait_idle(timeout=10.0)
+    finally:
+        d.stop()
+    lengths = [len(str(s["text"])) for e in of(seen, "started") for s in e.data["segments"]]
+    assert len(lengths) > 2 and max(lengths) <= 600
+    # And the same limit holds for the sentences a render is made of.
+    assert all(
+        len(s) <= 600
+        for s in d._render_sentences(
+            one_long_sentence + " " + short, d.profile_for("x"), "openrouter"
+        )
+    )

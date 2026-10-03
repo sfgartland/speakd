@@ -54,6 +54,7 @@ from speakd.synth.openrouter_engine import (
     NO_KEY,
     OpenRouterEngine,
     env_api_key,
+    max_unit_chars,
 )
 from speakd.synth.openrouter_engine import VOICE_MODELS as OPENROUTER_VOICE_MODELS
 from speakd.synth.piper_engine import PiperEngine, piper_available
@@ -1554,7 +1555,15 @@ class Daemon:
         """
         if engine_name == "openrouter":
             size = cast(int, self.settings.get("speech.openrouter_unit_chars"))
-            units = segmenter.segment(pieces, size, merge_chars=size)
+            split = merge = size
+            cap = max_unit_chars(str(self.settings.get("speech.openrouter_voice")))
+            if cap is not None:
+                # A hard limit, not a preference: the model drops the rest.
+                # The segmenter keeps a sentence whole up to its slack over
+                # `max_chars`, so split earlier to stay under the cap.
+                merge = min(size, cap)
+                split = min(size, int(cap / segmenter.WHOLE_SENTENCE_SLACK))
+            units = segmenter.segment(pieces, split, merge_chars=merge)
         else:
             merge = cast(int, self.settings.get("speech.merge_chars"))
             units = segmenter.segment(pieces, merge_chars=merge)

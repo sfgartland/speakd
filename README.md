@@ -517,7 +517,7 @@ model, since each voice belongs to one model and the others refuse it:
 |---|---|---|---|
 | `loongjohn` (default) | `qwen/qwen-audio-3.0-tts-flash` | Kokoro's set plus German, Russian, Korean, Arabic | $15 per million characters, about $0.69 per hour of speech (about 46k characters) |
 | `longanlingxin` | `qwen/qwen-audio-3.0-tts-plus` | the same | $20 per million characters, about $0.92 per hour |
-| `Charon` | `google/gemini-3.8-flash-tts` | those and Hindi, Dutch, Polish, Swedish, Danish, Norwegian | about $0.80 per hour |
+| `Charon` | `google/gemini-3.8-flash-tts` | those and Hindi, Dutch, Polish, Swedish, Danish, Norwegian | billed by audio length, about $1.05 per hour; units are capped at 600 characters, because it silently drops text past about 80 s of audio |
 
 `speakctl status` reports the model in use, and the languages it lists follow the
 voice. An older `speech.openrouter_model` in `settings.toml` is ignored. Each

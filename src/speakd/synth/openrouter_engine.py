@@ -70,6 +70,17 @@ VOICE_MODELS: dict[str, str] = {
 }
 
 
+# Gemini quietly drops whatever text lies past about 80 s of audio, with no
+# error (1000 chars made 81 s, 2000 made 78 s), so a unit must stay well
+# inside that. Qwen has no known cap (2000 chars made its full 155 s).
+VOICE_MAX_CHARS: dict[str, int] = {"Charon": 600}
+
+
+def max_unit_chars(voice: str) -> int | None:
+    """The longest unit `voice`'s model will speak whole, or None for no known limit."""
+    return VOICE_MAX_CHARS.get(voice)
+
+
 def model_for(voice: str) -> str:
     """The model that serves `voice`; the default model for one not listed."""
     return VOICE_MODELS.get(voice or DEFAULT_VOICE, DEFAULT_MODEL)
