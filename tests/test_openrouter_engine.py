@@ -264,3 +264,25 @@ def test_choose_engine_takes_the_remote_engine_only_when_usable_and_named() -> N
     assert choose("openrouter", "loongjohn", "hi") == EngineChoice("kokoro", None)
     # Not named by the setting: never chosen.
     assert choose("kokoro", "loongjohn") == EngineChoice("kokoro", None)
+
+
+# ---- a hush while the request is in flight
+
+
+def test_a_cancelled_utterance_is_not_retried_or_slept_for() -> None:
+    script = Script([Reply(503, "", b""), ok()])
+    e, sleeps = engine(script)
+    with pytest.raises(RemoteEngineError):
+        e.synthesize("Hello.", "v", 1.0, cancelled=lambda: True)
+    assert len(script.requests) == 1 and sleeps == []
+    # The failure was the hush's doing, not evidence about the network.
+    assert e.available()
+
+
+def test_a_cancelled_utterance_is_not_retried_after_a_dropped_socket() -> None:
+    script = Script([ConnectionResetError("reset"), ok()])
+    e, sleeps = engine(script)
+    with pytest.raises(RemoteEngineError):
+        e.synthesize("Hello.", "v", 1.0, cancelled=lambda: True)
+    assert len(script.requests) == 1 and sleeps == []
+    assert e.available()

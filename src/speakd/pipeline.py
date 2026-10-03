@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 import numpy as np
 
@@ -330,6 +331,13 @@ def speak(
                 # tempo both -- and a tempo change never sends the text off to
                 # be made again.
                 fixed = bool(getattr(engine, "fixed_speed", False))
+                # A remote engine can stop waiting on a hushed utterance: it
+                # is told, so it skips a retry nobody will hear.
+                extra: dict[str, Any] = (
+                    {"cancelled": lambda: cancel.is_set() or stop.is_set()}
+                    if getattr(engine, "remote", False)
+                    else {}
+                )
                 if fixed:
                     made_at = 1.0 / speed if speed > 0 else 1.0
                 else:
@@ -345,7 +353,7 @@ def speak(
                     with lock:
                         started = time.monotonic()
                         audio = engine.synthesize(
-                            unit.spoken, voice, 1.0 if fixed else speed * made_at, lang
+                            unit.spoken, voice, 1.0 if fixed else speed * made_at, lang, **extra
                         )
                 except UnsupportedLanguage as exc:
                     # Distinct from the except below: this is not "one bad
@@ -426,6 +434,12 @@ def speak(
                 piper_error = item
                 break
             if isinstance(item, RemoteEngineError):
+                if cancel.is_set():
+                    # A request that finished or failed after the hush: the
+                    # listener already moved on, so this is neither an error
+                    # to report nor a reason to chime or speak on locally.
+                    player.stop()
+                    break
                 # As above, but possibly mid-utterance: what played so far is
                 # in the timeline, and `expected` is where the caller resumes.
                 remote_error = item

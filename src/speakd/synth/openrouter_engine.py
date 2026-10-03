@@ -228,6 +228,10 @@ class OpenRouterEngine:
     # Speed is the player's business here, never the request's; see the
     # module docstring.
     fixed_speed = True
+    # Network I/O, not a model in this process: nothing to serialise behind
+    # the synthesis lock, and a request must not make a render or a live
+    # sentence wait behind it. The pipeline reads this.
+    remote = True
 
     def __init__(
         self,
@@ -322,7 +326,17 @@ class OpenRouterEngine:
 
     # -- synthesis ----------------------------------------------------------
 
-    def synthesize(self, text: str, voice: str, speed: float, lang: str = "en") -> np.ndarray:
+    def synthesize(
+        self,
+        text: str,
+        voice: str,
+        speed: float,
+        lang: str = "en",
+        *,
+        cancelled: Callable[[], bool] = lambda: False,
+    ) -> np.ndarray:
+        """`cancelled` is asked before a retry: an utterance that was hushed
+        while the request was in flight has no one left to wait for it."""
         if not text.strip():
             return np.zeros(0, dtype=np.float32)
         key = self._api_key()
@@ -346,7 +360,7 @@ class OpenRouterEngine:
             "HTTP-Referer": "https://github.com/sfgartland/speakd",
             "X-Title": "speakd",
         }
-        reply = self._request(headers, body)
+        reply = self._request(headers, body, cancelled)
         with self._lock:
             self._chars_sent += len(text)
         if not reply.body:
@@ -361,12 +375,22 @@ class OpenRouterEngine:
         audio = _resample(pcm, rate, self.sample_rate)
         return trim_silence(np.asarray(audio, dtype=np.float32), self.sample_rate)
 
-    def _request(self, headers: dict[str, str], body: bytes) -> Reply:
-        """POST once, and once more for what may be momentary."""
+    def _request(
+        self, headers: dict[str, str], body: bytes, cancelled: Callable[[], bool]
+    ) -> Reply:
+        """POST once, and once more for what may be momentary.
+
+        Not once more when `cancelled`: the retry would sleep up to three
+        seconds and ask again for audio nobody will hear. The failure raised
+        instead is not recorded as a holdoff, since it says nothing about the
+        network, only that the listener moved on.
+        """
         for attempt in (0, 1):
             try:
                 reply = self._post(self._endpoint, headers, body, self._timeout)
             except (OSError, http.client.HTTPException) as exc:
+                if cancelled():
+                    raise RemoteEngineError(f"cancelled: {exc}") from exc
                 if attempt == 0:
                     self._sleep(RETRY_DELAY_SECONDS)
                     continue
@@ -381,6 +405,8 @@ class OpenRouterEngine:
             if reply.status in _FATAL:
                 raise self._fail(_error_message(reply), fatal=True)
             if attempt == 0 and (reply.status == 429 or reply.status >= 500):
+                if cancelled():
+                    raise RemoteEngineError(f"cancelled: {_error_message(reply)}")
                 delay = reply.retry_after if reply.retry_after is not None else RETRY_DELAY_SECONDS
                 self._sleep(min(max(delay, 0.0), MAX_RETRY_DELAY_SECONDS))
                 continue

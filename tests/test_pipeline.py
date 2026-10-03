@@ -2,6 +2,7 @@
 
 import threading
 import time
+from collections.abc import Callable
 
 import numpy as np
 import pytest
@@ -11,6 +12,7 @@ from speakd.model import Piece, Segment, Span
 from speakd.pipeline import AudioCache, SpeechResult, speak
 from speakd.player import FakeSink, RecordingPlayer, StreamingPlayer
 from speakd.synth.fake import FakeEngine
+from speakd.synth.openrouter_engine import RemoteEngineError
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
 
@@ -690,3 +692,46 @@ def test_audio_already_made_is_not_waited_for() -> None:
         on_waiting=waits.append,
     )
     assert waits == []
+
+
+class CancellingRemote(FakeEngine):
+    """A remote engine that is hushed while a request is in flight, then fails."""
+
+    remote = True
+
+    def __init__(self, cancel: threading.Event) -> None:
+        super().__init__()
+        self.cancel = cancel
+        self.asked_if_cancelled: list[bool] = []
+
+    def synthesize(
+        self,
+        text: str,
+        voice: str,
+        speed: float,
+        lang: str = "en",
+        *,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> np.ndarray:
+        self.cancel.set()
+        self.asked_if_cancelled.append(bool(cancelled and cancelled()))
+        raise RemoteEngineError("HTTP 503")
+
+
+def test_a_remote_failure_after_a_hush_is_dropped_quietly() -> None:
+    """The listener hushed this; a late failure is not news and not a fallback."""
+    cancel = threading.Event()
+    engine = CancellingRemote(cancel)
+    player = RecordingPlayer()
+    result = speak([piece("One thing. Another thing.")], engine, player, cancel=cancel)
+    assert result.remote_error is None
+    assert result.cancelled and not result.aborted
+    assert result.errors == []
+    # And the engine was told, so it can skip a retry nobody is waiting for.
+    assert engine.asked_if_cancelled == [True]
+
+
+def test_a_remote_failure_without_a_hush_still_surfaces() -> None:
+    engine = CancellingRemote(threading.Event())
+    result = speak([piece("One thing.")], engine, RecordingPlayer())
+    assert result.remote_error is not None
