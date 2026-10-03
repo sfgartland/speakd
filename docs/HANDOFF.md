@@ -1,10 +1,15 @@
 # Handoff — resume here
 
-Last updated 2026-10-01. `main` **is pushed** to https://github.com/sfgartland/speakd
-(as of `e4aa7d8`, and again with this handoff).
+Last updated 2026-10-03. `main` **is pushed** to https://github.com/sfgartland/speakd.
+The branch `claude/beautiful-hypatia-wg0nzy` is pushed too, **not merged**, with
+a draft PR open against `main`.
 
-**Resume here first:** the Zotero audiobook export is merged. Next is phase 3,
-language in the clients (see "Next"). Nothing is mid-edit.
+**Resume here first:** check out `claude/beautiful-hypatia-wg0nzy` and work
+through "Next → 0. Verify and merge the OpenRouter branch". It adds OpenRouter
+as a hosted TTS engine, a secret setting for its API key, and better sentence
+splitting. It was built in a cloud session that could not reach openrouter.ai
+or build the desktop app, so nothing has been tried against the real API yet.
+After that, phase 3 (see "Next → 1"). Nothing is mid-edit.
 
 ## What works now
 
@@ -165,7 +170,79 @@ reviewed, then an Opus whole-branch review and one fix wave.
 - Re-run `clients/codex/install.sh` and `clients/opencode/install.sh` so the
   skill reaches those agents.
 
+## Built 2026-10-03 on `claude/beautiful-hypatia-wg0nzy` (not merged)
+
+Five commits, built in a cloud session. Lint, mypy and pytest (1525) are green.
+The window's browser check passes apart from Google Fonts, which the sandbox
+blocks.
+- **Sentence splitting** (`segmenter.py`): a sentence up to 1.25× the 90-char
+  cap stays whole; longer ones split into even parts at clauses (no fragment
+  under 24 chars); word splits are balanced. `speech.merge_chars` (default 0,
+  off) joins short sentences after the first for local engines.
+- **OpenRouter engine** (`synth/openrouter_engine.py`): Qwen-Audio-3.0-TTS
+  Flash by default, a stdlib `urllib` POST asking for PCM, resampled to 24 kHz.
+  - Units are segmented after the engine is chosen. OpenRouter gets whole
+    sentences merged up to `speech.openrouter_unit_chars` (300); the first unit
+    is one sentence.
+  - Speed is never sent: audio is made at 1.0, and the player stretches it to
+    profile speed × tempo, so a tempo change or a seek never re-requests.
+  - Errors: 400 is one bad segment; 401/402/403 are fatal (10-minute holdoff);
+    429/5xx/network get one ≤3 s retry.
+  - `speech.openrouter_on_failure`:
+    - `alert` (default): the utterance ends, an `error` event, a chime (at most
+      every 10 s), Kokoro stays unloaded.
+    - `silent`: the same without the chime.
+    - `local`: the old fallback to Kokoro/Piper from the next unit.
+  - **Kokoro is not loaded** at start, and is unloaded on switching, while
+    OpenRouter speaks without fallback (`kokoro_wanted()`). `status.engine`
+    has `model_needed`, and the window's model button reads "Model not needed".
+  - ru/ko/ar are recognised and detected.
+- **The API key is a new `secret` setting type** (`settings/secrets.py`):
+  `speech.openrouter_api_key`, stored in `~/.config/speakd/secrets/<key>`
+  (0600, dir 0700), never in settings.toml.
+  - Every verb, event and status reports it only as set/not set; only
+    `Settings.secret()` returns it.
+  - `speakctl set speech.openrouter_api_key` prompts without echo; an argument
+    still works, with a warning.
+  - The window has a write-only password field with Clear.
+  - `OPENROUTER_API_KEY` in the environment wins; `status` gives `key_source`.
+
 ## Next
+
+### 0. Verify and merge the OpenRouter branch
+
+Check out `claude/beautiful-hypatia-wg0nzy`, `uv sync --extra kokoro --extra piper --extra lang`.
+1. **The real API.** These are unverified assumptions. Check them with one
+   `curl -sD- https://openrouter.ai/api/v1/audio/speech -H "Authorization: Bearer $KEY"
+   -d '{"model":"qwen/qwen-audio-3.0-tts-flash","input":"Hello there.","voice":"loongjohn","response_format":"pcm"}' -o /tmp/x.pcm`:
+   - Is the voice `loongjohn` accepted? If not, change `DEFAULT_VOICE` in
+     `openrouter_engine.py` to one OpenRouter lists for the model.
+   - Does `Content-Type` carry `rate=`? Without it 24 kHz is assumed, and a
+     different real rate plays at the wrong pitch. Fix `_pcm_rate`'s default if so.
+   - Is the body raw s16le PCM, not WAV with a header or JSON?
+2. **Live in the daemon:** restart the app, then:
+   - Enter the key in Settings and switch `speech.engine` to `openrouter`.
+     Check memory drops (Kokoro unloaded) and a long agent reply speaks in
+     long units.
+   - Change the tempo mid-sentence (no re-request).
+   - Try a bad key (chime + error line).
+   - Pull the network mid-utterance (chime; the next message retries).
+   - Switch back to kokoro (it reloads).
+3. **Build the app:** `cd clients/gui/app/src-tauri && cargo build --release`.
+4. **Browser check:** `clients/gui/test-browser/settings_check.py` launches
+   `channel="chrome"`; it passed here only with Chromium's `executable_path`.
+5. Whole-branch review (Opus), then merge to `main`, push, and delete this
+   section's "not merged" notes.
+
+Known gaps carried with the branch, none blocking:
+- A hush stops audio at once, but the next utterance waits for an in-flight
+  OpenRouter request (usually about 1 s, at most the 20 s timeout).
+- A render through OpenRouter ignores the profile speed (no player stretch),
+  and fails (resumably) on an outage. A 500k-char book costs about $7.50 on Flash.
+- With `on_failure=local`, Kokoro may get one 300-char unit after the switch.
+- The secret file is not encrypted (keyring would need a dependency). The
+  socket keeps its default permissions, so another local user could at most
+  overwrite the key, never read it.
 
 ### 1. Phase 3, language in the clients
 
@@ -174,6 +251,9 @@ reviewed, then an Opus whole-branch review and one fix wave.
 - Depends on `status.languages.supported` being right while the model loads. That's fixed.
 - **Includes Piper Task 6's Zotero half** (the plugin's language-cache
   invalidation on a `speech.engine` setting event) — deferred until phase 3.
+  Once the OpenRouter branch is merged, `openrouter` changes the supported
+  languages too (adds de/ru/ko/ar), and so does the API key being set or
+  cleared.
 
 **How to run the work:** background subagents, one worktree per phase.
 - Sonnet for closely specified tasks.
