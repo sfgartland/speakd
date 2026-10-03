@@ -60,6 +60,20 @@ ENDPOINT = "https://openrouter.ai/api/v1/audio/speech"
 DEFAULT_MODEL = "qwen/qwen-audio-3.0-tts-flash"
 DEFAULT_VOICE = "loongjohn"
 
+# Each voice belongs to one model: a voice sent to the other model is a
+# 400 on every request. So the listener chooses a voice and the model
+# follows from it, rather than the two being set apart and able to disagree.
+VOICE_MODELS: dict[str, str] = {
+    "loongjohn": "qwen/qwen-audio-3.0-tts-flash",
+    "longanlingxin": "qwen/qwen-audio-3.0-tts-plus",
+}
+
+
+def model_for(voice: str) -> str:
+    """The model that serves `voice`; the default model for one not listed."""
+    return VOICE_MODELS.get(voice or DEFAULT_VOICE, DEFAULT_MODEL)
+
+
 # What Qwen-Audio-3.0-TTS speaks, as this project's codes. It detects the
 # language from the text itself, so none of this is sent: it is what the
 # daemon's language check reads before choosing the engine.
@@ -241,7 +255,7 @@ class OpenRouterEngine:
 
     def __init__(
         self,
-        model: Callable[[], str] = lambda: DEFAULT_MODEL,
+        voice: Callable[[], str] = lambda: DEFAULT_VOICE,
         *,
         # Called on every request, never cached, so a key entered or cleared
         # while the daemon runs takes effect at the next sentence.
@@ -252,9 +266,10 @@ class OpenRouterEngine:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        # A callable, not a string: the model is a setting, and reading it per
-        # request means a change applies to the next sentence with no rebuild.
-        self._model = model
+        # A callable, not a string: the voice is a setting. Each request is
+        # sent with the voice the pipeline hands it; this is only what
+        # `status` reports the model for.
+        self._voice = voice
         self._api_key = api_key
         self._post = post
         self._endpoint = endpoint
@@ -317,7 +332,7 @@ class OpenRouterEngine:
             held = max(0.0, self._unavailable_until - self._clock())
             return {
                 "key": self.has_key(),
-                "model": self._model(),
+                "model": model_for(self._voice()),
                 "available": self.has_key() and held == 0.0,
                 "retry_in": round(held, 1),
                 "last_error": self._last_error,
@@ -358,7 +373,7 @@ class OpenRouterEngine:
             )
         body = json.dumps(
             {
-                "model": self._model(),
+                "model": model_for(voice),
                 "input": text,
                 "voice": voice or DEFAULT_VOICE,
                 "response_format": "pcm",

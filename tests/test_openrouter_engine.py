@@ -93,13 +93,24 @@ def test_the_request_names_model_voice_and_pcm_and_never_a_speed() -> None:
     }
 
 
-def test_the_model_is_read_per_request() -> None:
-    script = Script([ok(), ok()])
-    models = iter(["a/one", "b/two"])
-    e = OpenRouterEngine(model=lambda: next(models), api_key=lambda: "k", post=script)
-    e.synthesize("One.", "v", 1.0)
-    e.synthesize("Two.", "v", 1.0)
-    assert [r[2]["model"] for r in script.requests] == ["a/one", "b/two"]
+@pytest.mark.parametrize(
+    ("voice", "model"),
+    [
+        ("loongjohn", "qwen/qwen-audio-3.0-tts-flash"),
+        ("longanlingxin", "qwen/qwen-audio-3.0-tts-plus"),
+        ("", DEFAULT_MODEL),
+    ],
+)
+def test_the_voice_decides_the_model(voice: str, model: str) -> None:
+    script = Script([ok()])
+    e, _ = engine(script)
+    e.synthesize("One.", voice, 1.0)
+    assert script.requests[0][2]["model"] == model
+
+
+def test_status_reports_the_model_the_voice_setting_implies() -> None:
+    e = OpenRouterEngine(voice=lambda: "longanlingxin", api_key=lambda: "k", post=Script([]))
+    assert e.status()["model"] == "qwen/qwen-audio-3.0-tts-plus"
 
 
 def test_blank_text_sends_nothing() -> None:

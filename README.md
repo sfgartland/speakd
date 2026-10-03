@@ -479,7 +479,7 @@ second of audio; samples of the passage are in `~/Music/speakd-tts-compare/`:
 ## OpenRouter
 
 A hosted engine, for when the voice matters more than staying offline:
-Qwen-Audio-3.0-TTS (Flash by default, Plus by setting) through OpenRouter's
+Qwen-Audio-3.0-TTS through OpenRouter's
 OpenAI-style speech endpoint. It needs no extra — the request is plain
 `urllib` — only an API key. Enter it in the window's Settings, or:
 
@@ -510,9 +510,13 @@ setting, for a service unit or secrets manager that injects it;
 encrypted: other users cannot read it, but programs running as you can, as they
 could a session keyring.
 
-`speech.openrouter_model` and `speech.openrouter_voice` choose the model and its
-voice ID (as OpenRouter lists it for that model). Qwen detects the language
-itself and speaks German, Russian, Korean and Arabic besides Kokoro's set.
+`speech.openrouter_voice` chooses between two voices, and the voice decides the
+model, since each voice belongs to one model and the other refuses it:
+`loongjohn` (the default) is served by `qwen/qwen-audio-3.0-tts-flash`, and
+`longanlingxin` by `qwen/qwen-audio-3.0-tts-plus`. `speakctl status` reports the
+model in use. An older `speech.openrouter_model` in `settings.toml` is ignored.
+Qwen detects the language itself and speaks German, Russian, Korean and Arabic
+besides Kokoro's set.
 
 **Units are long.** A hosted model is far faster than real time, so where a
 local engine gets one sentence at a time, OpenRouter gets whole sentences merged

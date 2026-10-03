@@ -48,18 +48,14 @@ from speakd.settings.registry import Settings
 from speakd.settings.store import SettingsStore
 from speakd.settings.types import SettingError
 from speakd.synth import Synthesizer
-from speakd.synth.openrouter_engine import (
-    DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL,
-)
-from speakd.synth.openrouter_engine import (
-    DEFAULT_VOICE as OPENROUTER_DEFAULT_VOICE,
-)
+from speakd.synth.openrouter_engine import DEFAULT_VOICE as OPENROUTER_DEFAULT_VOICE
 from speakd.synth.openrouter_engine import (
     KEY_SETTING,
     NO_KEY,
     OpenRouterEngine,
     env_api_key,
 )
+from speakd.synth.openrouter_engine import VOICE_MODELS as OPENROUTER_VOICE_MODELS
 from speakd.synth.piper_engine import PiperEngine, piper_available
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
@@ -221,18 +217,15 @@ _CORE_OPENROUTER_SETTINGS: tuple[dict[str, object], ...] = (
         ),
     },
     {
-        "name": "openrouter_model",
-        "type": "string",
-        "default": OPENROUTER_DEFAULT_MODEL,
-        "label": "OpenRouter model",
-        "help": "The text-to-speech model OpenRouter is asked for.",
-    },
-    {
         "name": "openrouter_voice",
-        "type": "string",
+        "type": "choice",
         "default": OPENROUTER_DEFAULT_VOICE,
         "label": "OpenRouter voice",
-        "help": "The model's voice ID, as OpenRouter lists it for that model.",
+        "help": (
+            "loongjohn is served by Qwen-Audio 3.0 TTS Flash, longanlingxin by "
+            "Plus: the voice decides the model."
+        ),
+        "options": list(OPENROUTER_VOICE_MODELS),
     },
     {
         "name": "openrouter_unit_chars",
@@ -598,7 +591,7 @@ class Daemon:
         # a change to the setting applies to the next sentence.
         if remote is None:
             remote = OpenRouterEngine(
-                model=lambda: str(self.settings.get("speech.openrouter_model")),
+                voice=lambda: str(self.settings.get("speech.openrouter_voice")),
                 api_key=self._openrouter_key,
             )
         self.remote = remote

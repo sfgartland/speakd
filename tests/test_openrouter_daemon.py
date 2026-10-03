@@ -27,6 +27,7 @@ from speakd.player import RecordingPlayer
 from speakd.protocol import Request, Verb
 from speakd.render import RenderJob
 from speakd.settings.registry import Settings
+from speakd.settings.types import SettingError
 from speakd.settings.store import SettingsStore
 from speakd.synth.fake import FakeEngine
 from speakd.synth.lazy import LazyEngine
@@ -321,7 +322,11 @@ def lazy_daemon(
         bus=EventBus(),
         channels=ChannelTable(),
         settings=settings,
-        remote=OpenRouterEngine(api_key=lambda: "sk", post=remote or Remote()),
+        remote=OpenRouterEngine(
+            voice=lambda: str(settings.get("speech.openrouter_voice")),
+            api_key=lambda: "sk",
+            post=remote or Remote(),
+        ),
     )
     settings.set("speech.detect_language", False)
     seen: list[Event] = []
@@ -493,3 +498,18 @@ def test_kokoro_stays_loaded_while_a_render_still_needs_it(settings: Settings) -
         )
     )
     assert not kokoro.loaded
+
+
+def test_the_voice_is_one_of_two_and_a_stale_model_key_is_ignored(settings: Settings) -> None:
+    """The model setting is gone; a settings.toml that still has it must load."""
+    store = settings._store
+    store.write_value("speech.openrouter_model", "qwen/qwen-audio-3.0-tts-plus")
+    settings = Settings(store)
+    d, _, _ = lazy_daemon(settings)  # declares the settings
+    assert settings.get("speech.openrouter_voice") == "loongjohn"
+    assert settings.set("speech.openrouter_voice", "longanlingxin") == "longanlingxin"
+    with pytest.raises(SettingError):
+        settings.set("speech.openrouter_voice", "nosuchvoice")
+    status = d.handle(Request(verb=Verb.STATUS, source_id="", payload={}))
+    openrouter = status.data["engine"]["openrouter"]  # type: ignore[index]
+    assert openrouter["model"] == "qwen/qwen-audio-3.0-tts-plus"
