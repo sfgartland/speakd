@@ -266,6 +266,10 @@ class OpenRouterEngine:
         self._clock = clock
         self._lock = threading.Lock()
         self._unavailable_until = 0.0
+        # Whether the current holdoff is for a failure that will not mend by
+        # itself. Kept apart because a daemon with no local engine to fall
+        # back to ignores a transient holdoff -- see `available`.
+        self._held_fatal = False
         self._last_error: str | None = None
         # Characters sent, for `status`: the provider bills per character.
         self._chars_sent = 0
@@ -275,17 +279,35 @@ class OpenRouterEngine:
     def has_key(self) -> bool:
         return bool(self._api_key())
 
-    def available(self) -> bool:
-        """Whether to choose this engine now: a key, and not held off."""
+    def available(self, *, ignore_transient: bool = False) -> bool:
+        """Whether to choose this engine now: a key, and not held off.
+
+        `ignore_transient` is for a caller with nothing to fall back to: a
+        holdoff after an outage exists to send the next utterances to a local
+        engine without each paying a timeout, and with no local engine it
+        would only mean a minute of speech refused after the network is back.
+        A key refused or credits gone still hold, since asking again cannot
+        succeed.
+        """
         if not self.has_key():
             return False
         with self._lock:
-            return self._clock() >= self._unavailable_until
+            if self._clock() >= self._unavailable_until:
+                return True
+            return ignore_transient and not self._held_fatal
+
+    def unavailable_reason(self) -> str:
+        """Why `available()` says no, in words a listener can act on."""
+        if not self.has_key():
+            return f"no OpenRouter key: set {_KEY_ENV} or write it to {default_key_path()}"
+        with self._lock:
+            return self._last_error or "OpenRouter is unavailable"
 
     def reset(self) -> None:
         """End any holdoff -- a setting changed, so try again."""
         with self._lock:
             self._unavailable_until = 0.0
+            self._held_fatal = False
             self._last_error = None
 
     def status(self) -> dict[str, object]:
@@ -307,6 +329,7 @@ class OpenRouterEngine:
         holdoff = FATAL_HOLDOFF_SECONDS if fatal else TRANSIENT_HOLDOFF_SECONDS
         with self._lock:
             self._unavailable_until = self._clock() + holdoff
+            self._held_fatal = fatal
             self._last_error = reason
         return RemoteEngineError(reason, fatal=fatal)
 

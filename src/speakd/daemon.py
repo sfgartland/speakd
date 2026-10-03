@@ -24,6 +24,7 @@ from traceback import format_exc
 from typing import Any, Protocol, cast, runtime_checkable
 
 from speakd import languages, segmenter, state
+from speakd.alert import chime
 from speakd.channels import MODES, Channel, ChannelTable, effective_mode
 from speakd.detect import Detector
 from speakd.engines import Declined, EngineChoice, choose_engine
@@ -233,7 +234,24 @@ _CORE_OPENROUTER_SETTINGS: tuple[dict[str, object], ...] = (
         "min": 60,
         "max": 600,
     },
+    {
+        "name": "openrouter_on_failure",
+        "type": "choice",
+        "default": "alert",
+        "label": "When OpenRouter fails",
+        "help": (
+            "alert: play a short sound and report the error, keeping the local "
+            "model unloaded. silent: only report it. local: say it with Kokoro "
+            "or Piper instead, which keeps Kokoro loaded."
+        ),
+        "options": ["alert", "silent", "local"],
+    },
 )
+
+# How close together two failure alerts may sound. A burst of agent messages
+# during an outage would otherwise be a burst of chimes; one tells the
+# listener all they need, and the `error` events still name every one.
+_ALERT_INTERVAL_SECONDS = 10.0
 
 # Render-wide settings (audio-export design §1). `mp3_bitrate` names the
 # bitrate ffmpeg is given for every format a render can produce -- mp3, opus
@@ -342,6 +360,21 @@ def build_settings() -> Settings:
     )
     settings.declare("render", list(_CORE_RENDER_SETTINGS), persist=False)
     return settings
+
+
+def kokoro_wanted(settings: Settings) -> bool:
+    """Whether Kokoro should be resident, by the settings alone.
+
+    Not while OpenRouter speaks with no local fallback: the point of the
+    remote engine on a laptop is the CPU and memory Kokoro would take, and
+    nothing would ever use it. `speakctl disable` is the other "no" and is the
+    caller's to check -- it is a persisted state, not a setting. Read by
+    `__main__` before the first load and by the daemon on every engine change.
+    """
+    return not (
+        str(settings.get("speech.engine")) == "openrouter"
+        and settings.get("speech.openrouter_on_failure") != "local"
+    )
 
 
 def _preview(text: str) -> str:
@@ -555,6 +588,8 @@ class Daemon:
                 model=lambda: str(self.settings.get("speech.openrouter_model"))
             )
         self.remote = remote
+        # When the last failure alert sounded; see `_alert`.
+        self._last_alert = -math.inf
         # The render queue chooses its engine per part from this set, keyed
         # by the name `Part.engine` records. `render_piper` is only added
         # when it exists; `choose_engine` only ever names Piper when it
@@ -968,7 +1003,9 @@ class Daemon:
         setting = str(self.settings.get("speech.engine"))
         if setting == "piper" and self.piper is not None and piper_available():
             status["name"] = "piper"
-        elif setting == "openrouter" and self.remote.available():
+        elif setting == "openrouter" and self.remote.available(
+            ignore_transient=not self._remote_fallback()
+        ):
             status["name"] = "openrouter"
         else:
             status["name"] = "kokoro"
@@ -992,7 +1029,9 @@ class Daemon:
         this is the static list a client reads.
         """
         supported = self._supported_languages()
-        if str(self.settings.get("speech.engine")) == "openrouter" and self.remote.available():
+        if str(self.settings.get("speech.engine")) == "openrouter" and self.remote.available(
+            ignore_transient=not self._remote_fallback()
+        ):
             for lang in self.remote.supported_languages():
                 if lang not in supported:
                     supported.append(lang)
@@ -1079,6 +1118,36 @@ class Daemon:
             },
         )
         return default_lang
+
+    def _fit_kokoro_to_engine(self) -> None:
+        """Load or unload Kokoro after the engine settings changed.
+
+        Unloading here leaves `disabled` alone: the user did not switch the
+        model off, they chose an engine that does not need it, and choosing a
+        local engine again brings it back -- in the background, announced on
+        the bus as `enable` does.
+        """
+        engine = self.engine
+        if not isinstance(engine, Loadable):
+            return
+        if not kokoro_wanted(self.settings):
+            if engine.loaded:
+                engine.unload()
+                self._publish("engine", "", {"state": "unloaded"})
+            return
+        if engine.loaded or engine.loading or state.load().disabled:
+            return
+        self._publish("engine", "", {"state": "loading"})
+
+        def run() -> None:
+            try:
+                engine.load()
+            except Exception as exc:  # noqa: BLE001 - a load thread nobody watches
+                sys.stderr.write(f"speakd: could not load the model: {exc!r}\n")
+                return
+            self._publish("engine", "", {"state": "ready"})
+
+        threading.Thread(target=run, name=_ENGINE_THREAD_NAME, daemon=True).start()
 
     def _set_engine_loaded(self, wanted: bool) -> Response:
         """Load or unload the model, without ever blocking the socket.
@@ -1378,14 +1447,46 @@ class Daemon:
             **self._remote_choice(),
         )
 
+    def _remote_fallback(self) -> bool:
+        """Whether a remote failure may be said by a local engine instead."""
+        return self.settings.get("speech.openrouter_on_failure") == "local"
+
     def _remote_choice(self) -> dict[str, Any]:
-        """`choose_engine`'s remote arguments: a voice only while usable."""
-        if not self.remote.available():
-            return {}
+        """`choose_engine`'s remote arguments: a voice only while usable.
+
+        With no fallback, a holdoff after a transient outage is ignored: it
+        exists to spare the local engine's utterances a timeout each, and
+        with no local engine it would only refuse speech after the network
+        is back. A key or credit failure still holds.
+        """
+        fallback = self._remote_fallback()
+        usable = self.remote.available(ignore_transient=not fallback)
         return {
-            "remote_voice": str(self.settings.get("speech.openrouter_voice")),
+            "remote_voice": str(self.settings.get("speech.openrouter_voice")) if usable else None,
             "remote_languages": self.remote.supported_languages(),
+            "remote_fallback": fallback,
+            "remote_unavailable": "" if usable else self.remote.unavailable_reason(),
         }
+
+    def _alert(self) -> None:
+        """Sound the failure chime, at most once per `_ALERT_INTERVAL_SECONDS`.
+
+        Called from the speech worker between utterances (the player is
+        free), and only when `speech.openrouter_on_failure` is `alert`. A
+        player that fails to play it costs nothing but the sound: the `error`
+        event that goes with it has already been published.
+        """
+        if self.settings.get("speech.openrouter_on_failure") != "alert" or self.muted:
+            return
+        now = time.monotonic()
+        if now - self._last_alert < _ALERT_INTERVAL_SECONDS:
+            return
+        self._last_alert = now
+        rate = self.engine.sample_rate
+        try:
+            self.player.play(chime(rate), rate)
+        except Exception as exc:  # noqa: BLE001 - the alert must never take the worker down
+            sys.stderr.write(f"speakd: could not play the failure alert: {exc!r}\n")
 
     def _units_for(
         self, pieces: Sequence[Piece], profile: ProfileView, engine_name: str
@@ -1827,6 +1928,7 @@ class Daemon:
                 # Leaving piper for kokoro: drop the voices' sessions, since
                 # kokoro is what speaks from here on.
                 self.piper.unload()
+            self._fit_kokoro_to_engine()
         elif key == "speech.piper_voice_dir" and self.piper is not None and applied != previous:
             # The engines' own methods unload first: anything loaded came
             # from the old directory. Both Pipers -- live and render -- read
@@ -1835,6 +1937,8 @@ class Daemon:
             self.piper.set_voice_dir(voice_dir)
             if self.render_piper is not None:
                 self.render_piper.set_voice_dir(voice_dir)
+        if key == "speech.openrouter_on_failure":
+            self._fit_kokoro_to_engine()
         if key.startswith("speech.openrouter_") or (
             key == "speech.engine" and applied == "openrouter"
         ):
@@ -2358,6 +2462,8 @@ class Daemon:
         )
         if isinstance(choice, Declined):
             self._decline(job.source_id, choice.reason)
+            if choice.alert:
+                self._alert()
             return
         if choice.engine == "piper":
             engine: Synthesizer = cast(Synthesizer, piper)
@@ -2567,6 +2673,23 @@ class Daemon:
                     engine_name = "kokoro"
                     cache = AudioCache()
                     continue
+                if result.remote_error is not None and not self._remote_fallback():
+                    # The remote engine stopped mid-utterance, and the
+                    # listener chose not to keep a local model loaded for
+                    # this: loading Kokoro now would cost tens of seconds and
+                    # the memory they meant to save. So the utterance ends
+                    # here, said as far as it got, with the reason on the
+                    # bus and a sound so it is not simply missed.
+                    remote_error = result.remote_error
+                    self._publish(
+                        "error",
+                        job.source_id,
+                        {"message": f"openrouter: {remote_error.reason}"},
+                    )
+                    sys.stderr.write(f"speakd: openrouter failed ({remote_error.reason})\n")
+                    self._publish("finished", job.source_id, {"cancelled": False, "aborted": True})
+                    self._alert()
+                    return
                 if result.remote_error is not None:
                     # The remote engine stopped mid-utterance: no key, no
                     # credits, or an outage that outlasted its retry. It has

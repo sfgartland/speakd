@@ -83,6 +83,7 @@ def test_settings_verb_answers_schema_and_values(daemon: Daemon) -> None:
         "speech.engine",
         "speech.merge_chars",
         "speech.openrouter_model",
+        "speech.openrouter_on_failure",
         "speech.openrouter_unit_chars",
         "speech.openrouter_voice",
         "speech.piper_threads",

@@ -8,14 +8,18 @@ in use; Kokoro is a `FakeEngine`.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from speakd import state
+from speakd.alert import chime
 from speakd.channels import ChannelTable
-from speakd.daemon import Daemon, ProfileView
+from speakd.daemon import Daemon, ProfileView, build_settings, kokoro_wanted
 from speakd.events import Event, EventBus
 from speakd.model import Piece, Span
 from speakd.pipeline import speak
@@ -24,6 +28,7 @@ from speakd.protocol import Request, Verb
 from speakd.settings.registry import Settings
 from speakd.settings.store import SettingsStore
 from speakd.synth.fake import FakeEngine
+from speakd.synth.lazy import LazyEngine
 from speakd.synth.openrouter_engine import OpenRouterEngine, Reply
 from speakd.tempo import Tempo
 
@@ -123,12 +128,13 @@ def test_openrouter_speaks_long_units_with_a_short_first_one(settings: Settings)
     assert kokoro.synthesized_langs == []
 
 
-def test_a_mid_utterance_failure_finishes_on_kokoro_from_the_next_unit(
+def test_with_local_fallback_a_mid_utterance_failure_finishes_on_kokoro(
     settings: Settings, capsys: pytest.CaptureFixture[str]
 ) -> None:
     remote = Remote(fail_from=1)
     d, kokoro, seen = build(settings, remote)
     settings.set("speech.engine", "openrouter")
+    settings.set("speech.openrouter_on_failure", "local")
     settings.set("speech.openrouter_unit_chars", 60)
     d.start()
     try:
@@ -207,3 +213,163 @@ def test_a_fixed_speed_engine_is_made_at_one_and_stretched_by_the_player() -> No
         tempo=Tempo(1.5),
     )
     assert made == [0.8, 0.8]
+
+
+# ---- no fallback: the default
+
+
+def chimes(player: RecordingPlayer) -> int:
+    expected = chime(24000)
+    return sum(1 for audio in player.played if np.array_equal(audio, expected))
+
+
+def test_by_default_a_failure_ends_the_utterance_with_an_alert_and_no_kokoro(
+    settings: Settings,
+) -> None:
+    remote = Remote(fail_from=1, status=503)
+    d, kokoro, seen = build(settings, remote)
+    settings.set("speech.engine", "openrouter")
+    settings.set("speech.openrouter_unit_chars", 60)
+    player = d.player
+    assert isinstance(player, RecordingPlayer)
+    d.start()
+    try:
+        enqueue(d, LONG_TEXT)
+    finally:
+        d.stop()
+    assert kokoro.synthesized_langs == []
+    assert [p.data["engine"] for p in of(seen, "position")] == ["openrouter"]
+    assert [e.data for e in of(seen, "finished")] == [{"cancelled": False, "aborted": True}]
+    assert any("HTTP 503" in str(e.data["message"]) for e in of(seen, "error"))
+    assert chimes(player) == 1
+
+
+def test_after_an_outage_the_next_utterance_tries_the_network_again(settings: Settings) -> None:
+    """No local engine to send it to, so a transient holdoff would only refuse speech."""
+    remote = Remote(fail_from=0, status=503)
+    d, kokoro, seen = build(settings, remote)
+    settings.set("speech.engine", "openrouter")
+    d.start()
+    try:
+        enqueue(d, "First try.")
+        remote.fail_from = None
+        enqueue(d, "Second try.")
+    finally:
+        d.stop()
+    assert remote.inputs[-1] == "Second try."
+    assert [e.data["engine"] for e in of(seen, "started")] == ["openrouter", "openrouter"]
+    assert kokoro.synthesized_langs == []
+
+
+def test_after_a_credit_failure_utterances_are_declined_with_an_alert(settings: Settings) -> None:
+    remote = Remote(fail_from=0, status=402)
+    d, kokoro, seen = build(settings, remote)
+    settings.set("speech.engine", "openrouter")
+    player = d.player
+    assert isinstance(player, RecordingPlayer)
+    d.start()
+    try:
+        enqueue(d, "First try.")
+        enqueue(d, "Second try.")
+    finally:
+        d.stop()
+    # The second never reaches the network: credits do not come back by asking.
+    assert remote.inputs == ["First try."]
+    declined = of(seen, "declined")
+    assert len(declined) == 1 and "no credits" in str(declined[0].data["reason"])
+    assert kokoro.synthesized_langs == []
+    # Two failures in quick succession, one chime.
+    assert chimes(player) == 1
+
+
+def test_silent_mode_reports_without_a_sound(settings: Settings) -> None:
+    remote = Remote(fail_from=0, status=402)
+    d, _, seen = build(settings, remote)
+    settings.set("speech.engine", "openrouter")
+    settings.set("speech.openrouter_on_failure", "silent")
+    player = d.player
+    assert isinstance(player, RecordingPlayer)
+    d.start()
+    try:
+        enqueue(d, "First try.")
+    finally:
+        d.stop()
+    assert of(seen, "error")
+    assert chimes(player) == 0
+
+
+# ---- Kokoro stays unloaded while OpenRouter speaks
+
+
+def set_setting(d: Daemon, key: str, value: object) -> None:
+    response = d.handle(
+        Request(verb=Verb.SET_SETTING, source_id="", payload={"key": key, "value": value})
+    )
+    assert response.ok, response.error
+
+
+def lazy_daemon(settings: Settings) -> tuple[Daemon, LazyEngine, list[Event]]:
+    kokoro = LazyEngine(FakeEngine, sample_rate=24000)
+    d = Daemon(
+        kokoro,
+        RecordingPlayer(),
+        profile_for,
+        bus=EventBus(),
+        channels=ChannelTable(),
+        settings=settings,
+        remote=OpenRouterEngine(api_key=lambda: "sk", post=Remote()),
+    )
+    seen: list[Event] = []
+    d.bus.subscribe(seen.append)
+    return d, kokoro, seen
+
+
+def test_switching_to_openrouter_unloads_kokoro_and_switching_back_reloads_it(
+    settings: Settings,
+) -> None:
+    d, kokoro, seen = lazy_daemon(settings)
+    kokoro.load()
+    set_setting(d, "speech.engine", "openrouter")
+    assert not kokoro.loaded
+    assert not state.load().disabled, "an engine choice is not the off switch"
+    set_setting(d, "speech.engine", "kokoro")
+    assert until(lambda: kokoro.loaded)
+    states = [e.data["state"] for e in seen if e.kind == "engine"]
+    assert states == ["unloaded", "loading", "ready"]
+
+
+def test_with_local_fallback_kokoro_stays_loaded(settings: Settings) -> None:
+    d, kokoro, _ = lazy_daemon(settings)
+    kokoro.load()
+    set_setting(d, "speech.openrouter_on_failure", "local")
+    set_setting(d, "speech.engine", "openrouter")
+    assert kokoro.loaded
+    set_setting(d, "speech.openrouter_on_failure", "alert")
+    assert not kokoro.loaded
+
+
+def test_switching_back_does_not_load_a_disabled_model(settings: Settings) -> None:
+    d, kokoro, _ = lazy_daemon(settings)
+    set_setting(d, "speech.engine", "openrouter")
+    state.save(replace(state.load(), disabled=True))
+    set_setting(d, "speech.engine", "kokoro")
+    assert not kokoro.loaded and not kokoro.loading
+
+
+def test_kokoro_wanted_reads_the_engine_and_the_failure_mode() -> None:
+    """What `__main__` reads before the first load, on settings with no daemon yet."""
+    settings = build_settings()
+    assert kokoro_wanted(settings)
+    settings.set("speech.engine", "openrouter")
+    assert not kokoro_wanted(settings)
+    settings.set("speech.openrouter_on_failure", "local")
+    assert kokoro_wanted(settings)
+
+
+def until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.002)
+    return predicate()

@@ -29,9 +29,15 @@ class EngineChoice:
 
 @dataclass(frozen=True)
 class Declined:
-    """No engine can speak this utterance, and why."""
+    """No engine can speak this utterance, and why.
+
+    `alert` marks a refusal the listener should hear about, not only read:
+    the remote engine they chose is unusable and they asked not to fall back,
+    so without a sound they would simply miss what was said.
+    """
 
     reason: str
+    alert: bool = False
 
 
 def choose_engine(
@@ -44,6 +50,8 @@ def choose_engine(
     *,
     remote_voice: str | None = None,
     remote_languages: Collection[str] = (),
+    remote_fallback: bool = True,
+    remote_unavailable: str = "",
 ) -> EngineChoice | Declined:
     """The engine for one resolved language: the remote engine, Piper,
     Kokoro, or declined.
@@ -55,12 +63,18 @@ def choose_engine(
 
     `remote_voice` is None when the remote engine is not usable right now;
     otherwise it speaks `remote_languages` whenever `speech.engine` names it.
-    Anything it cannot take falls through to the local engines exactly as
-    though it were not configured -- which is also what makes a remote outage
-    quietly local rather than silent.
+    A language it does not speak falls through to the local engines exactly
+    as though it were not configured. An outage does too while
+    `remote_fallback` holds; without it, an unusable remote engine is a
+    `Declined` carrying `remote_unavailable` and the alert flag -- the
+    listener chose not to have a local model loaded, and must not have one
+    loaded for them, nor be left in silence without knowing why.
     """
-    if engine_setting == "openrouter" and remote_voice is not None and lang in remote_languages:
-        return EngineChoice("openrouter", remote_voice)
+    if engine_setting == "openrouter" and lang in remote_languages:
+        if remote_voice is not None:
+            return EngineChoice("openrouter", remote_voice)
+        if not remote_fallback:
+            return Declined(remote_unavailable or "OpenRouter is unavailable", alert=True)
     voice = piper_voices.get(lang)
     if engine_setting == "piper" and piper_ok and voice is not None and piper_has_voice(voice):
         return EngineChoice("piper", voice)

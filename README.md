@@ -504,11 +504,25 @@ wastes is what was already synthesised ahead — at most about two units.
 its natural pace and the time-stretch applies the profile's speed and the
 listener's tempo. A tempo change never sends anything again.
 
-**Failure is local, not silent.** A refused key, empty credits, rate limiting
-or an outage that outlasts one quick retry ends the remote part of the
-utterance: the rest is said by Kokoro (or Piper) from the next unit, with one
-`error` event, and the engine holds itself off for a minute (ten for a key or
-credit problem; changing any `speech.openrouter_*` setting ends it early).
+**Kokoro stays unloaded.** While `speech.engine` is `openrouter`, the daemon
+does not load Kokoro at start, and switching to OpenRouter unloads it (switching
+back loads it again, unless `speakctl disable` turned it off). On a laptop that
+is the point: the hosted model costs no local CPU or memory.
+
+**A failure is heard, not papered over.** `speech.openrouter_on_failure` says
+what happens when OpenRouter cannot speak — a refused key, empty credits, rate
+limiting or an outage that outlasts one quick retry:
+
+- `alert` (default): the utterance ends where it got to, an `error` event names
+  the reason, and a short two-tone chime plays (at most once every ten seconds,
+  so an outage during a burst of messages is one chime, not ten).
+- `silent`: the same, without the chime.
+- `local`: the rest is said by Kokoro or Piper from the next unit, which means
+  keeping Kokoro loaded.
+
+After an outage the next utterance simply tries again. After a key or credit
+failure, utterances are declined (with the alert) for ten minutes rather than
+each asking again; changing any `speech.openrouter_*` setting ends that early.
 `speakctl status` shows the engine's state, last error and characters sent.
 
 ## Audio files
