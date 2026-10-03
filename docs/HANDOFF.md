@@ -249,6 +249,13 @@ Known gaps carried with the branch, none blocking:
 - The default profile's prepare step marks pieces as not `exact`, so every unit
   of an utterance reports the whole text as its span (`0..len`) on every engine,
   Kokoro included; follow-along highlighting needs per-unit spans from it.
+- Renders do not apply `speech.unsupported_language` on the OpenRouter path.
+- A narrow check-then-act race: a render submitted just as the deferred Kokoro
+  unload checks `needs("kokoro")` can be left waiting on an unloaded model.
+- After a Kokoro unload the process keeps its memory (RSS 795 MB against 205 MB
+  on a fresh start); a `malloc_trim` via ctypes after the unload would likely
+  give it back.
+- The "pull the network mid-utterance" live test has not been done yet.
 - The secret file is not encrypted (keyring would need a dependency). The
   socket keeps its default permissions, so another local user could at most
   overwrite the key, never read it.
