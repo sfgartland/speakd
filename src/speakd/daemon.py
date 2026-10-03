@@ -1010,6 +1010,10 @@ class Daemon:
         else:
             status["name"] = "kokoro"
         status["openrouter"] = self.remote.status()
+        # Whether the local model has any use under the current settings, so
+        # a control surface can say "not needed" instead of offering to load
+        # three gigabytes nothing would speak with.
+        status["model_needed"] = kokoro_wanted(self.settings)
         piper = self.piper
         if piper is not None:
             status["piper"] = {

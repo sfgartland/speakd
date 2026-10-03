@@ -370,6 +370,7 @@ def test_status_prints_the_two_off_switches(running, capsys) -> None:  # type: i
         "loading": False,
         "name": "kokoro",
         "piper": {"available": False, "voices": []},
+        "model_needed": True,
     }
 
 

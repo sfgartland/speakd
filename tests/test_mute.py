@@ -333,6 +333,7 @@ def test_status_reports_the_engine() -> None:
             "loading": False,
             "name": "kokoro",
             "piper": {"available": False, "voices": []},
+            "model_needed": True,
         }
     finally:
         daemon.stop()
@@ -352,6 +353,7 @@ def test_an_engine_that_cannot_be_unloaded_reports_as_loaded() -> None:
             "loading": False,
             "name": "kokoro",
             "piper": {"available": False, "voices": []},
+            "model_needed": True,
         }
     finally:
         daemon.stop()

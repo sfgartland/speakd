@@ -12,7 +12,7 @@
  *       "started"   data: { text, engine, segments }
  *                   One utterance is about to be spoken. `text` is the whole
  *                   of it, exactly as it was handed to the daemon — markdown
- *                   and all — and `engine` is "kokoro" or "piper", whichever
+ *                   and all — and `engine` is "kokoro", "piper" or "openrouter", whichever
  *                   was chosen to speak it. `segments` is every sentence it
  *                   will be spoken as, in order: { index, text, span_start,
  *                   span_end }. The daemon segments before it speaks, so the
@@ -327,8 +327,9 @@ export class SimulatedSource {
       },
       {
         key: "speech.engine", type: "choice", default: "kokoro",
-        label: "Speech engine", help: "Piper speaks what it has a voice for; Kokoro says the rest.",
-        options: ["kokoro", "piper"], min: null, max: null, step: null, multiline: false, restart: false,
+        label: "Speech engine",
+        help: "Piper speaks what it has a voice for; OpenRouter speaks through a hosted model and needs a key; Kokoro says the rest.",
+        options: ["kokoro", "piper", "openrouter"], min: null, max: null, step: null, multiline: false, restart: false,
       },
       {
         key: "speech.rate", type: "float", default: 1.0,
@@ -563,7 +564,13 @@ export class SimulatedSource {
     return {
       channels: this._channels.map((c) => ({ ...c, muted: !!this._channelMuted.get(c.source_id) })),
       muted: this._muted,
-      engine: { loaded: this._engineLoaded, loading: this._engineLoading },
+      engine: {
+        loaded: this._engineLoaded,
+        loading: this._engineLoading,
+        // As the daemon's `kokoro_wanted`: no local model while OpenRouter
+        // speaks (the sim has no failure setting, so never with a fallback).
+        model_needed: this._settingValue(this._declFor("speech.engine")) !== "openrouter",
+      },
       speed: this._speed,
       // In play order, next first, and not including what is being spoken —
       // the caller can see that on the "now" line and does not need it twice.
@@ -619,6 +626,11 @@ export class SimulatedSource {
       return Promise.resolve({ ok: false, error: err.message });
     }
     this._settingValues[key] = applied;
+    if (key === "speech.engine" && applied === "openrouter" && this._engineLoaded) {
+      // The daemon unloads Kokoro on switching to OpenRouter; so does this.
+      this._engineLoaded = false;
+      this._emit({ kind: "engine", source_id: "", data: { state: "unloaded" } });
+    }
     this._emit({ kind: "setting", source_id: "", data: { key, value: applied } });
     return Promise.resolve({ ok: true, data: { value: applied } });
   }

@@ -215,6 +215,28 @@ def run(port: int) -> int:
             "the rtf sub-line names piper once piper-speaking playback starts",
         )
 
+        # ---- the model button while OpenRouter speaks ----
+        page.evaluate(
+            "() => window.__speakdSource.send('set_setting',"
+            " { key: 'speech.engine', value: 'openrouter' })"
+        )
+        page.wait_for_function(
+            "document.querySelector('#engine').textContent === 'Model not needed'"
+        )
+        checks.check(
+            page.eval_on_selector("#engine", "el => el.disabled"),
+            "the model button says the model is not needed, and offers nothing, on openrouter",
+        )
+        page.evaluate(
+            "() => window.__speakdSource.send('set_setting',"
+            " { key: 'speech.engine', value: 'kokoro' })"
+        )
+        page.wait_for_function("document.querySelector('#engine').textContent === 'Load model'")
+        checks.check(
+            not page.eval_on_selector("#engine", "el => el.disabled"),
+            "switching back to kokoro offers to load the model again",
+        )
+
         browser.close()
 
     checks.check(len(console_errors) == 0, f"no page errors (got {console_errors!r})")

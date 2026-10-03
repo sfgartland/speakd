@@ -183,6 +183,7 @@ def test_status_reports_the_remote_engine(settings: Settings) -> None:
     engine = response.data["engine"]
     assert isinstance(engine, dict)
     assert engine["name"] == "openrouter"
+    assert engine["model_needed"] is False
     remote = engine["openrouter"]
     assert isinstance(remote, dict) and remote["key"] is True
     languages = response.data["languages"]
