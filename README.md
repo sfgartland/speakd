@@ -319,8 +319,9 @@ no daemon and reads whichever one is running.
 
 ## Settings
 
-Typed settings — bool, int, float, string, choice, voice, and voice_map (a
-table from language code to voice) — declared by core, by in-process plugins,
+Typed settings — bool, int, float, string, choice, voice, voice_map (a
+table from language code to voice), and secret (an API key: stored privately,
+reported only as set or not; see [OpenRouter](#openrouter)) — declared by core, by in-process plugins,
 and by clients, and stored in one file: `$XDG_CONFIG_HOME/speakd/settings.toml`.
 A key is always `<owner>.<name>`; core's owners are `speech`, `http` and
 `render`, and a client's is its source id up to the first `:` — `zotero:K`
@@ -349,6 +350,16 @@ value commits as soon as you leave the field; a refusal is shown under the
 control and the field reverts to what the daemon actually holds, so it never
 claims a setting that did not take. A setting flagged `restart` says so,
 in place, rather than pretending the change is already live.
+
+**Unit length.** Speech is synthesised a unit at a time, normally one
+sentence. A sentence up to a quarter over the 90-character cap is kept whole
+rather than split, and one that must be split is cut into even parts — at
+clause boundaries first — so no unit is a lone trailing word. On a machine fast
+enough to synthesise well ahead of playback, `speech.merge_chars` (default 0,
+off) also joins short sentences after the first into units up to that length,
+which reads more naturally; on a slow one leave it off, since the next unit has
+to be made while the current one plays. The remote engine has its own, larger
+unit length (see [OpenRouter](#openrouter)).
 
 Zotero's loopback HTTP is scoped the same way the socket trusts a client to
 scope itself: a request may read its own owner's settings and `speech`'s, and
@@ -464,6 +475,85 @@ second of audio; samples of the passage are in `~/Music/speakd-tts-compare/`:
 | **Piper `medium`, one thread** | **~0.13** | ~0.13 | ~16× cheaper than Kokoro; 380 MB resident |
 | Piper `low` | ~0.17 | ~0.04 | 16 kHz, audibly duller |
 | Supertonic 3 (dropped) | 0.6–1.5 | 0.27–0.62 | archived; no text normaliser |
+
+## OpenRouter
+
+A hosted engine, for when the voice matters more than staying offline:
+Qwen-Audio-3.0-TTS through OpenRouter's
+OpenAI-style speech endpoint. It needs no extra — the request is plain
+`urllib` — only an API key. Enter it in the window's Settings, or:
+
+```bash
+uv run speakctl set speech.openrouter_api_key   # asks for it, without echo
+uv run speakctl set speech.engine openrouter
+```
+
+**How the key is kept.** It is a `secret` setting, which differs from every
+other setting in three ways:
+
+- It is stored in its own file, `~/.config/speakd/secrets/speech.openrouter_api_key`
+  (mode 0600, in a 0700 directory, private from the moment it is created), and
+  never in `settings.toml` — the file people copy between machines and keep in
+  dotfile repositories.
+- It is never sent back out. Every client — the window, `speakctl`, the
+  Zotero plugin over HTTP, anything subscribed to events — sees only whether a
+  key is set. The window's field is write-only: it empties as soon as the key
+  is sent and then just says "saved". Error messages about a rejected key never
+  repeat it.
+- `speakctl` reads it from a hidden prompt (or piped stdin), since a key given
+  as an argument is visible to every user in `ps` and stays in shell history.
+  Passing it as an argument still works, with a warning.
+
+`OPENROUTER_API_KEY` in the daemon's environment takes precedence over the
+setting, for a service unit or secrets manager that injects it;
+`speakctl status` says which one is in use (`key_source`). The file is not
+encrypted: other users cannot read it, but programs running as you can, as they
+could a session keyring.
+
+`speech.openrouter_voice` chooses one of three voices, and the voice decides the
+model, since each voice belongs to one model and the others refuse it:
+
+| Voice | Model | Languages | Cost, roughly |
+|---|---|---|---|
+| `loongjohn` (default) | `qwen/qwen-audio-3.0-tts-flash` | Kokoro's set plus German, Russian, Korean, Arabic | $15 per million characters, about $0.69 per hour of speech (about 46k characters) |
+| `longanlingxin` | `qwen/qwen-audio-3.0-tts-plus` | the same | $20 per million characters, about $0.92 per hour |
+| `Charon` | `google/gemini-3.8-flash-tts` | those and Hindi, Dutch, Polish, Swedish, Danish, Norwegian | billed by audio length, about $1.05 per hour; units are capped at 600 characters, because it silently drops text past about 80 s of audio |
+
+`speakctl status` reports the model in use, and the languages it lists follow the
+voice. An older `speech.openrouter_model` in `settings.toml` is ignored. Each
+model detects the language itself.
+
+**Units are long.** A hosted model is far faster than real time, so where a
+local engine gets one sentence at a time, OpenRouter gets whole sentences merged
+up to `speech.openrouter_unit_chars` (default 300) per request — better prosody,
+fewer seams. The first unit is still one sentence, for time to first audio. It
+bills per character, so the number of requests costs nothing; what a stop
+wastes is what was already synthesised ahead — at most about two units.
+
+**Speed is the player's.** Qwen ignores a speed parameter, so audio is made at
+its natural pace and the time-stretch applies the profile's speed and the
+listener's tempo. A tempo change never sends anything again.
+
+**Kokoro stays unloaded.** While `speech.engine` is `openrouter`, the daemon
+does not load Kokoro at start, and switching to OpenRouter unloads it (switching
+back loads it again, unless `speakctl disable` turned it off). On a laptop that
+is the point: the hosted model costs no local CPU or memory.
+
+**A failure is heard, not papered over.** `speech.openrouter_on_failure` says
+what happens when OpenRouter cannot speak — a refused key, empty credits, rate
+limiting or an outage that outlasts one quick retry:
+
+- `alert` (default): the utterance ends where it got to, an `error` event names
+  the reason, and a short two-tone chime plays (at most once every ten seconds,
+  so an outage during a burst of messages is one chime, not ten).
+- `silent`: the same, without the chime.
+- `local`: the rest is said by Kokoro or Piper from the next unit, which means
+  keeping Kokoro loaded.
+
+After an outage the next utterance simply tries again. After a key or credit
+failure, utterances are declined (with the alert) for ten minutes rather than
+each asking again; changing any `speech.openrouter_*` setting ends that early.
+`speakctl status` shows the engine's state, last error and characters sent.
 
 ## Audio files
 

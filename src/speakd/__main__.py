@@ -13,7 +13,7 @@ from types import FrameType
 from typing import cast
 
 from speakd.channels import ChannelTable
-from speakd.daemon import Daemon, ProfileView, build_settings
+from speakd.daemon import Daemon, ProfileView, build_settings, kokoro_wanted
 from speakd.events import EventBus
 from speakd.model import Piece
 from speakd.paths import default_profiles_path, default_socket_path
@@ -395,18 +395,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             # extra is installed.
             sys.stderr.write("speakd: the kokoro extra is not installed (uv sync --extra kokoro)\n")
 
-    if not state.load().disabled:
+    # The settings, built here (rather than only inside the daemon) because
+    # the Piper engine is constructed from their values before the daemon
+    # exists, and whether Kokoro loads at all depends on them. The daemon
+    # reuses this same registry, so a later `set_setting` and this
+    # construction read the same store.
+    settings = build_settings()
+
+    if not state.load().disabled and kokoro_wanted(settings):
         # On a thread, so the socket appears at once rather than thirty
         # seconds later. The README already tells users that the socket
         # appearing is the readiness signal; this is the first release in
-        # which that is true.
+        # which that is true. Skipped while OpenRouter speaks with no local
+        # fallback: nothing would use the model, and the laptop keeps the
+        # memory and CPU it would take.
         threading.Thread(target=load, name="speakd-engine-load", daemon=True).start()
-
-    # The settings, built here (rather than only inside the daemon) because
-    # the Piper engine is constructed from their values before the daemon
-    # exists. The daemon reuses this same registry, so a later
-    # `set_setting` and this construction read the same store.
-    settings = build_settings()
     piper: PiperEngine | None = None
     if piper_available():
         piper = PiperEngine(

@@ -533,7 +533,7 @@
   }
   .set-error { color: var(--bad); font-size: 10.5px; }
   .set-error:empty { display: none; }
-  .settings input[type="text"], .settings input[type="number"],
+  .settings input[type="text"], .settings input[type="number"], .settings input[type="password"],
   .settings select, .settings textarea {
     font: inherit; font-size: 11px; color: var(--ink); background: var(--ground);
     border: 1px solid var(--rule-strong); border-radius: 3px; padding: 3px 5px;
@@ -555,6 +555,10 @@
                    border-radius: 50%; background: var(--surface); transition: left .12s; }
   .switch:checked { background: var(--lit); }
   .switch:checked::after { left: 14px; }
+  .secret { display: flex; align-items: center; gap: 6px; }
+  .secret input { flex: 1 1 auto; font-family: "IBM Plex Mono", monospace; }
+  .secret-state { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; color: var(--muted); flex: none; }
+  .secret-state[data-set="true"] { color: var(--good); }
   .vmap { width: 100%; border-collapse: collapse; }
   .vmap td { padding: 2px 0; }
   .vmap td:first-child { width: 64px; padding-right: 4px; }
@@ -803,6 +807,10 @@
   // no daemon reached yet, or the link is down. A switch that shows a
   // confident position it has not been told is worse than one that is greyed.
   let engineState = null;
+  // Whether the local model has any use: false while OpenRouter speaks with
+  // no local fallback (`status.engine.model_needed`). The model button then
+  // says so rather than offering to load gigabytes nothing would use.
+  let modelNeeded = true;
   // Which engine made the sentence being spoken — `started.engine` or
   // `position.engine`, so it follows the sentence when the two engines trade
   // off mid-utterance. Null while nothing is speaking, and when the daemon
@@ -1065,10 +1073,14 @@
     el("mute").disabled = !statusKnown;
     const engine = el("engine");
     engine.dataset.state = engineState ?? "ready";
-    engine.textContent = ENGINE_LABEL[engineState] ?? "Unload model";
-    engine.disabled = engineState === null || engineState === "loading";
-    engine.title =
-      engineState === "loading"
+    // Not needed and not loaded: nothing to offer. A model that is loaded
+    // anyway (an explicit `speakctl enable`) can still be unloaded.
+    const idle = !modelNeeded && engineState === "unloaded";
+    engine.textContent = idle ? "Model not needed" : ENGINE_LABEL[engineState] ?? "Unload model";
+    engine.disabled = idle || engineState === null || engineState === "loading";
+    engine.title = idle
+      ? "OpenRouter is speaking, so the local model stays unloaded to save memory and CPU"
+      : engineState === "loading"
         ? "Loading the model — tens of seconds"
         : engineState === "unloaded"
           ? "Load the model back; speech is dropped until it is"
@@ -1420,6 +1432,7 @@
     if (typeof data.speed === "number") speed = data.speed;
     const engine = data.engine ?? {};
     engineState = engine.loading ? "loading" : engine.loaded ? "ready" : "unloaded";
+    modelNeeded = engine.model_needed !== false;
     statusKnown = true;
     tendMarks(channels);
     // The title bar has been showing a source_id since the first event; now
@@ -1574,6 +1587,11 @@
         // Someone else's change — speakctl, another window — or the echo of
         // this window's own. Either way the daemon's value is the one shown.
         if (typeof data.key === "string") settingChanged(data.key, data.value);
+        // These decide whether the local model is needed; `status` has the
+        // daemon's answer, rather than this window re-deriving the rule.
+        if (data.key === "speech.engine" || data.key === "speech.openrouter_on_failure") {
+          refreshStatus();
+        }
         break;
       case "mode": {
         const channel = channels.find((c) => c.source_id === event.source_id);
@@ -2141,6 +2159,8 @@
       }
       case "voice_map":
         return voiceMapControl(commit);
+      case "secret":
+        return secretControl(commit);
       default: {
         // string, and voice — a text field until phase 2 can list the
         // engine's voices.
@@ -2153,6 +2173,44 @@
                  set: (v) => { input.value = v == null ? "" : String(v); }, holdsFocus: holdsFocus(input) };
       }
     }
+  }
+
+  /**
+   * A write-only field for an API key. The daemon reports a secret only as
+   * set or not set, so there is never a value to show: the field is always
+   * empty, says which state it is in, and is emptied again the moment what
+   * was typed is sent, so the key does not sit in the page afterwards.
+   */
+  function secretControl(commit) {
+    const wrap = document.createElement("div");
+    wrap.className = "secret";
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    const state = document.createElement("span");
+    state.className = "secret-state";
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "mini";
+    clear.textContent = "Clear";
+    wrap.append(input, state, clear);
+    input.addEventListener("change", () => {
+      const typed = input.value.trim();
+      input.value = "";
+      // An empty field is not a request to clear it: that is the button's
+      // job, so tabbing through the panel cannot delete a saved key.
+      if (typed) commit(typed);
+    });
+    clear.addEventListener("click", () => commit(""));
+    const set = (v) => {
+      const saved = !!v;
+      state.textContent = saved ? "saved" : "not set";
+      state.dataset.set = saved ? "true" : "false";
+      input.placeholder = saved ? "paste a new key to replace it" : "paste a key";
+      clear.hidden = !saved;
+    };
+    return { node: wrap, field: input, inline: false, set, holdsFocus: () => false };
   }
 
   /** Language → voice rows, committed whole whenever any row changes. */
@@ -2234,6 +2292,9 @@
     }
     now.error.textContent = "";
     settingsValues[key] = res.data?.value ?? value;
+    // A secret's control shows the daemon's answer (saved or not), never
+    // what was typed, so it is brought up to date from the reply itself.
+    if (declFor(key)?.type === "secret") now.set(settingsValues[key]);
   }
 
   function declFor(key) { return settingsSchema.find((d) => d.key === key); }

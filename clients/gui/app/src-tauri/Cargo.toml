@@ -1,6 +1,6 @@
 [package]
 name = "speakd-shell"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop shell for speakd: window, global hotkeys, and system tray around the pinned monitor"
 edition = "2021"
 rust-version = "1.77"

@@ -1,10 +1,12 @@
 # Handoff — resume here
 
-Last updated 2026-10-01. `main` **is pushed** to https://github.com/sfgartland/speakd
-(as of `e4aa7d8`, and again with this handoff).
+Last updated 2026-10-03. `main` **is pushed** to https://github.com/sfgartland/speakd.
+The OpenRouter branch (`claude/beautiful-hypatia-wg0nzy`, PR #1) is **merged**:
+verified against the real API and live in the daemon, two review waves fixed.
 
-**Resume here first:** the Zotero audiobook export is merged. Next is phase 3,
-language in the clients (see "Next"). Nothing is mid-edit.
+**Resume here first:** phase 3 (see "Next → 1"). This machine's daemon now runs
+`speech.engine = openrouter` with the `longanlingxin` (Qwen Plus) voice,
+`on_failure = alert`, and Kokoro disabled. Nothing is mid-edit.
 
 ## What works now
 
@@ -165,6 +167,70 @@ reviewed, then an Opus whole-branch review and one fix wave.
 - Re-run `clients/codex/install.sh` and `clients/opencode/install.sh` so the
   skill reaches those agents.
 
+## Built 2026-10-03: OpenRouter, secret settings, sentence splitting (merged)
+
+Built in a cloud session, then verified and finished locally the same day.
+- **Sentence splitting** (`segmenter.py`): a sentence up to 1.25× the 90-char
+  cap stays whole; longer ones split into even parts at clauses (no fragment
+  under 24 chars); word splits are balanced. `speech.merge_chars` (default 0,
+  off) joins short sentences after the first for local engines.
+- **OpenRouter engine** (`synth/openrouter_engine.py`): Qwen-Audio-3.0-TTS
+  Flash by default, a stdlib `urllib` POST asking for PCM, resampled to 24 kHz.
+  - Units are segmented after the engine is chosen. OpenRouter gets whole
+    sentences merged up to `speech.openrouter_unit_chars` (300); the first unit
+    is one sentence.
+  - Speed is never sent: audio is made at 1.0, and the player stretches it to
+    profile speed × tempo, so a tempo change or a seek never re-requests.
+  - Errors: 400 is one bad segment; 401/402/403 are fatal (10-minute holdoff);
+    429/5xx/network get one ≤3 s retry.
+  - `speech.openrouter_on_failure`:
+    - `alert` (default): the utterance ends, an `error` event, a chime (at most
+      every 10 s), Kokoro stays unloaded.
+    - `silent`: the same without the chime.
+    - `local`: the old fallback to Kokoro/Piper from the next unit.
+  - **Kokoro is not loaded** at start, and is unloaded on switching, while
+    OpenRouter speaks without fallback (`kokoro_wanted()`). `status.engine`
+    has `model_needed`, and the window's model button reads "Model not needed".
+  - ru/ko/ar are recognised and detected.
+- **The API key is a new `secret` setting type** (`settings/secrets.py`):
+  `speech.openrouter_api_key`, stored in `~/.config/speakd/secrets/<key>`
+  (0600, dir 0700), never in settings.toml.
+  - Every verb, event and status reports it only as set/not set; only
+    `Settings.secret()` returns it.
+  - `speakctl set speech.openrouter_api_key` prompts without echo; an argument
+    still works, with a warning.
+  - The window has a write-only password field with Clear.
+  - `OPENROUTER_API_KEY` in the environment wins; `status` gives `key_source`.
+- **Verified locally:**
+  - The real API returns `audio/pcm;rate=24000;channels=1` with a raw s16le body for every model tried.
+  - A bad voice or model gets HTTP 400 (only a bad model says "does not exist"); a bad key gets 401.
+  - Live in the daemon:
+    - With Kokoro disabled, OpenRouter speaks and RSS is 205 MB.
+    - Units are long: a single first sentence, then about 290 chars.
+    - A tempo change mid-utterance sends nothing again (chars sent = text length).
+    - A bad key gives an error and a 10-minute holdoff, and later messages are declined with the real reason; the right key clears it.
+    - Kokoro reloads and unloads when the engine switches.
+  - `cargo build --release` and the browser check pass (29/29, real Chrome).
+- **Review fixes (two Opus reviews, fixes by Sonnet):**
+  - Found live: the admission gate declined every OpenRouter job as "disabled" while Kokoro was unloaded. Fixed.
+  - A hush during a request no longer reports a failure.
+  - Switching engines stops only Kokoro's own speech, and the unload waits while a render still needs Kokoro.
+  - The unsupported-language fallback applies on the OpenRouter path.
+  - A wrong model, or a 400 twice in a row (counted per live/render context, ignoring stale and cancelled requests), is fatal.
+  - Remote engines skip `synth_lock`.
+  - Non-ASCII keys are refused.
+  - Gemini's languages normalise.
+- **Voices:** `speech.openrouter_voice` is a choice, and the voice decides the model. `speech.openrouter_model` is gone (a stale key is ignored).
+  | Voice | Model | Measured cost |
+  |---|---|---|
+  | `loongjohn` | qwen-audio-3.0-tts-flash | $15 per million characters ≈ $0.69/h |
+  | `longanlingxin` | qwen-audio-3.0-tts-plus | $20 per million characters ≈ $0.92/h |
+  | `Charon` | google/gemini-3.8-flash-tts | billed by audio length ≈ $1.05/h |
+  - An hour of speech is about 46k characters.
+  - Gemini silently truncates output past about 80 s, so its units are capped at 600 chars.
+  - Plus's other voice, `longanlufeng`, sounded too Chinese-accented to the user.
+  - Other OpenRouter TTS models (MAI-Voice-2, Grok, Deepgram, MiniMax…) were sampled in `~/Music/speakd-compare-*.wav`.
+
 ## Next
 
 ### 1. Phase 3, language in the clients
@@ -174,6 +240,9 @@ reviewed, then an Opus whole-branch review and one fix wave.
 - Depends on `status.languages.supported` being right while the model loads. That's fixed.
 - **Includes Piper Task 6's Zotero half** (the plugin's language-cache
   invalidation on a `speech.engine` setting event) — deferred until phase 3.
+  `openrouter` changes the supported languages too (per voice: Qwen adds
+  de/ru/ko/ar, Gemini also nl/sv/nb/da/pl/hi), and so do the voice and the API
+  key being set or cleared.
 
 **How to run the work:** background subagents, one worktree per phase.
 - Sonnet for closely specified tasks.
@@ -187,6 +256,32 @@ reviewed, then an Opus whole-branch review and one fix wave.
   `.superpowers/archive/<name>/` first, then `git worktree remove --force` and
   `git branch -d`. Also removable now: `onnx-hybrid` and `pdf-pronounce`
   (merged), and `feat/onnx-engine` (superseded by the ONNX hybrid; never merged).
+- **OpenRouter follow-ups** (none blocking):
+  - A hush stops audio at once, but the next utterance waits for an in-flight
+    OpenRouter request (usually about 1 s, at most the 20 s timeout).
+  - A render through OpenRouter ignores the profile speed (no player stretch),
+    and fails (resumably) on an outage. A 500k-char book costs about $7.50 on Flash.
+  - During a holdoff the decline reason is right, but the chime has not been confirmed by ear.
+  - With `on_failure=local`, Kokoro may get one 300-char unit after the switch.
+  - Renders through OpenRouter, and players that cannot time-stretch, ignore the
+    profile's speed.
+  - One failed sentence fails a whole OpenRouter render (it resumes, but does not
+    skip the sentence).
+  - The urllib timeout (20 s) applies per socket operation, not to the whole
+    request, so a slow trickle of bytes can outlast it.
+  - The default profile's prepare step marks pieces as not `exact`, so every unit
+    of an utterance reports the whole text as its span (`0..len`) on every engine,
+    Kokoro included; follow-along highlighting needs per-unit spans from it.
+  - Renders do not apply `speech.unsupported_language` on the OpenRouter path.
+  - A narrow check-then-act race: a render submitted just as the deferred Kokoro
+    unload checks `needs("kokoro")` can be left waiting on an unloaded model.
+  - After a Kokoro unload the process keeps its memory (RSS 795 MB against 205 MB
+    on a fresh start); a `malloc_trim` via ctypes after the unload would likely
+    give it back.
+  - The "pull the network mid-utterance" live test has not been done (it would cut the agent session too); unit tests cover the path.
+  - The secret file is not encrypted (keyring would need a dependency). The
+    socket keeps its default permissions, so another local user could at most
+    overwrite the key, never read it.
 - **Flaky test:** `test_work_the_daemon_stopped_on_still_says_so` fails about
   1 run in 3, on main before these changes too.
 
@@ -250,6 +345,9 @@ reviewed, then an Opus whole-branch review and one fix wave.
   piper-engine, piper-choose, piper-daemon, piper-renders, piper-window,
   piper-docs, …) are kept by convention. All of the ones after `notify-off-switch`
   are fully merged; remove them when it suits you.
+- **`.env` in the repo root holds the user's OpenCode key** (`oc_sk_…`); it is
+  git-ignored now. It is not an OpenRouter key: pasted into that field, it
+  gets HTTP 401 "Missing Authentication header".
 - **Commit emails are public** on GitHub (`sfgartland@hotmail.com`).
 - **The main checkout may carry uncommitted work-in-progress.** Check
   `git status` before assuming main's working tree is clean. (The Codex client

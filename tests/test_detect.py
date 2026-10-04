@@ -41,6 +41,9 @@ def _fake_lingua_module(*, result: object, raises: Exception | None = None) -> t
         ITALIAN = FakeLanguage("ITALIAN", "IT")
         JAPANESE = FakeLanguage("JAPANESE", "JA")
         GERMAN = FakeLanguage("GERMAN", "DE")
+        RUSSIAN = FakeLanguage("RUSSIAN", "RU")
+        KOREAN = FakeLanguage("KOREAN", "KO")
+        ARABIC = FakeLanguage("ARABIC", "AR")
         DUTCH = FakeLanguage("DUTCH", "NL")
         SWEDISH = FakeLanguage("SWEDISH", "SV")
         BOKMAL = FakeLanguage("BOKMAL", "NB")
@@ -110,6 +113,9 @@ def test_an_exception_from_the_detector_gives_none(monkeypatch: pytest.MonkeyPat
         ("ITALIAN", "it"),
         ("JAPANESE", "ja"),
         ("GERMAN", "de"),
+        ("RUSSIAN", "ru"),
+        ("KOREAN", "ko"),
+        ("ARABIC", "ar"),
         ("DUTCH", "nl"),
         ("SWEDISH", "sv"),
         ("BOKMAL", "nb"),

@@ -41,9 +41,10 @@ _VOICE_PREFIX_LANGUAGE: dict[str, str] = {code: lang for lang, code in KOKORO_CO
 # Codes normalise() recognises but that no engine here can speak yet: real
 # BCP-47 tags, not gibberish, so they must not be treated the same as
 # "klingon". They flow to speech.unsupported_language handling rather than
-# being dropped, which is what makes them worth naming at all -- a later
-# engine phase may add a pipeline for one of these.
-_KNOWN_UNSUPPORTED: tuple[str, ...] = ("de",)
+# being dropped, which is what makes them worth naming at all -- Piper or the
+# remote engine (OpenRouter; Gemini adds nl, sv, nb, da and pl) may speak
+# them, chosen per utterance.
+_KNOWN_UNSUPPORTED: tuple[str, ...] = ("de", "ru", "ko", "ar", "nl", "sv", "nb", "da", "pl")
 
 # A code normalise() could not make sense of. Not None: None means "nothing
 # was given" (empty string), which a caller reads as "use resolution's next
@@ -80,6 +81,9 @@ _FULL_NAMES: dict[str, str] = {
     "hindi": "hi",
     "japanese": "ja",
     "chinese": "zh",
+    "russian": "ru",
+    "korean": "ko",
+    "arabic": "ar",
 }
 
 # A loose shape for "this looks like a BCP-47 tag, even if not one we know" --

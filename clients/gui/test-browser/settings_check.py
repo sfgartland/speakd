@@ -127,6 +127,32 @@ def run(port: int) -> int:
             "the restart-flagged setting shows its note",
         )
 
+        # ---- a secret is write-only ----
+        key_field = "#set-speech-openrouter_api_key"
+        state_of = (
+            f"document.querySelector('{key_field}').closest('.secret')"
+            ".querySelector('.secret-state').textContent"
+        )
+        checks.check(
+            page.eval_on_selector(key_field, "el => el.type") == "password",
+            "the API key renders as a password field",
+        )
+        checks.check(page.evaluate(state_of) == "not set", "an unset key says so")
+        page.fill(key_field, "sk-or-test-key")
+        page.dispatch_event(key_field, "change")
+        page.wait_for_function(f"{state_of} === 'saved'")
+        checks.check(
+            page.eval_on_selector(key_field, "el => el.value") == "",
+            "the field is emptied once the key is sent, and says it is saved",
+        )
+        checks.check(
+            "sk-or-test-key" not in page.content(),
+            "the key is nowhere in the page afterwards",
+        )
+        page.click(f"{key_field} ~ button")
+        page.wait_for_function(f"{state_of} === 'not set'")
+        checks.check(True, "Clear removes the saved key")
+
         # ---- changing a number commits and persists in the sim ----
         page.fill("#set-zotero-max_snippet", "500")
         page.dispatch_event("#set-zotero-max_snippet", "change")
@@ -213,6 +239,28 @@ def run(port: int) -> int:
         checks.check(
             True,
             "the rtf sub-line names piper once piper-speaking playback starts",
+        )
+
+        # ---- the model button while OpenRouter speaks ----
+        page.evaluate(
+            "() => window.__speakdSource.send('set_setting',"
+            " { key: 'speech.engine', value: 'openrouter' })"
+        )
+        page.wait_for_function(
+            "document.querySelector('#engine').textContent === 'Model not needed'"
+        )
+        checks.check(
+            page.eval_on_selector("#engine", "el => el.disabled"),
+            "the model button says the model is not needed, and offers nothing, on openrouter",
+        )
+        page.evaluate(
+            "() => window.__speakdSource.send('set_setting',"
+            " { key: 'speech.engine', value: 'kokoro' })"
+        )
+        page.wait_for_function("document.querySelector('#engine').textContent === 'Load model'")
+        checks.check(
+            not page.eval_on_selector("#engine", "el => el.disabled"),
+            "switching back to kokoro offers to load the model again",
         )
 
         browser.close()

@@ -111,7 +111,11 @@ def test_the_default_keeps_an_ordinary_clause_whole() -> None:
     clause = "A channel that is not itself muted stays silent while the global flag is set,"
     assert len(clause) <= DEFAULT_MAX_CHARS
     spoken = [u.spoken for u in segment([piece(f"Global wins. {clause} and on it goes.")])]
-    assert clause in spoken
+    # The sentence is now within the whole-sentence slack and stays in one
+    # unit, so the clause is no longer a unit of its own; what matters is that
+    # it is never cut mid-phrase.
+    assert any(clause in unit for unit in spoken)
+    assert not any(unit.endswith("while the") for unit in spoken)
 
 
 @pytest.mark.parametrize("max_chars", [0, -5])

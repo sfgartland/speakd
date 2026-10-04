@@ -34,6 +34,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
@@ -788,6 +789,19 @@ class RenderQueue:
         with self._lock:
             return [job.state_dict() for job in self._jobs.values()]
 
+    def needs(self, engine: str) -> bool:
+        """Whether an unfinished render still has a part for `engine` to speak.
+
+        Asked before an engine is unloaded: a render left waiting on an
+        unloaded model sits in `paused` until somebody loads it again.
+        """
+        with self._lock:
+            return any(
+                job.state not in ("done", "failed", "cancelled")
+                and any(part.engine == engine for part in job.parts[job.part_index :])
+                for job in self._jobs.values()
+            )
+
     def job(self, job_id: str) -> RenderJob | None:
         with self._lock:
             return self._jobs.get(job_id)
@@ -951,10 +965,20 @@ class RenderQueue:
                 # live pipeline's producer takes the same one, so a live
                 # sentence never runs against a render sentence -- and never
                 # waits on more of the render than this one call.
-                with self._synth_lock:
+                # Not taken for a remote engine, which has no in-process model
+                # to protect and would only make live speech wait on a
+                # sentence's network round trip.
+                with nullcontext() if getattr(engine, "remote", False) else self._synth_lock:
                     # A manifest written before renders carried a resolved language
                     # has `lang` empty; English is what those were spoken in.
-                    audio = engine.synthesize(text, part.voice, job.speed, job.lang or "en")
+                    # A remote engine counts its refusals per caller, and this
+                    # is not the live speaker.
+                    extra: dict[str, Any] = (
+                        {"context": "render"} if getattr(engine, "remote", False) else {}
+                    )
+                    audio = engine.synthesize(
+                        text, part.voice, job.speed, job.lang or "en", **extra
+                    )
                 append_pcm(pcm_path, _pcm16(audio))
                 job.done_seconds += len(audio) / engine.sample_rate
                 is_last_sentence = sent_i == len(sentences) - 1

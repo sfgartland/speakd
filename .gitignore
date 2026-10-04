@@ -20,3 +20,7 @@ build/
 
 # Subagent-driven development scratch (task briefs, reports, ledger).
 .superpowers/sdd/
+
+# Local secrets
+.env
+.claude/worktrees/

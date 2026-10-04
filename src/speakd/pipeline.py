@@ -11,7 +11,9 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 import numpy as np
 
@@ -20,6 +22,7 @@ from speakd.model import Piece, Segment
 from speakd.player import Player, Stretchable
 from speakd.segmenter import DEFAULT_MAX_CHARS, segment
 from speakd.synth import Synthesizer, UnsupportedLanguage
+from speakd.synth.openrouter_engine import RemoteEngineError
 from speakd.synth.piper_engine import PiperVoiceError
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
@@ -55,9 +58,21 @@ class SpeechResult:
     # utterance rather than one bad segment, so the caller can fall back to
     # another engine. None means nothing of the kind happened.
     piper_error: PiperVoiceError | None = None
+    # Set when a remote engine stopped being usable mid-utterance: no key,
+    # credits gone, or an outage that outlasted its retry. The same shape
+    # again -- the whole engine, not one segment -- so the caller can say the
+    # rest with a local engine. `timeline` says how far the remote one got.
+    remote_error: RemoteEngineError | None = None
 
 
-_Item = tuple[Piece, int, np.ndarray, float] | str | UnsupportedLanguage | PiperVoiceError | None
+_Item = (
+    tuple[Piece, int, np.ndarray, float]
+    | str
+    | UnsupportedLanguage
+    | PiperVoiceError
+    | RemoteEngineError
+    | None
+)
 
 # How much made audio an utterance may keep for going back to: about ten
 # minutes of 24 kHz float32.
@@ -310,7 +325,23 @@ def speak(
                 if cached is not None:
                     work.put((unit, index, *cached))
                     continue
-                made_at = tempo.value if tempo is not None else 1.0
+                # An engine that cannot vary its own speed (a remote one that
+                # ignores the parameter) makes everything at its natural pace.
+                # Recorded as made at 1/speed, the stretch below then plays it
+                # at `speed * tempo` -- the profile's speed and the listener's
+                # tempo both -- and a tempo change never sends the text off to
+                # be made again.
+                fixed = bool(getattr(engine, "fixed_speed", False))
+                # A remote engine can stop waiting on a hushed utterance: it
+                # is told, so it skips a retry nobody will hear.
+                remote = bool(getattr(engine, "remote", False))
+                extra: dict[str, Any] = (
+                    {"cancelled": lambda: cancel.is_set() or stop.is_set()} if remote else {}
+                )
+                if fixed:
+                    made_at = 1.0 / speed if speed > 0 else 1.0
+                else:
+                    made_at = tempo.value if tempo is not None else 1.0
                 # Held for this one call and nothing more -- see `synth_lock`
                 # above. Taken before the clock starts, so the synthesis
                 # window below measures the engine, not a wait behind a
@@ -319,9 +350,15 @@ def speak(
                 # previous segment, and the lock must never be held for
                 # longer than a synthesize.
                 try:
-                    with lock:
+                    # Not for a remote engine: the lock keeps one in-process
+                    # model from running twice at once, and a network request
+                    # has no such model -- holding it would make a render's
+                    # sentence and a live one wait on each other's round trip.
+                    with nullcontext() if remote else lock:
                         started = time.monotonic()
-                        audio = engine.synthesize(unit.spoken, voice, speed * made_at, lang)
+                        audio = engine.synthesize(
+                            unit.spoken, voice, 1.0 if fixed else speed * made_at, lang, **extra
+                        )
                 except UnsupportedLanguage as exc:
                     # Distinct from the except below: this is not "one bad
                     # segment" but "this engine cannot speak this language at
@@ -331,12 +368,13 @@ def speak(
                     # producer has nothing left to usefully make.
                     work.put(exc)
                     break
-                except PiperVoiceError as exc:
+                except (PiperVoiceError, RemoteEngineError) as exc:
                     # The same shape as UnsupportedLanguage, but the whole
                     # engine rather than one language: a Piper voice whose
                     # files existed when it was chosen cannot be loaded
-                    # (a corrupt .onnx). Nothing it could make would sound,
-                    # so the producer stops and the caller decides.
+                    # (a corrupt .onnx), or a remote engine has lost its key,
+                    # its credits or its network. Nothing more it could make
+                    # would sound, so the producer stops and the caller decides.
                     work.put(exc)
                     break
                 except Exception as exc:  # speech must not vanish on one bad segment
@@ -369,6 +407,7 @@ def speak(
     aborted = False
     unsupported_language: str | None = None
     piper_error: PiperVoiceError | None = None
+    remote_error: RemoteEngineError | None = None
     expected = first
     try:
         while True:
@@ -397,6 +436,17 @@ def speak(
                 # all. Same shape as UnsupportedLanguage, carried out so the
                 # caller can fall back to another engine.
                 piper_error = item
+                break
+            if isinstance(item, RemoteEngineError):
+                if cancel.is_set():
+                    # A request that finished or failed after the hush: the
+                    # listener already moved on, so this is neither an error
+                    # to report nor a reason to chime or speak on locally.
+                    player.stop()
+                    break
+                # As above, but possibly mid-utterance: what played so far is
+                # in the timeline, and `expected` is where the caller resumes.
+                remote_error = item
                 break
             if isinstance(item, str):
                 errors.append(item)
@@ -506,4 +556,5 @@ def speak(
         units=tuple(units),
         unsupported_language=unsupported_language,
         piper_error=piper_error,
+        remote_error=remote_error,
     )

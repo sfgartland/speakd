@@ -363,11 +363,14 @@ def test_status_prints_the_two_off_switches(running, capsys) -> None:  # type: i
     assert main(["status", "--socket", str(address)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["muted"] is False
+    # The remote engine's block depends on whether this machine has a key.
+    payload["engine"].pop("openrouter")
     assert payload["engine"] == {
         "loaded": True,
         "loading": False,
         "name": "kokoro",
         "piper": {"available": False, "voices": []},
+        "model_needed": True,
     }
 
 

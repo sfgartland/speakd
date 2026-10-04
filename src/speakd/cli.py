@@ -187,7 +187,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "set", parents=[common], help="set one setting; the value is parsed by its declared type"
     )
     set_cmd.add_argument("key", help="owner.name, e.g. speech.default_language")
-    set_cmd.add_argument("value", help="parsed according to the setting's declared type")
+    set_cmd.add_argument(
+        "value",
+        nargs="?",
+        default=None,
+        help=(
+            "parsed according to the setting's declared type; for a secret (an API key) "
+            "leave it out to be asked without echo, or pipe it in"
+        ),
+    )
 
     render_cmd = sub.add_parser(
         "render", parents=[common], help="render a text file to an audio file in the background"
@@ -863,11 +871,18 @@ def _settings_table(args: argparse.Namespace) -> int:
     if not isinstance(values, dict):
         values = {}
     header = ("key", "value", "default", "type")
+
+    def shown(decl: dict[str, object], value: object) -> str:
+        # A secret arrives as set-or-not and is printed as such.
+        if decl.get("type") == "secret":
+            return "set" if value else "not set"
+        return str(value)
+
     rows = [
         (
             str(decl["key"]),
-            str(values.get(decl["key"], decl["default"])),
-            str(decl["default"]),
+            shown(decl, values.get(decl["key"], decl["default"])),
+            shown(decl, decl["default"]),
             str(decl["type"]),
         )
         for decl in schema
@@ -942,8 +957,24 @@ def _set_setting(args: argparse.Namespace) -> int:
     if decl is None:
         print(f"speakctl: no such setting {args.key!r}", file=sys.stderr)
         return _UNREACHABLE
+    secret = decl.get("type") == "secret"
+    raw = args.value
+    if secret and raw is None:
+        raw = _read_secret(args.key)
+    elif secret:
+        # Accepted, since refusing would only push people to worse
+        # workarounds, but said: an argument is visible to every user of the
+        # machine through `ps` while this runs, and stays in shell history.
+        print(
+            "speakctl: note: a secret on the command line is visible in `ps` and your shell "
+            f"history; next time run `speakctl set {args.key}` and type it at the prompt",
+            file=sys.stderr,
+        )
+    if raw is None:
+        print(f"speakctl: set {args.key} needs a value", file=sys.stderr)
+        return _UNREACHABLE
     try:
-        value = _parse_setting_value(str(decl["type"]), args.value)
+        value = _parse_setting_value(str(decl["type"]), raw)
     except ValueError as exc:
         print(f"speakctl: {exc}", file=sys.stderr)
         return _UNREACHABLE
@@ -959,8 +990,30 @@ def _set_setting(args: argparse.Namespace) -> int:
         return _UNREACHABLE
     if not response.ok:
         return _refused(response)
-    print(response.data.get("value"))
+    applied = response.data.get("value")
+    if secret:
+        print("set" if applied else "cleared")
+    else:
+        print(applied)
     return 0
+
+
+def _read_secret(key: str) -> str | None:
+    """A secret from a prompt without echo, or from piped stdin.
+
+    An empty answer is passed on as it is -- the daemon reads an empty
+    secret as "clear it" -- and end of input is None, nothing to set.
+    """
+    if sys.stdin.isatty():
+        import getpass
+
+        try:
+            return getpass.getpass(f"{key} (input hidden, empty clears it): ")
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return None
+    line = sys.stdin.readline()
+    return line.strip() if line else None
 
 
 # `render` and `render_cancel` -----------------------------------------------

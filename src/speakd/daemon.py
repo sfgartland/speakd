@@ -21,9 +21,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from traceback import format_exc
-from typing import Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from speakd import languages, segmenter, state
+from speakd.alert import chime
 from speakd.channels import MODES, Channel, ChannelTable, effective_mode
 from speakd.detect import Detector
 from speakd.engines import Declined, EngineChoice, choose_engine
@@ -47,6 +48,15 @@ from speakd.settings.registry import Settings
 from speakd.settings.store import SettingsStore
 from speakd.settings.types import SettingError
 from speakd.synth import Synthesizer
+from speakd.synth.openrouter_engine import DEFAULT_VOICE as OPENROUTER_DEFAULT_VOICE
+from speakd.synth.openrouter_engine import (
+    KEY_SETTING,
+    NO_KEY,
+    OpenRouterEngine,
+    env_api_key,
+    max_unit_chars,
+)
+from speakd.synth.openrouter_engine import VOICE_MODELS as OPENROUTER_VOICE_MODELS
 from speakd.synth.piper_engine import PiperEngine, piper_available
 from speakd.tempo import Tempo
 from speakd.timeline import Timeline
@@ -118,6 +128,19 @@ _CORE_SPEECH_SETTINGS: tuple[dict[str, object], ...] = (
         "min": 0,
         "max": 5000,
     },
+    {
+        "name": "merge_chars",
+        "type": "int",
+        "default": 0,
+        "label": "Merge sentences up to",
+        "help": (
+            "Join short sentences into units of up to this many characters, "
+            "after the first, for smoother speech on a fast machine. 0 keeps "
+            "one sentence per unit, which a slow machine needs."
+        ),
+        "min": 0,
+        "max": 600,
+    },
 )
 
 # The Piper settings (piper-engine plan, Global Constraints). Piper is the
@@ -146,8 +169,11 @@ _CORE_PIPER_SETTINGS: tuple[dict[str, object], ...] = (
         "type": "choice",
         "default": "kokoro",
         "label": "Speech engine",
-        "help": "Piper speaks what it has a voice for; Kokoro says the rest.",
-        "options": ["kokoro", "piper"],
+        "help": (
+            "Piper speaks what it has a voice for; OpenRouter speaks through a "
+            "hosted model and needs a key; Kokoro says the rest."
+        ),
+        "options": ["kokoro", "piper", "openrouter"],
     },
     {
         "name": "piper_voices",
@@ -174,6 +200,66 @@ _CORE_PIPER_SETTINGS: tuple[dict[str, object], ...] = (
         "restart": True,
     },
 )
+
+# The OpenRouter settings (remote engine). The key is a `secret` setting:
+# typed into the window like any other, but kept in its own 0600 file rather
+# than settings.toml, and reported to every client -- the socket, the HTTP
+# transport, the `setting` event -- only as set or not set
+# (`speakd.settings.secrets`).
+_CORE_OPENROUTER_SETTINGS: tuple[dict[str, object], ...] = (
+    {
+        "name": "openrouter_api_key",
+        "type": "secret",
+        "default": "",
+        "label": "OpenRouter API key",
+        "help": (
+            "Kept in a private file, never shown again once saved. "
+            "OPENROUTER_API_KEY in the daemon's environment takes precedence."
+        ),
+    },
+    {
+        "name": "openrouter_voice",
+        "type": "choice",
+        "default": OPENROUTER_DEFAULT_VOICE,
+        "label": "OpenRouter voice",
+        "help": (
+            "The voice decides the model: loongjohn is Qwen-Audio 3.0 TTS Flash, "
+            "longanlingxin is Qwen Plus, Charon is Google Gemini TTS (which "
+            "speaks more languages)."
+        ),
+        "options": list(OPENROUTER_VOICE_MODELS),
+    },
+    {
+        "name": "openrouter_unit_chars",
+        "type": "int",
+        "default": 300,
+        "label": "OpenRouter unit length",
+        "help": (
+            "How many characters go in one request. A hosted model is fast, so "
+            "longer units cost nothing in waiting and sound more natural; what "
+            "a stop wastes is at most about two of them."
+        ),
+        "min": 60,
+        "max": 600,
+    },
+    {
+        "name": "openrouter_on_failure",
+        "type": "choice",
+        "default": "alert",
+        "label": "When OpenRouter fails",
+        "help": (
+            "alert: play a short sound and report the error, keeping the local "
+            "model unloaded. silent: only report it. local: say it with Kokoro "
+            "or Piper instead, which keeps Kokoro loaded."
+        ),
+        "options": ["alert", "silent", "local"],
+    },
+)
+
+# How close together two failure alerts may sound. A burst of agent messages
+# during an outage would otherwise be a burst of chimes; one tells the
+# listener all they need, and the `error` events still name every one.
+_ALERT_INTERVAL_SECONDS = 10.0
 
 # Render-wide settings (audio-export design §1). `mp3_bitrate` names the
 # bitrate ffmpeg is given for every format a render can produce -- mp3, opus
@@ -275,9 +361,28 @@ def build_settings() -> Settings:
     """
     values_path, schema_path = default_settings_paths()
     settings = Settings(SettingsStore(values_path, schema_path))
-    settings.declare("speech", list((*_CORE_SPEECH_SETTINGS, *_CORE_PIPER_SETTINGS)), persist=False)
+    settings.declare(
+        "speech",
+        list((*_CORE_SPEECH_SETTINGS, *_CORE_PIPER_SETTINGS, *_CORE_OPENROUTER_SETTINGS)),
+        persist=False,
+    )
     settings.declare("render", list(_CORE_RENDER_SETTINGS), persist=False)
     return settings
+
+
+def kokoro_wanted(settings: Settings) -> bool:
+    """Whether Kokoro should be resident, by the settings alone.
+
+    Not while OpenRouter speaks with no local fallback: the point of the
+    remote engine on a laptop is the CPU and memory Kokoro would take, and
+    nothing would ever use it. `speakctl disable` is the other "no" and is the
+    caller's to check -- it is a persisted state, not a setting. Read by
+    `__main__` before the first load and by the daemon on every engine change.
+    """
+    return not (
+        str(settings.get("speech.engine")) == "openrouter"
+        and settings.get("speech.openrouter_on_failure") != "local"
+    )
 
 
 def _preview(text: str) -> str:
@@ -412,6 +517,9 @@ class _Current:
     units: tuple[Piece, ...]
     index: int = 0
     seek_to: int | None = None
+    # Which engine is making the audio, so an unload of Kokoro knows whether
+    # it is pulling the model out from under this utterance.
+    engine: str = ""
 
 
 class Daemon:
@@ -426,6 +534,7 @@ class Daemon:
         settings: Settings | None = None,
         piper: PiperLike | None = None,
         render_piper: PiperLike | None = None,
+        remote: OpenRouterEngine | None = None,
     ) -> None:
         self.engine = engine
         # The optional second engine, chosen per utterance once `speech.engine`
@@ -450,7 +559,9 @@ class Daemon:
         # that can go offline and come back, so there is nothing here for a
         # persisted schema to stand in for.
         self.settings.declare(
-            "speech", list((*_CORE_SPEECH_SETTINGS, *_CORE_PIPER_SETTINGS)), persist=False
+            "speech",
+            list((*_CORE_SPEECH_SETTINGS, *_CORE_PIPER_SETTINGS, *_CORE_OPENROUTER_SETTINGS)),
+            persist=False,
         )
         # Built once and reused for the daemon's whole life: it imports
         # lingua lazily on its own first `detect()` call, not here, so
@@ -477,6 +588,20 @@ class Daemon:
                 threads=cast(int, self.settings.get("render.piper_threads")),
             )
         self.render_piper = render_piper
+        # The remote engine. Always built -- it needs nothing beyond the
+        # standard library -- and only ever chosen while `speech.engine` names
+        # it and it has a key. One object serves live speech and renders
+        # alike: it holds no session to share, only a holdoff after failing,
+        # which both sides should respect. The model is read per request, so
+        # a change to the setting applies to the next sentence.
+        if remote is None:
+            remote = OpenRouterEngine(
+                voice=lambda: str(self.settings.get("speech.openrouter_voice")),
+                api_key=self._openrouter_key,
+            )
+        self.remote = remote
+        # When the last failure alert sounded; see `_alert`.
+        self._last_alert = -math.inf
         # The render queue chooses its engine per part from this set, keyed
         # by the name `Part.engine` records. `render_piper` is only added
         # when it exists; `choose_engine` only ever names Piper when it
@@ -484,6 +609,7 @@ class Daemon:
         engines: dict[str, Synthesizer] = {"kokoro": self.engine}
         if self.render_piper is not None:
             engines["piper"] = self.render_piper
+        engines["openrouter"] = self.remote
         # Owned here, not built by `__main__`: a render shares this daemon's
         # engine and `synth_lock` (so a render sentence and a live one never
         # reach the engine together) and yields to `self.render_busy` (so a
@@ -886,13 +1012,20 @@ class Daemon:
             status: dict[str, object] = {"loaded": True, "loading": False}
         else:
             status = {"loaded": engine.loaded, "loading": engine.loading}
-        status["name"] = (
-            "piper"
-            if str(self.settings.get("speech.engine")) == "piper"
-            and self.piper is not None
-            and piper_available()
-            else "kokoro"
-        )
+        setting = str(self.settings.get("speech.engine"))
+        if setting == "piper" and self.piper is not None and piper_available():
+            status["name"] = "piper"
+        elif setting == "openrouter" and self.remote.available(
+            ignore_transient=not self._remote_fallback()
+        ):
+            status["name"] = "openrouter"
+        else:
+            status["name"] = "kokoro"
+        status["openrouter"] = {**self.remote.status(), "key_source": self._openrouter_key_source()}
+        # Whether the local model has any use under the current settings, so
+        # a control surface can say "not needed" instead of offering to load
+        # three gigabytes nothing would speak with.
+        status["model_needed"] = kokoro_wanted(self.settings)
         piper = self.piper
         if piper is not None:
             status["piper"] = {
@@ -912,6 +1045,13 @@ class Daemon:
         this is the static list a client reads.
         """
         supported = self._supported_languages()
+        if str(self.settings.get("speech.engine")) == "openrouter" and self.remote.available(
+            ignore_transient=not self._remote_fallback()
+        ):
+            for lang in self.remote.supported_languages():
+                if lang not in supported:
+                    supported.append(lang)
+            return supported
         if str(self.settings.get("speech.engine")) != "piper" or self.piper is None:
             return supported
         voices = self.settings.get("speech.piper_voices")
@@ -967,16 +1107,18 @@ class Daemon:
         self._publish("declined", source_id, {"reason": reason})
         self._publish("finished", source_id, {"cancelled": False, "aborted": True})
 
-    def _unsupported_language(self, source_id: str, requested: str) -> str | None:
+    def _unsupported_language(
+        self, source_id: str, requested: str, engine: str = "kokoro"
+    ) -> str | None:
         """Apply `speech.unsupported_language` for a language nothing can speak.
 
         Returns the language to speak instead, or None having already
         published `declined` and `finished` for a caller that must now stop
         -- the same two-event shape `_decline` gives, kept separate because
         this decision needs the text prepared and the language resolved,
-        which only `_speak` has. The fallback is always spoken by Kokoro,
-        whichever engine was in play: Piper only ever speaks languages its
-        own map names.
+        which only `_speak` has. The fallback is spoken by Kokoro, or by the
+        remote engine when `engine` says that is what stood in the way:
+        Piper only ever speaks languages its own map names.
         """
         mode = self.settings.get("speech.unsupported_language")
         if mode == "decline":
@@ -990,10 +1132,66 @@ class Daemon:
                 "requested": requested,
                 "used": default_lang,
                 "reason": "unsupported",
-                "engine": "kokoro",
+                "engine": engine,
             },
         )
         return default_lang
+
+    def _fit_kokoro_to_engine(self) -> None:
+        """Load or unload Kokoro after the engine settings changed.
+
+        Unloading here leaves `disabled` alone: the user did not switch the
+        model off, they chose an engine that does not need it, and choosing a
+        local engine again brings it back -- in the background, announced on
+        the bus as `enable` does.
+        """
+        engine = self.engine
+        if not isinstance(engine, Loadable):
+            return
+        if not kokoro_wanted(self.settings):
+            if engine.loaded:
+                if self.render_queue.needs("kokoro"):
+                    # A render with Kokoro parts left would sit in `paused`
+                    # on the unloaded model for good. The unload waits for
+                    # the render to end (`_on_render_update` asks again),
+                    # which is the cheaper surprise than a stuck export.
+                    return
+                # Silenced before the model goes, as `_set_engine_loaded`
+                # does: an utterance in flight is made of Kokoro's output,
+                # and an unloaded LazyEngine answers with empty arrays, so
+                # it would go on "speaking" silence to its end. The queue is
+                # kept (drain=False): what waits will choose its engine anew.
+                # Only when Kokoro is what is speaking: this also runs when a
+                # deferred unload finally goes ahead, or the failure mode
+                # changed, while OpenRouter is mid-sentence, and that is no
+                # reason to cut it off.
+                with self._idle:
+                    kokoro_speaking = self._current is not None and self._current.engine == (
+                        "kokoro"
+                    )
+                try:
+                    if kokoro_speaking:
+                        self._stop_speaking("", drain=False, reason=_DISCARDED_MUTED)
+                except Exception as exc:  # noqa: BLE001 - the setting already changed
+                    self._publish(
+                        "error", "", {"message": f"could not silence the player: {exc!r}"}
+                    )
+                engine.unload()
+                self._publish("engine", "", {"state": "unloaded"})
+            return
+        if engine.loaded or engine.loading or state.load().disabled:
+            return
+        self._publish("engine", "", {"state": "loading"})
+
+        def run() -> None:
+            try:
+                engine.load()
+            except Exception as exc:  # noqa: BLE001 - a load thread nobody watches
+                sys.stderr.write(f"speakd: could not load the model: {exc!r}\n")
+                return
+            self._publish("engine", "", {"state": "ready"})
+
+        threading.Thread(target=run, name=_ENGINE_THREAD_NAME, daemon=True).start()
 
     def _set_engine_loaded(self, wanted: bool) -> Response:
         """Load or unload the model, without ever blocking the socket.
@@ -1259,6 +1457,9 @@ class Daemon:
             self._render_last_state.pop(job.id, None)
             self._render_last_published.pop(job.id, None)
         self._publish("render", "", job.state_dict())
+        if job.state in ("done", "failed", "cancelled"):
+            # An unload that `_fit_kokoro_to_engine` put off for this render.
+            self._fit_kokoro_to_engine()
 
     def _voice_for_render(self, lang: str, profile: ProfileView) -> str:
         """The one seam a render's voice comes from: the same choice live
@@ -1290,7 +1491,95 @@ class Daemon:
             piper_has_voice,
             piper_ok,
             kokoro_loaded,
+            **self._remote_choice(),
         )
+
+    def _openrouter_key(self) -> str | None:
+        """The key: the environment first, then the secret setting.
+
+        The environment wins so a deployment that injects the key (a service
+        unit, a secrets manager) is never overridden by a stale entry typed
+        into the window; `status` says which one is in use.
+        """
+        return env_api_key() or self.settings.secret(KEY_SETTING)
+
+    def _openrouter_key_source(self) -> str | None:
+        if env_api_key():
+            return "environment"
+        if self.settings.get(KEY_SETTING):
+            return "settings"
+        return None
+
+    def _remote_fallback(self) -> bool:
+        """Whether a remote failure may be said by a local engine instead."""
+        return self.settings.get("speech.openrouter_on_failure") == "local"
+
+    def _remote_choice(self) -> dict[str, Any]:
+        """`choose_engine`'s remote arguments: a voice only while usable.
+
+        With no fallback, a holdoff after a transient outage is ignored: it
+        exists to spare the local engine's utterances a timeout each, and
+        with no local engine it would only refuse speech after the network
+        is back. A key or credit failure still holds.
+        """
+        fallback = self._remote_fallback()
+        usable = self.remote.available(ignore_transient=not fallback)
+        return {
+            "remote_voice": str(self.settings.get("speech.openrouter_voice")) if usable else None,
+            "remote_languages": self.remote.supported_languages(),
+            "remote_fallback": fallback,
+            "remote_unavailable": "" if usable else self.remote.unavailable_reason(),
+        }
+
+    def _alert(self) -> None:
+        """Sound the failure chime, at most once per `_ALERT_INTERVAL_SECONDS`.
+
+        Called from the speech worker between utterances (the player is
+        free), and only when `speech.openrouter_on_failure` is `alert`. A
+        player that fails to play it costs nothing but the sound: the `error`
+        event that goes with it has already been published.
+        """
+        if self.settings.get("speech.openrouter_on_failure") != "alert" or self.muted:
+            return
+        now = time.monotonic()
+        if now - self._last_alert < _ALERT_INTERVAL_SECONDS:
+            return
+        self._last_alert = now
+        rate = self.engine.sample_rate
+        try:
+            self.player.play(chime(rate), rate)
+        except Exception as exc:  # noqa: BLE001 - the alert must never take the worker down
+            sys.stderr.write(f"speakd: could not play the failure alert: {exc!r}\n")
+
+    def _units_for(
+        self, pieces: Sequence[Piece], profile: ProfileView, engine_name: str
+    ) -> tuple[list[Piece], list[str]]:
+        """Segment prepared pieces for the engine that will speak them, then
+        run the profile's per-sentence transforms over the units.
+
+        Per engine because unit length is a property of the engine's speed.
+        A local engine needs short units, since time to first audio tracks the
+        first unit and the next has to be made while this one plays. A hosted
+        model is fast enough that neither binds, so it gets long units --
+        whole sentences, short ones merged -- which is where its prosody
+        comes from; it bills per character, so the count of requests costs
+        nothing. Its first unit is still a single sentence, never a merge.
+        """
+        if engine_name == "openrouter":
+            size = cast(int, self.settings.get("speech.openrouter_unit_chars"))
+            split = merge = size
+            cap = max_unit_chars(str(self.settings.get("speech.openrouter_voice")))
+            if cap is not None:
+                # A hard limit, not a preference: the model drops the rest.
+                # The segmenter keeps a sentence whole up to its slack over
+                # `max_chars`, so split earlier to stay under the cap.
+                merge = min(size, cap)
+                split = min(size, int(cap / segmenter.WHOLE_SENTENCE_SLACK))
+            units = segmenter.segment(pieces, split, merge_chars=merge)
+        else:
+            merge = cast(int, self.settings.get("speech.merge_chars"))
+            units = segmenter.segment(pieces, merge_chars=merge)
+        return profile.prepare_sentences(units)
 
     def _render_language(self, requested: str, texts: list[str]) -> tuple[str | None, str | None]:
         """The language a whole render is spoken in, or `(None, declined_as)`
@@ -1324,7 +1613,7 @@ class Daemon:
         choice = self._render_choice(code)
         if isinstance(choice, Declined):
             return None, code
-        if choice.engine == "piper":
+        if choice.engine in ("piper", "openrouter"):
             return code, None
         supported = self._supported_languages()
         if code in supported:
@@ -1360,15 +1649,15 @@ class Daemon:
         choice = self._render_choice(code)
         if isinstance(choice, Declined):
             return None, code
-        sentences = self._render_sentences(text, profile)
-        if choice.engine == "piper":
+        if choice.engine in ("piper", "openrouter"):
             return Part(
                 title=title,
                 text=text,
-                engine="piper",
+                engine=choice.engine,
                 voice=cast(str, choice.voice),
-                sentences=sentences,
+                sentences=self._render_sentences(text, profile, choice.engine),
             ), None
+        sentences = self._render_sentences(text, profile, "kokoro")
         if code not in self._supported_languages():
             if self.settings.get("speech.unsupported_language") == "decline":
                 return None, code
@@ -1383,14 +1672,15 @@ class Daemon:
             sentences=sentences,
         ), None
 
-    def _render_sentences(self, text: str, profile: ProfileView) -> list[str]:
-        """A part's sentences exactly as live speech prepares them: the
-        profile's chain, segmentation, then its per-sentence transforms.
-        Errors (a profile naming a transform nobody provides) have no
-        listener at submission and are dropped; live speech reports them.
+    def _render_sentences(self, text: str, profile: ProfileView, engine_name: str) -> list[str]:
+        """A part's sentences exactly as live speech prepares them for the
+        same engine: the profile's chain, segmentation, then its per-sentence
+        transforms. Errors (a profile naming a transform nobody provides)
+        have no listener at submission and are dropped; live speech reports
+        them.
         """
         pieces, _ = profile.prepare([Piece(span=Span(0, len(text)), spoken=text)])
-        units, _ = profile.prepare_sentences(segmenter.segment(pieces))
+        units, _ = self._units_for(pieces, profile, engine_name)
         return [unit.spoken for unit in units]
 
     _RENDER_FORMATS = ("mp3", "opus", "m4b")
@@ -1687,6 +1977,13 @@ class Daemon:
             return Response(
                 ok=False, error="piper-tts is not installed (pip install 'speakd[piper]')"
             )
+        if key == "speech.engine" and value == "openrouter" and not self.remote.has_key():
+            # Refused for the reason piper is refused above: the setting would
+            # be stored and then quietly never used.
+            return Response(
+                ok=False,
+                error=NO_KEY,
+            )
         previous = (
             self.settings.get(key) if key in ("speech.engine", "speech.piper_voice_dir") else None
         )
@@ -1699,6 +1996,7 @@ class Daemon:
                 # Leaving piper for kokoro: drop the voices' sessions, since
                 # kokoro is what speaks from here on.
                 self.piper.unload()
+            self._fit_kokoro_to_engine()
         elif key == "speech.piper_voice_dir" and self.piper is not None and applied != previous:
             # The engines' own methods unload first: anything loaded came
             # from the old directory. Both Pipers -- live and render -- read
@@ -1707,6 +2005,14 @@ class Daemon:
             self.piper.set_voice_dir(voice_dir)
             if self.render_piper is not None:
                 self.render_piper.set_voice_dir(voice_dir)
+        if key == "speech.openrouter_on_failure":
+            self._fit_kokoro_to_engine()
+        if key.startswith("speech.openrouter_") or (
+            key == "speech.engine" and applied == "openrouter"
+        ):
+            # A new model, voice or a deliberate switch back is the user
+            # saying "try again": a holdoff from an earlier failure ends.
+            self.remote.reset()
         self._publish("setting", "", {"key": key, "value": applied})
         return Response(ok=True, data={"value": applied})
 
@@ -1898,13 +2204,25 @@ class Daemon:
             and self.piper is not None
             and piper_available()
         )
-        if not piper_ready and isinstance(self.engine, Loadable) and not self.engine.loaded:
+        # The same exemption for OpenRouter: it keeps Kokoro unloaded by
+        # design, and `disabled` only means "do not load Kokoro", so neither
+        # may stop an engine that does not need it.
+        # Usable or not: an unusable one must reach `choose_engine`, which
+        # declines with the real reason and the alert flag. Dropped here as
+        # "disabled", the listener would get neither the chime nor the cause.
+        remote_ready = str(self.settings.get("speech.engine")) == "openrouter"
+        if (
+            not piper_ready
+            and not remote_ready
+            and isinstance(self.engine, Loadable)
+            and not self.engine.loaded
+        ):
             # Disabled, or still loading: either way there is no model to say
             # this with. Dropped for the same reason as a mute, and it covers
             # the load as well as the disable deliberately — an enable that
             # queued thirty seconds of arrivals would speak them all at once
             # the moment the model landed. When piper is the engine and is
-            # usable, the job goes through instead: `choose_engine` decides
+            # usable (or OpenRouter is), the job goes through instead: `choose_engine` decides
             # per utterance whether it can be spoken, and declines with its
             # own reason when it needs the unloaded Kokoro.
             self._publish(
@@ -2166,6 +2484,7 @@ class Daemon:
             # the check above, so the Event alone cannot stop it.
             self._publish("error", job.source_id, {"message": _DISCARDED_STOPPED})
             return
+        units: list[Piece] | None
         if job.replay is not None:
             # Said before, so already prepared: see `_Spoken` for why the
             # transforms are not run again.
@@ -2177,16 +2496,9 @@ class Daemon:
             pieces, errors = job.profile.prepare([Piece(span=Span(0, len(text)), spoken=text)])
             for message in errors:
                 self._publish("error", job.source_id, {"message": message})
-            # Segmented here rather than inside `speak()`, so that `started`
-            # can name every sentence before the first is heard. A monitor
-            # showing the whole utterance needs them all up front, and a seek
-            # addresses them by the index given here.
-            units = segmenter.segment(pieces)
-            # After segmentation, so each unit keeps its own source span
-            # however much the profile rewrites its words.
-            units, unit_errors = job.profile.prepare_sentences(units)
-            for message in unit_errors:
-                self._publish("error", job.source_id, {"message": message})
+            # Segmented below, once the engine is known: how long a unit
+            # should be depends on which engine makes it (`_units_for`).
+            units = None
         # Resolution order (design §2): the payload's own lang, the channel's
         # pinned one, detection, then the default -- first match wins.
         # Detection is skipped, not merely ignored, when either of the first
@@ -2219,19 +2531,44 @@ class Daemon:
         def piper_has_voice(voice: str) -> bool:
             return piper is not None and piper.has_voice(voice)
 
-        choice = choose_engine(
-            lang,
-            str(self.settings.get("speech.engine")),
-            piper_voices,
-            piper_has_voice,
-            piper_ok,
-            kokoro_loaded,
-        )
+        def choose(for_lang: str) -> EngineChoice | Declined:
+            return choose_engine(
+                for_lang,
+                str(self.settings.get("speech.engine")),
+                piper_voices,
+                piper_has_voice,
+                piper_ok,
+                kokoro_loaded,
+                **self._remote_choice(),
+            )
+
+        choice = choose(lang)
+        if (
+            isinstance(choice, Declined)
+            and not choice.alert
+            and str(self.settings.get("speech.engine")) == "openrouter"
+            and lang not in self.remote.supported_languages()
+        ):
+            # The language is one the remote engine does not speak and no
+            # local model is loaded to take it -- often a short English line
+            # the detector took for Dutch. That is the unsupported-language
+            # case like any other, so the same policy applies as on the
+            # Kokoro path rather than the text being dropped unheard.
+            fallback = self._unsupported_language(job.source_id, lang, "openrouter")
+            if fallback is None:
+                return
+            lang = fallback
+            choice = choose(lang)
         if isinstance(choice, Declined):
             self._decline(job.source_id, choice.reason)
+            if choice.alert:
+                self._alert()
             return
         if choice.engine == "piper":
             engine: Synthesizer = cast(Synthesizer, piper)
+            voice = cast(str, choice.voice)
+        elif choice.engine == "openrouter":
+            engine = self.remote
             voice = cast(str, choice.voice)
         else:
             engine = self.engine
@@ -2245,6 +2582,25 @@ class Daemon:
                 lang = fallback
             voice = self._voice_for(lang, job.profile.voice)
         engine_name = choice.engine
+        if units is not None and engine_name == "openrouter":
+            # A replay reuses the units the utterance was first made of, which
+            # may have been sized for another voice. A voice with a hard
+            # length cap drops the excess in silence, so units over it are
+            # made again (the indices change, but only for a replay that
+            # could not have been spoken whole).
+            cap = max_unit_chars(str(self.settings.get("speech.openrouter_voice")))
+            if cap is not None and any(len(unit.spoken) > cap for unit in units):
+                units = None
+        if units is None:
+            # Segmented here rather than inside `speak()`, so that `started`
+            # can name every sentence before the first is heard. A monitor
+            # showing the whole utterance needs them all up front, and a seek
+            # addresses them by the index given here. The profile's sentence
+            # transforms run after segmentation, so each unit keeps its own
+            # source span however much they rewrite its words.
+            units, unit_errors = self._units_for(pieces, job.profile, engine_name)
+            for message in unit_errors:
+                self._publish("error", job.source_id, {"message": message})
         with self._idle:
             self._last = _Spoken(
                 source_id=job.source_id,
@@ -2280,7 +2636,7 @@ class Daemon:
         # Installed only now, past the early return above, which would
         # otherwise leave it pointing at an utterance that never spoke --
         # and seek and replay treating that as the one in the room.
-        current = _Current(units=tuple(units))
+        current = _Current(units=tuple(units), engine=engine_name)
         with self._idle:
             self._current = current
         # A stop aimed at playback that has already ended -- the hush during
@@ -2423,7 +2779,80 @@ class Daemon:
                     engine = self.engine
                     voice = self._voice_for(lang, job.profile.voice)
                     engine_name = "kokoro"
+                    current.engine = engine_name
                     cache = AudioCache()
+                    continue
+                if result.remote_error is not None and not self._remote_fallback():
+                    # The remote engine stopped mid-utterance, and the
+                    # listener chose not to keep a local model loaded for
+                    # this: loading Kokoro now would cost tens of seconds and
+                    # the memory they meant to save. So the utterance ends
+                    # here, said as far as it got, with the reason on the
+                    # bus and a sound so it is not simply missed.
+                    remote_error = result.remote_error
+                    self._publish(
+                        "error",
+                        job.source_id,
+                        {"message": f"openrouter: {remote_error.reason}"},
+                    )
+                    sys.stderr.write(f"speakd: openrouter failed ({remote_error.reason})\n")
+                    self._publish("finished", job.source_id, {"cancelled": False, "aborted": True})
+                    self._alert()
+                    return
+                if result.remote_error is not None:
+                    # The remote engine stopped mid-utterance: no key, no
+                    # credits, or an outage that outlasted its retry. It has
+                    # held itself off already, so choosing again lands on a
+                    # local engine; what played stays played, and the rest is
+                    # said from the next unit. The units themselves are kept
+                    # -- `started` already named them, and a seek addresses
+                    # them by index -- so a local engine may get a long one.
+                    remote_error = result.remote_error
+                    self._publish(
+                        "error",
+                        job.source_id,
+                        {"message": f"openrouter: {remote_error.reason}; speaking on locally"},
+                    )
+                    sys.stderr.write(
+                        f"speakd: openrouter failed ({remote_error.reason}); "
+                        "falling back to a local engine\n"
+                    )
+                    fallback_choice = choose_engine(
+                        lang,
+                        str(self.settings.get("speech.engine")),
+                        piper_voices,
+                        piper_has_voice,
+                        piper_ok,
+                        not isinstance(self.engine, Loadable) or self.engine.loaded,
+                    )
+                    if isinstance(fallback_choice, Declined):
+                        self._publish("error", job.source_id, {"message": fallback_choice.reason})
+                        self._publish(
+                            "finished", job.source_id, {"cancelled": False, "aborted": True}
+                        )
+                        return
+                    if fallback_choice.engine == "piper":
+                        engine = cast(Synthesizer, piper)
+                        voice = cast(str, fallback_choice.voice)
+                    else:
+                        engine = self.engine
+                        if lang not in self._supported_languages():
+                            fallback = self._unsupported_language(job.source_id, lang)
+                            if fallback is None:
+                                return
+                            lang = fallback
+                        voice = self._voice_for(lang, job.profile.voice)
+                    engine_name = fallback_choice.engine
+                    current.engine = engine_name
+                    played = result.timeline.segments
+                    if played:
+                        start = played[-1].index + 1
+                    if start >= len(units) or cancel.is_set():
+                        break
+                    cache = AudioCache()
+                    with self._idle:
+                        timeline = Timeline()
+                        self._timeline = timeline
                     continue
                 with self._idle:
                     target, current.seek_to = current.seek_to, None
