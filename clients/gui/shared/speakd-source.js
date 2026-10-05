@@ -9,7 +9,7 @@
  *     `handler` is called with `{ kind, data, source_id? }` events. `kind`
  *     names one of the event kinds `speakd.daemon.Daemon._publish` emits:
  *
- *       "started"   data: { text, engine, segments }
+ *       "started"   data: { text, engine, segments, paused }
  *                   One utterance is about to be spoken. `text` is the whole
  *                   of it, exactly as it was handed to the daemon — markdown
  *                   and all — and `engine` is "kokoro", "piper" or "openrouter", whichever
@@ -17,6 +17,9 @@
  *                   will be spoken as, in order: { index, text, span_start,
  *                   span_end }. The daemon segments before it speaks, so the
  *                   window can show the whole utterance from the first word.
+ *                   `paused` is whether the daemon's sticky pause is still on: a
+ *                   pause outlives the utterance it was made in, so `started`
+ *                   does not by itself mean sound.
  *                   A segment's `text` is what is *spoken*, after transforms,
  *                   and its span points into `text`; under the markdown
  *                   transform every sentence of a block carries the whole
@@ -139,6 +142,9 @@
  *     box's channel. A caller that means "everything" has to say so with an
  *     empty string, and has to check the `scope` it gets back, or a window-wide
  *     stop silently becomes a stop of the window's own typing.
+ *
+ *     `status` also reports `paused` (boolean): the sticky pause, readable
+ *     without having seen the `transport` event that set it.
  *
  *     `status` also reports the speed, under `speed`, and what is waiting, under `queue`: entries of
  *     { source_id, text } in play order, next first, NOT including whatever is
@@ -440,6 +446,8 @@ export class SimulatedSource {
     return {
       text: this._text,
       engine: this._engineName(),
+      // The fixture's pause is not sticky: whatever starts, plays.
+      paused: false,
       segments: this._segments.map((seg, i) => ({
         index: i,
         text: seg.text,
@@ -570,6 +578,7 @@ export class SimulatedSource {
     return {
       channels: this._channels.map((c) => ({ ...c, muted: !!this._channelMuted.get(c.source_id) })),
       muted: this._muted,
+      paused: !this._playing && !this._hushed,
       engine: {
         loaded: this._engineLoaded,
         loading: this._engineLoading,
@@ -982,7 +991,7 @@ export class SimulatedSource {
     this._speaking = source_id;
     this._hushed = false;
     this._utterance = { source_id, text, remaining: 1800, startedAt: 0 };
-    this._emit({ kind: "started", source_id, data: { text, engine: this._engineName() } });
+    this._emit({ kind: "started", source_id, data: { text, engine: this._engineName(), paused: false } });
     this._emit(this._metricsEvent());
     this._runUtterance();
   }

@@ -765,6 +765,10 @@
   let currentIndex = 0;
   let playing = null; // null until the first event says otherwise
   let hushed = false;
+  // The daemon's own pause, kept apart from `playing`: pause is sticky there
+  // (it survives a hush and spans utterances), so a `started` does not mean
+  // sound. Set only from what the daemon says: `transport`, `status`, `started`.
+  let paused = false;
   let message = null;
   // Kept apart from `message` because the two answer different questions and
   // the link answers the more basic one: a window with no subscription has
@@ -1429,6 +1433,12 @@
       ? data.queue.map((entry) => ({ source_id: entry.source_id ?? "", text: entry.text ?? "" }))
       : [];
     globalMuted = !!data.muted;
+    if (typeof data.paused === "boolean") {
+      paused = data.paused;
+      // A paused daemon is not playing, whatever the last event implied; this
+      // is also what lets "Play" un-stick a paused daemon that is idle.
+      if (paused) playing = false;
+    }
     if (typeof data.speed === "number") speed = data.speed;
     const engine = data.engine ?? {};
     engineState = engine.loading ? "loading" : engine.loaded ? "ready" : "unloaded";
@@ -1539,7 +1549,10 @@
         dropQueued(event.source_id, data.text ?? null);
         hushed = false;
         message = null;
-        playing = true; // the daemon says nothing further; `started` means it began
+        // `started` means the utterance began, not that it is audible: a
+        // sticky pause carries over, and the daemon reports it here.
+        if (typeof data.paused === "boolean") paused = data.paused;
+        playing = !paused;
         utterance = data.text ?? "";
         if (typeof data.engine === "string") sentenceEngine = data.engine;
         // A new utterance is a new timeline. Without this the previous one's
@@ -1604,7 +1617,8 @@
       case "transport":
         // Read rather than inferred: an absence of `position` events is also
         // what a finished utterance sounds like.
-        playing = !data.paused;
+        paused = !!data.paused;
+        playing = !paused;
         break;
       case "discarded":
         message = `${data.count} queued ${data.count === 1 ? "utterance" : "utterances"} dropped`;

@@ -1423,6 +1423,17 @@ class Daemon:
             return False
         return self.speaking
 
+    def _player_paused(self) -> bool:
+        """Whether the player is holding playback, False if it cannot pause.
+
+        Pause is sticky in the player: it survives `stop()` and spans
+        utterances. So a client cannot infer it from the utterance lifecycle
+        -- a `started` can arrive while the daemon is still paused, and only
+        this says so. Reported on `status` and `started` for that reason.
+        """
+        player = self.player
+        return isinstance(player, Pausable) and player.paused
+
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
 
@@ -1851,6 +1862,10 @@ class Daemon:
                     # draw: a channel that is audible behind a global mute
                     # looks identical to one that is muted itself.
                     "muted": self.muted,
+                    # The player's own sticky pause, so a client that missed
+                    # the `transport` event (opened late, or paused before a
+                    # hush) reads the truth rather than guessing.
+                    "paused": self._player_paused(),
                     "notify": {"enabled": self.notify_enabled},
                     "engine": self._engine_status(),
                     "speed": self.tempo.target,
@@ -2616,6 +2631,9 @@ class Daemon:
                 "text": text,
                 "lang": lang,
                 "engine": engine_name,
+                # Pause outlives the previous utterance, so this one may start
+                # silent: a GUI must not read `started` as "now playing".
+                "paused": self._player_paused(),
                 "segments": [
                     {
                         "index": i,
