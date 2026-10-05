@@ -1876,8 +1876,15 @@
     if (e.ctrlKey || e.metaKey) win.dataset.ctrl = "1";
     else delete win.dataset.ctrl;
   };
+  // Where typing, not shortcuts, is meant: Space there is a space.
+  const isTyping = (t) =>
+    t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement ||
+    t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
   document.addEventListener("keyup", (e) => {
     trackCtrl(e);
+    // Button activation by Space happens on keyup in some browsers; the
+    // keydown already did the toggle, so swallow the release.
+    if (e.key === " " && !isTyping(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) e.preventDefault();
     // Letting go of either the arrow or Ctrl ends a hold.
     if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Control" || e.key === "Meta") {
       endHold();
@@ -1893,7 +1900,7 @@
   document.addEventListener("keydown", (e) => {
     trackCtrl(e);
     const t = e.target;
-    if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) return;
+    if (isTyping(t)) return;
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
       e.preventDefault();
       // Held keys repeat; only the first press starts anything.
@@ -1904,8 +1911,11 @@
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    // Space on a focused button is that button's own click; leave it.
-    if (e.key === " " && t instanceof HTMLButtonElement) return;
+    // Space is play/pause even on a focused button: after clicking any
+    // control it would otherwise re-press that control. preventDefault here
+    // stops Chrome's activation; the keyup handler above stops Firefox's,
+    // which clicks on release. A held key repeats and must not flap the state.
+    if (e.key === " " && e.repeat) { e.preventDefault(); return; }
     const action = {
       ArrowLeft: "back",
       ArrowRight: "fwd",
