@@ -3,7 +3,8 @@
 Speaks Claude Code's prose responses aloud while the session runs. A follower
 process tails the session transcript and sends each block of text to the
 `speakd` daemon as it lands on disk — while the next tool is still running,
-rather than after it. A new prompt stops whatever is being said.
+rather than after it. A new prompt lets what is being said finish (`speech.on_prompt`, or
+`speakctl on-prompt hush` to cut it off instead).
 
 It also gives each session a way to **brief** you instead: an MCP server,
 `speakd-mcp`, whose `brief` tool the agent calls when it has finished, is stuck,

@@ -84,6 +84,9 @@ const CONTROL_SOURCE_ID: &str = "gui";
 /// scoped by the source it names, as a per-channel mute is, and changes how a
 /// channel is heard rather than what it says.
 ///
+/// `set_on_prompt` chooses whether the user's next message in one channel lets
+/// the reading finish or cuts it off; scoped and speechless like `set_mode`.
+///
 /// `replay` plays the daemon's last utterance again from a chosen sentence.
 /// It carries an index and nothing else, so it can only repeat words a channel
 /// has already spoken — never put new ones on it.
@@ -93,8 +96,8 @@ const CONTROL_SOURCE_ID: &str = "gui";
 /// forwarded: it is how a *client* — the Zotero plugin, a Claude Code
 /// session — declares the settings it owns, and this window is neither.
 const FORWARDED: &[&str] = &[
-    "pause", "resume", "hush", "cancel", "seek", "replay", "mute", "set_mode", "set_engine",
-    "set_speed", "status", "settings", "set_setting",
+    "pause", "resume", "hush", "cancel", "seek", "replay", "mute", "set_mode", "set_on_prompt",
+    "set_engine", "set_speed", "status", "settings", "set_setting",
 ];
 
 /// The one way the window originates speech.

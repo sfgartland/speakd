@@ -441,6 +441,21 @@ def test_mode_sends_set_mode(monkeypatch) -> None:  # type: ignore[no-untyped-de
     assert len(sent) == 1
 
 
+def test_on_prompt_sends_set_on_prompt(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.protocol import Response, Verb
+
+    sent = _fake_call(monkeypatch, Response(ok=True, data={"on_prompt": "hush"}))
+    assert main(["on-prompt", "hush", "--source", "claude-code:abc"]) == 0
+    assert (sent[0].verb, sent[0].source_id, sent[0].payload) == (
+        Verb.SET_ON_PROMPT,
+        "claude-code:abc",
+        {"on_prompt": "hush"},
+    )
+    with pytest.raises(SystemExit):  # argparse refuses a policy that is not one
+        main(["on-prompt", "maybe"])
+    assert len(sent) == 1
+
+
 def test_lang_sends_set_language(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     from speakd.protocol import Response, Verb
 

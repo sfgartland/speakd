@@ -25,7 +25,14 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from speakd import languages, segmenter, state
 from speakd.alert import chime
-from speakd.channels import MODES, Channel, ChannelTable, effective_mode
+from speakd.channels import (
+    MODES,
+    ON_PROMPT_POLICIES,
+    Channel,
+    ChannelTable,
+    effective_mode,
+    effective_on_prompt,
+)
 from speakd.detect import Detector
 from speakd.engines import Declined, EngineChoice, choose_engine
 from speakd.events import Event, EventBus
@@ -118,6 +125,18 @@ _CORE_SPEECH_SETTINGS: tuple[dict[str, object], ...] = (
             "the default language instead, or decline to speak at all."
         ),
         "options": ["default", "decline"],
+    },
+    {
+        "name": "on_prompt",
+        "type": "choice",
+        "default": "finish",
+        "label": "When I send a new message",
+        "help": (
+            "What a new prompt in a session does to the reading in progress: "
+            "finish it (and the rest of that session's queue), or cut it off. "
+            "A session can override this with `speakctl on-prompt`."
+        ),
+        "options": ["finish", "hush"],
     },
     {
         "name": "sentence_gap_ms",
@@ -1815,12 +1834,24 @@ class Daemon:
                 # treating that as a new turn would bring back the "finished"
                 # the briefing stood in for.
                 self.channels.mark_briefed(request.source_id, False)
+                channel = self.channels.get(request.source_id)
+                if channel is not None and self._on_prompt_for(channel) == "finish":
+                    # The user's policy is to let the reading run out: stop
+                    # nothing and drop nothing, so the rest of this channel's
+                    # queue is still spoken. `held` tells the caller the hush
+                    # was deliberately not acted on, which `discarded: 0`
+                    # alone would not distinguish from an idle channel.
+                    return Response(
+                        ok=True, data={"discarded": 0, "scope": "channel", "held": True}
+                    )
             discarded = self._stop_speaking(
                 request.source_id, drain=request.verb is Verb.HUSH, reason=_DISCARDED_HUSHED
             )
             return Response(ok=True, data={"discarded": discarded, "scope": scope})
         if request.verb is Verb.SET_MODE:
             return self._set_mode(request.source_id, request.payload.get("mode"))
+        if request.verb is Verb.SET_ON_PROMPT:
+            return self._set_on_prompt(request.source_id, request.payload.get("on_prompt"))
         if request.verb is Verb.SET_LANGUAGE:
             return self._set_language(request.source_id, request.payload.get("lang"))
         if request.verb is Verb.SET_CAPABILITIES:
@@ -1846,6 +1877,8 @@ class Daemon:
                             "mode": effective_mode(c),
                             "briefed_this_turn": c.briefed_this_turn,
                             "lang": c.lang,
+                            "on_prompt": self._on_prompt_for(c),
+                            "on_prompt_override": c.on_prompt,
                         }
                         for c in self.channels.all()
                     ],
@@ -2163,6 +2196,34 @@ class Daemon:
         self.channels.set_mode(source_id, str(mode))
         data = {"mode": effective_mode(channel), "briefs": channel.briefs}
         self._publish("mode", source_id, dict(data))
+        return Response(ok=True, data=data)
+
+    def _on_prompt_for(self, channel: Channel) -> str:
+        """The channel's new-prompt policy: its override, else `speech.on_prompt`."""
+        return effective_on_prompt(channel, str(self.settings.get("speech.on_prompt")))
+
+    def _set_on_prompt(self, source_id: str, value: object) -> Response:
+        """Set a channel's new-prompt policy: `finish`, `hush`, or `default` to clear.
+
+        Scoped to the channel named, like `set_mode`, and `get` rather than
+        `open` for the same reason: a typo must not create a channel.
+        """
+        if value not in (*ON_PROMPT_POLICIES, "default"):
+            return Response(
+                ok=False, error="set_on_prompt needs 'on_prompt': 'finish', 'hush' or 'default'"
+            )
+        if not source_id:
+            return Response(ok=False, error="set_on_prompt needs a channel")
+        channel = self.channels.get(source_id)
+        if channel is None:
+            return Response(ok=False, error=f"no channel named {source_id!r}")
+        override = None if value == "default" else str(value)
+        self.channels.set_on_prompt(source_id, override)
+        data: dict[str, object] = {
+            "on_prompt": self._on_prompt_for(channel),
+            "override": channel.on_prompt,
+        }
+        self._publish("on_prompt", source_id, dict(data))
         return Response(ok=True, data=data)
 
     def _set_language(self, source_id: str, lang: object) -> Response:

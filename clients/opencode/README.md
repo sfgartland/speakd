@@ -1,7 +1,8 @@
 # speakd for OpenCode
 
 Speaks OpenCode's prose responses aloud while the session runs: each text
-block is enqueued the moment it finishes, a new prompt stops the speech, and
+block is enqueued the moment it finishes, a new prompt lets the speech finish (or cuts it off, per
+`speech.on_prompt` / `speakctl on-prompt`), and
 permission prompts are read aloud. It also gives each session a way to
 **brief** you instead — the same `speakd-mcp` server Claude Code uses, whose
 `brief` tool the agent calls when it has finished, is stuck, or has a

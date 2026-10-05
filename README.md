@@ -151,6 +151,16 @@ under the old meaning typing a prompt in one session silenced a second session
 that had said nothing. The response reports the scope the daemon actually
 applied, rather than leaving a caller to assume it matched the request.
 
+**A new prompt lets the reading finish by default.** The prompt hook's hush
+carries `new_turn: true`; under the `finish` policy the daemon resets
+`briefed_this_turn` and then stops nothing and drops nothing, answering
+`{"discarded": 0, "scope": "channel", "held": true}`. The global default is the
+`speech.on_prompt` setting (`finish` or `hush`); one session overrides it with
+`speakctl on-prompt finish|hush|default --source <id>` (`default` clears the
+override), the window's per-channel toggle, or the agent's `set_on_prompt` MCP
+tool. The override lasts until the daemon restarts, like `mode`. A hush without
+`new_turn` — the window's skip, `speakctl hush` — always stops.
+
 **`status` reports what is waiting**, in play order, next first — the utterance
 being spoken is not in it, having already left the queue. An accepted job also
 announces itself on the bus as `queued` with the depth it joined, so a monitor

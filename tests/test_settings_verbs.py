@@ -86,6 +86,7 @@ def test_settings_verb_answers_schema_and_values(daemon: Daemon) -> None:
         "speech.openrouter_on_failure",
         "speech.openrouter_unit_chars",
         "speech.openrouter_voice",
+        "speech.on_prompt",
         "speech.piper_threads",
         "speech.piper_voice_dir",
         "speech.piper_voices",

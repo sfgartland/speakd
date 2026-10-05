@@ -406,7 +406,12 @@
   .chan-row button.skip { color: var(--lit); border-color: var(--lit-edge); }
   /* Brief or full: a state, like mute, but not an off switch -- so outlined
      and lit when brief rather than filled, which stays mute's alone. */
-  .chan-row button.modeswitch { min-width: 38px; }
+  .chan-row button.modeswitch, .chan-row button.promptswitch { min-width: 38px; }
+  /* What the user's next message does to the reading: lit when it lets it
+     finish, plain when it cuts it off. Same outlined state as brief/full. */
+  .chan-row button.promptswitch[aria-pressed="true"] {
+    background: none; color: var(--lit); border-color: var(--lit-edge);
+  }
   .chan-row button.modeswitch[aria-pressed="true"] {
     background: none; color: var(--lit); border-color: var(--lit-edge);
   }
@@ -1267,9 +1272,32 @@
     row.append(star, dot, name, when, skip);
     // Only a channel something can brief for has a mode to choose; on any
     // other the switch would do nothing, so it is not offered.
-    if (channel.briefs) row.append(modeSwitch(channel));
+    // The new-prompt policy is offered on the same channels: they are the
+    // agent sessions, the ones a prompt is sent in.
+    if (channel.briefs) row.append(modeSwitch(channel), promptSwitch(channel));
     row.append(toggle, hide);
     return row;
+  }
+
+  function promptSwitch(channel) {
+    const finish = channel.on_prompt !== "hush";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "promptswitch";
+    button.textContent = finish ? "finish" : "cut off";
+    button.setAttribute("aria-pressed", finish ? "true" : "false");
+    button.title = finish
+      ? "Your next message lets the reading finish. Click to cut it off instead."
+      : "Your next message cuts the reading off. Click to let it finish instead.";
+    button.addEventListener("click", async () => {
+      const wanted = channel.on_prompt === "hush" ? "finish" : "hush";
+      const res = await source.send("set_on_prompt", { on_prompt: wanted }, channel.source_id);
+      if (!res.ok) { message = res.error; render(); return; }
+      // The `on_prompt` event says the same; the shorter road, as mode takes.
+      if (typeof res.data?.on_prompt === "string") channel.on_prompt = res.data.on_prompt;
+      renderChannels();
+    });
+    return button;
   }
 
   function modeSwitch(channel) {
@@ -1502,7 +1530,7 @@
   }
 
   const ROUTINE_DECLINES = new Set(["muted", "brief mode", "full mode", "already briefed"]);
-  const ABOUT_A_CHANNEL = new Set(["mute", "mode", "engine", "queued", "declined"]);
+  const ABOUT_A_CHANNEL = new Set(["mute", "mode", "on_prompt", "engine", "queued", "declined"]);
 
   function handleEvent(event) {
     const data = event.data ?? {};
@@ -1611,6 +1639,14 @@
         if (!channel) { refreshStatus(); break; }
         if (typeof data.mode === "string") channel.mode = data.mode;
         if (typeof data.briefs === "boolean") channel.briefs = data.briefs;
+        renderChannels();
+        break;
+      }
+      case "on_prompt": {
+        const channel = channels.find((c) => c.source_id === event.source_id);
+        if (!channel) { refreshStatus(); break; }
+        if (typeof data.on_prompt === "string") channel.on_prompt = data.on_prompt;
+        channel.on_prompt_override = data.override ?? null;
         renderChannels();
         break;
       }

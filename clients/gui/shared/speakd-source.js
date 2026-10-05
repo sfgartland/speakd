@@ -105,6 +105,14 @@
  *                   gained or lost a briefer. `set_mode` switches it, scoped
  *                   by the source it is sent with, as a channel mute is.
  *
+ *       "on_prompt" data: { on_prompt, override }
+ *                   What the user's next message in a channel does to the
+ *                   reading in progress: "finish" lets it run out, "hush" cuts
+ *                   it off. `override` is the channel's own choice, or null
+ *                   when it follows `speech.on_prompt`. `set_on_prompt`
+ *                   ("finish", "hush" or "default") sets it, scoped by source.
+ *                   `status` channels carry `on_prompt` and `on_prompt_override`.
+ *
  *       "speed"     data: { speed }
  *                   The listener's speed multiplier moved, here or in
  *                   `speakctl speed`. 1.0 is the profile's own pace; the
@@ -300,7 +308,7 @@ export class SimulatedSource {
     // and Kronikk is muted, so the fold has something in it.
     const now = Date.now() / 1000;
     this._channels = [
-      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation", last_output: now - 20, briefs: true, mode: "brief" },
+      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation", last_output: now - 20, briefs: true, mode: "brief", on_prompt: "finish", on_prompt_override: null },
       { source_id: "sim:resem-paper", role: "background", priority: 0, profile: "default", label: "Claude Code · ReSem paper", last_output: now - 3600 },
       { source_id: "sim:kronikk", role: "background", priority: 0, profile: "default", label: "Claude Code · Kronikk", last_output: 0 },
     ];
@@ -507,6 +515,8 @@ export class SimulatedSource {
         return this._doReplay(payload);
       case "set_mode":
         return this._doSetMode(payload, source);
+      case "set_on_prompt":
+        return this._doSetOnPrompt(payload, source);
       case "status":
         return Promise.resolve({ ok: true, data: this._status() });
       case "settings":
@@ -576,7 +586,12 @@ export class SimulatedSource {
   /** Shaped exactly like the daemon's STATUS response. */
   _status() {
     return {
-      channels: this._channels.map((c) => ({ ...c, muted: !!this._channelMuted.get(c.source_id) })),
+      channels: this._channels.map((c) => ({
+        on_prompt: "finish",
+        on_prompt_override: null,
+        ...c,
+        muted: !!this._channelMuted.get(c.source_id),
+      })),
       muted: this._muted,
       paused: !this._playing && !this._hushed,
       engine: {
@@ -804,6 +819,24 @@ export class SimulatedSource {
     channel.mode = payload.mode;
     this._emit({ kind: "mode", source_id: source, data: { mode: channel.mode, briefs: true } });
     return Promise.resolve({ ok: true, data: { mode: channel.mode, briefs: true } });
+  }
+
+  _doSetOnPrompt(payload, source) {
+    const value = payload.on_prompt;
+    if (value !== "finish" && value !== "hush" && value !== "default") {
+      return Promise.resolve({
+        ok: false,
+        error: "set_on_prompt needs 'on_prompt': 'finish', 'hush' or 'default'",
+      });
+    }
+    const channel = this._channels.find((c) => c.source_id === source);
+    if (!channel) return Promise.resolve({ ok: false, error: `no channel named '${source}'` });
+    channel.on_prompt_override = value === "default" ? null : value;
+    // The fixture's "global" default is finish, as the daemon's is.
+    channel.on_prompt = channel.on_prompt_override ?? "finish";
+    const data = { on_prompt: channel.on_prompt, override: channel.on_prompt_override };
+    this._emit({ kind: "on_prompt", source_id: source, data });
+    return Promise.resolve({ ok: true, data });
   }
 
   /** Is the fixture mid-utterance, rather than hushed or run to its end? */
