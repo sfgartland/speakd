@@ -833,7 +833,7 @@
   // does not include what is playing: that is the "now" line's job, and a
   // window that listed it in both places would be counting twice the one
   // thing it is actually certain about.
-  let upNext = []; // [{ source_id, text }]
+  let upNext = []; // [{ source_id, text, interjects }]
 
   const ENGINE_LABEL = { ready: "Unload model", loading: "Loading model…", unloaded: "Load model" };
 
@@ -1458,7 +1458,11 @@
     // sends no `queue` is one with nothing waiting, not one to keep the last
     // reading for: every entry here is a claim about work still to come.
     upNext = Array.isArray(data.queue)
-      ? data.queue.map((entry) => ({ source_id: entry.source_id ?? "", text: entry.text ?? "" }))
+      ? data.queue.map((entry) => ({
+          source_id: entry.source_id ?? "",
+          text: entry.text ?? "",
+          interjects: !!entry.interjects,
+        }))
       : [];
     globalMuted = !!data.muted;
     if (typeof data.paused === "boolean") {
@@ -1558,7 +1562,19 @@
         // Accepted, not yet begun. The same unknown-channel question `started`
         // asks: a row is not invented for it, the list is asked for.
         if (event.source_id && !channels.some((c) => c.source_id === event.source_id)) refreshStatus();
-        upNext.push({ source_id: event.source_id || "", text: data.text ?? "" });
+        {
+          const entry = { source_id: event.source_id || "", text: data.text ?? "", interjects: !!data.interjects };
+          if (data.interjects || data.resumed) {
+            // Where the daemon put it: ahead of the ordinary queue, behind
+            // interjections already waiting (an interrupted reading resumes
+            // right after the interjection that cut it off).
+            let i = 0;
+            while (i < upNext.length && upNext[i].interjects) i++;
+            upNext.splice(i, 0, entry);
+          } else {
+            upNext.push(entry);
+          }
+        }
         renderQueue();
         // `pending` is the daemon's own count of work accepted and unspoken,
         // read here as a floor rather than an equality: whether it counts the
@@ -1728,7 +1744,9 @@
         utterance = null;
         sentenceEngine = null; // nothing is being spoken, so nothing was made by any engine
         settleDoc();
-        if (data.cancelled) hushed = true;
+        // An interjection cutting in is not a hush: the reading is queued
+        // again and the window should keep looking like it is playing.
+        if (data.cancelled && !data.interjected) hushed = true;
         break;
       default:
         return; // unknown/forward-compatible event kind — ignore rather than throw

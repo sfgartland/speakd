@@ -54,7 +54,7 @@
  *                   it from an absence of `position` events, which is also
  *                   what a finished utterance sounds like.
  *
- *       "queued"    data: { text, pending }
+ *       "queued"    data: { text, pending, interjects?, resumed? }
  *                   A job was accepted and is waiting its turn. `text` is the
  *                   preview the daemon truncates to QUEUE_PREVIEW_CHARS, not
  *                   the whole utterance; the event's `source_id` names the
@@ -72,7 +72,15 @@
  *
  *       "declined"  data: { text, kind, reason }
  *       "error"     data: { message }
- *       "finished"  data: { cancelled, aborted }
+ *       "finished"  data: { cancelled, aborted, interjected? }
+ *                   `interjected: true` means a short message (a briefing or
+ *                   an attention call, per `speech.interject`) cut this
+ *                   reading off: it is not a hush. The rest of the reading
+ *                   was queued again -- a `queued` with `resumed: true`, just
+ *                   behind the interjection -- and opens with a fresh
+ *                   `started` at the sentence it was cut off in. A `queued`
+ *                   with `interjects: true` is such a message: it went in
+ *                   ahead of the ordinary queue, behind earlier ones.
  *
  *       "mute"      data: { muted, scope }
  *                   An off switch moved, here or in `speakctl`. `scope` is

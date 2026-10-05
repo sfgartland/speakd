@@ -161,6 +161,18 @@ override), the window's per-channel toggle, or the agent's `set_on_prompt` MCP
 tool. The override lasts until the daemon restarts, like `mode`. A hush without
 `new_turn` — the window's skip, `speakctl hush` — always stops.
 
+**Short notes interject; long readings wait their turn.** Responses queue first
+come, first served, but a briefing or an attention call ("needs your
+permission", "finished") goes to the head of the queue, behind any other
+interjection already waiting, and cuts into a reading in progress. The reading
+is queued again just behind it and resumes at the start of the sentence it was
+cut off in; its `finished` carries `interjected: true` rather than
+`cancelled`. The `speech.interject` setting chooses what interjects: `brief`
+(briefings and attention calls, the default), `attention` (attention calls
+only), or `off` (plain first come, first served). An interjection never cuts
+into another one, nor into paused speech (it just goes next), and a hush, mute
+or seek that lands meanwhile wins: the interrupted reading is not brought back.
+
 **`status` reports what is waiting**, in play order, next first — the utterance
 being spoken is not in it, having already left the queue. An accepted job also
 announces itself on the bus as `queued` with the depth it joined, so a monitor
