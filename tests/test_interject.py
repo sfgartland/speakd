@@ -395,3 +395,73 @@ def test_stop_during_an_interjection_does_not_hang(rig: Rig) -> None:
     assert time.monotonic() - began < 3.0
     assert rig.d.wait_idle(timeout=1.0)
     assert rig.d._pending == 0
+
+
+def test_an_enqueue_can_opt_out_of_interjecting(rig: Rig) -> None:
+    rig.reading_held_at_sentence_one()
+    response = rig.req(Verb.ENQUEUE, source="s", text="Waiting.", kind="attention", interject=False)
+    assert response.ok and response.data["spoken"] is True
+    rig.say("response", "Queued reading.")
+    rig.finish()
+    runs = rig.runs()
+    # Plain first come, first served: the reading was neither cut nor resumed.
+    assert [r.positions for r in runs[:1]] == [[0, 1, 2, 3]]
+    assert runs[0].finished == {"cancelled": False, "aborted": False}
+    assert "Waiting." in runs[1].text
+    assert runs[2].text == "Queued reading."
+    queued = [e for e in rig.events() if e.kind == "queued" and "Waiting." in str(e.data["text"])]
+    assert "interjects" not in queued[0].data
+
+
+@pytest.mark.parametrize("value", ["false", 0, None, "no"])
+def test_a_non_bool_interject_flag_follows_the_setting(rig: Rig, value: object) -> None:
+    rig.reading_held_at_sentence_one()
+    rig.req(Verb.ENQUEUE, source="s", text="Needs permission.", kind="attention", interject=value)
+    assert until(lambda: rig.started() == ["s", "s"])
+    rig.finish()
+    assert rig.runs()[0].finished == {"cancelled": False, "aborted": False, "interjected": True}
+
+
+def test_queued_precedes_started_for_an_interjection(rig: Rig) -> None:
+    """The stop that cuts the reading can block; it must not delay `queued`."""
+    original = GatePlayer.stop
+
+    def slow_stop(self: GatePlayer) -> None:
+        original(self)
+        if threading.current_thread() is threading.main_thread():
+            time.sleep(0.05)
+
+    rig.player.stop = slow_stop.__get__(rig.player)  # type: ignore[method-assign]
+    rig.reading_held_at_sentence_one()
+    rig.say("attention", "Needs permission.", source="n")
+    rig.finish()
+    order = [
+        e.kind
+        for e in rig.events()
+        if e.source_id == "n" and e.kind in ("queued", "started", "finished")
+    ]
+    assert order == ["queued", "started", "finished"]
+
+
+def test_an_interjection_after_the_last_sentence_re_reads_nothing(rig: Rig) -> None:
+    original = Daemon._resume_after_interjection
+    fired: list[int] = []
+
+    def wrapped(self: Daemon, job, current, spoken, **kw):  # type: ignore[no-untyped-def]
+        if not fired and job.source_id == "s":
+            fired.append(1)
+            # Lands after the last sentence has played, before the worker
+            # takes the lock that decides whether to resume.
+            rig.say("attention", "Needs permission.", source="n")
+        return original(self, job, current, spoken, **kw)
+
+    Daemon._resume_after_interjection = wrapped  # type: ignore[method-assign]
+    try:
+        rig.player.let_go()
+        rig.say("response", TEXT)
+        assert rig.d.wait_idle(10)
+    finally:
+        Daemon._resume_after_interjection = original  # type: ignore[method-assign]
+    runs = rig.runs()
+    assert [(r.source, r.positions) for r in runs] == [("s", [0, 1, 2, 3]), ("n", [0])]
+    assert runs[0].finished == {"cancelled": False, "aborted": False}

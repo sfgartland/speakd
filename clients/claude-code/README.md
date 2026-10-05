@@ -12,9 +12,9 @@ or has a question. Whether a session reads every response (full) or only its
 briefings (brief) is chosen per session — see the main README's *Briefings*.
 
 Three hooks, each firing once per turn:
-- `UserPromptSubmit` stops the speech, starts a new turn and tells the
+- `UserPromptSubmit` starts a new turn (and stops the speech under `speech.on_prompt = hush`) and tells the
   follower this session is live.
-- `Notification` speaks the permission prompts.
+- `Notification` speaks the permission prompts (the idle "waiting for your input" reminder queues behind the reading instead of interrupting it).
 - `Stop` says "finished" when a turn ended in brief mode without a briefing.
 
 None of them reads the transcript, so a tool call costs nothing at all.

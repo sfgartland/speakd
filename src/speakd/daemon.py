@@ -2177,7 +2177,11 @@ class Daemon:
                 kind=kind,
                 # Read now, per enqueue, so a change to the setting applies
                 # to the next message rather than at the next restart.
-                interjects=self._interjects(kind),
+                # `interject: false` on the enqueue opts this one out: plain
+                # first come, first served. Anything but a literal False
+                # (absent, true, a non-bool) follows the setting, as the
+                # other flags only act on a literal value.
+                interjects=request.payload.get("interject") is not False and self._interjects(kind),
             ),
             at,
         )
@@ -2203,7 +2207,8 @@ class Daemon:
         exists to hold back. `attention` -- what the agent cannot report
         itself -- is spoken in both. Two flags narrow a single enqueue:
         `only_in_mode`, and `unless_briefed`, which is how the end of a turn
-        stays quiet when the agent has already said its piece.
+        stays quiet when the agent has already said its piece. A third,
+        `interject: false`, is not a refusal: it only keeps this job in plain first-come order.
         """
         mode = effective_mode(channel)
         reason: str | None = None
@@ -2393,6 +2398,7 @@ class Daemon:
     def _accept(self, job: _Job, at: float) -> Response:
         """Put an accepted job on the queue and say so."""
         interrupt = False
+        silencer: Callable[[], None] | None = None
         # Counted before the put, so the job is never in the queue while the
         # daemon still looks idle. Both under the lock stop() takes, so a
         # concurrent stop cannot slip its sentinel in between and leave this
@@ -2423,28 +2429,50 @@ class Daemon:
                     current.seek_to = None
                     # Under the lock, for the reason `_stop_speaking` gives.
                     self._cancel.set()
+                    # Armed here too, where a player has a non-blocking way to
+                    # say so, so the stop that follows outside the lock only
+                    # has to silence the device and cannot arrive late enough
+                    # to be mistaken for a stop aimed at the next utterance.
+                    arm = getattr(self.player, "interrupt", None)
+                    if callable(arm):
+                        arm()
+                        silence = getattr(self.player, "silence", None)
+                        if callable(silence):
+                            silencer = silence
             else:
                 self._jobs.put(job)
             # Read inside the same lock as the put, so the number announced is
             # the queue this job actually joined rather than one a concurrent
             # drain has since emptied.
             waiting = len(self._pending_jobs())
-        if interrupt:
-            # Outside the lock, as `_seek` does: this is the call that can
-            # block on a real device.
-            self._stop_player()
         # Announced only once the job is really on the queue, and outside the
         # lock: `EventBus.publish` runs its subscribers on this thread, and one
         # that turned round and asked the daemon anything would deadlock on a
         # lock that does not re-enter. A client watching the stream could not
         # otherwise see an utterance until it began speaking, which for a deep
-        # queue is minutes after it was accepted.
+        # queue is minutes after it was accepted. Before the player is stopped,
+        # below: that call can block on a real device, and the worker may take
+        # an interjection the moment the reading yields, so a `queued` sent
+        # after it could follow the job's own `started`.
         data: dict[str, object] = {"text": _preview(job.text), "pending": waiting, "at": at}
         if job.interjects:
             # So a window keeping its own list puts it where it really went:
             # ahead of the ordinary queue, behind earlier interjections.
             data["interjects"] = True
         self._publish("queued", job.source_id, data)
+        if interrupt:
+            # Outside the lock, as `_seek` does: this is the call that can
+            # block on a real device. A player that armed its interrupt under
+            # the lock only has the device left to silence; the rest stop()s.
+            if silencer is not None:
+                try:
+                    silencer()
+                except Exception as exc:
+                    self._publish(
+                        "error", "", {"message": f"could not silence the player: {exc!r}"}
+                    )
+            else:
+                self._stop_player()
         return Response(ok=True, data={"spoken": True})
 
     def _run(self) -> None:
@@ -3094,7 +3122,9 @@ class Daemon:
                 pieces=tuple(pieces),
                 units=tuple(units),
             )
-            waiting = self._resume_after_interjection(job, current, spoken)
+            waiting = self._resume_after_interjection(
+                job, current, spoken, completed=result.completed
+            )
             if waiting is not None:
                 self._publish(
                     "queued",
@@ -3121,7 +3151,9 @@ class Daemon:
         self._publish(
             "finished",
             job.source_id,
-            {"cancelled": result.cancelled, "aborted": result.aborted},
+            # A cancel that arrived after the last unit played out (an
+            # interjection landing in that gap) did not cancel anything.
+            {"cancelled": result.cancelled and not result.completed, "aborted": result.aborted},
         )
 
     def _interjection_waiting(self) -> bool:
@@ -3131,7 +3163,7 @@ class Daemon:
             return bool(items) and items[0] is not None and items[0].interjects
 
     def _resume_after_interjection(
-        self, job: _Job, current: _Current, spoken: _Spoken
+        self, job: _Job, current: _Current, spoken: _Spoken, *, completed: bool = False
     ) -> int | None:
         """Queue the rest of an interjected utterance, returning the queue length.
 
@@ -3149,10 +3181,17 @@ class Daemon:
         is recognisably the same reading. `_current` goes in the same step,
         so nothing aimed at "the utterance playing" finds this one after its
         rest is already queued.
+
+        `completed` says every unit was played out: an interjection that
+        landed after the last `play()` returned cut nothing off, so there is
+        no rest to bring back and the reading simply finished.
         """
         with self._idle:
             if self._current is current:
                 self._current = None
+            if completed:
+                current.interjected = False
+                return None
             if not current.interjected or not self._running:
                 return None
             current.interjected = False

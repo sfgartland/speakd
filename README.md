@@ -169,7 +169,11 @@ is queued again just behind it and resumes at the start of the sentence it was
 cut off in; its `finished` carries `interjected: true` rather than
 `cancelled`. The `speech.interject` setting chooses what interjects: `brief`
 (briefings and attention calls, the default), `attention` (attention calls
-only), or `off` (plain first come, first served). An interjection never cuts
+only), or `off` (plain first come, first served). An enqueue can opt out for
+itself with `"interject": false` in its payload (plain first come, first
+served whatever its kind; the Claude Code hook sends it for the idle
+"waiting for your input" reminder so it does not cut into its own session's
+reading). An interjection never cuts
 into another one, nor into paused speech (it just goes next), and a hush, mute
 or seek that lands meanwhile wins: the interrupted reading is not brought back.
 
@@ -711,15 +715,16 @@ Zotero's plugin sandbox cannot open a Unix socket, so the daemon also serves
 **Claude Code** — [`clients/claude-code/`](clients/claude-code/) is a loadable
 plugin that speaks a session's responses as they land on disk. The speaking is
 done by a follower process the daemon keeps alive, which tails the transcript;
-two hooks remain, both once per turn, to stop the speech when a new prompt
-arrives and to read the permission prompts aloud. Every hook path exits 0 and
+two hooks remain, both once per turn, to tell the daemon a new prompt has
+arrived (which stops the speech only under `speech.on_prompt = hush`; by default
+it lets the reading finish) and to read the permission prompts aloud. Every hook path exits 0 and
 writes nothing to stdout, so a daemon that is not running costs silence and
 nothing else. The `speakd-audiobook` skill is included. See its
 [README](clients/claude-code/README.md) for the install.
 
 **OpenCode** — [`clients/opencode/`](clients/opencode/) is a plugin that
-speaks a session's text blocks as they finish, stops the speech on a new
-prompt, and reads the permission prompts aloud — the same three jobs the
+speaks a session's text blocks as they finish, handles a new prompt per
+`speech.on_prompt` (the reading finishes by default; `hush` stops it), and reads the permission prompts aloud — the same three jobs the
 Claude Code hooks do, from inside OpenCode's own plugin runtime. Install it
 once with `clients/opencode/install.sh`; the `speakd-mcp` server and the
 `speakd-audiobook` skill come with it, so sessions brief and switch modes

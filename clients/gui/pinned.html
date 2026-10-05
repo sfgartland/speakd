@@ -1931,8 +1931,10 @@
     else delete win.dataset.ctrl;
   };
   // Where typing, not shortcuts, is meant: Space there is a space.
+  const TEXT_INPUTS = ["text", "search", "number", "password", "email", "url", "tel"];
   const isTyping = (t) =>
-    t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement ||
+    t instanceof HTMLTextAreaElement ||
+    (t instanceof HTMLInputElement && TEXT_INPUTS.includes((t.type || "text").toLowerCase())) ||
     t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
   document.addEventListener("keyup", (e) => {
     trackCtrl(e);

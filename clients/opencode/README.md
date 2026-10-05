@@ -11,7 +11,7 @@ briefings (brief) is chosen per session — see the main README's *Briefings*.
 
 One plugin file does the work OpenCode's own hooks would do in Claude Code:
 
-- `chat.message` stops the speech, starts a new turn and tells the daemon
+- `chat.message` starts a new turn (stopping the speech only under `speech.on_prompt = hush`) and tells the daemon
   this session is live.
 - `permission.ask` speaks "OpenCode needs your permission."
 - `session.idle` says "finished" when a turn ended in brief mode without a

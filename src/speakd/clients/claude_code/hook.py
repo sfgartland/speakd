@@ -73,7 +73,14 @@ def _dispatch(body: dict[str, object]) -> None:
         # cannot say so itself, so this speaks in every mode.
         message = body.get("message")
         if isinstance(message, str):
-            reason = enqueue(channel, message, kind="attention")
+            # The idle reminder ("Claude is waiting for your input", after
+            # about a minute) says nothing urgent and must not cut into this
+            # same session's own reading, so it waits its turn. A permission
+            # prompt, or a notification of unknown type, still interjects.
+            flags: dict[str, object] | None = (
+                {"interject": False} if body.get("notification_type") == "idle_prompt" else None
+            )
+            reason = enqueue(channel, message, kind="attention", flags=flags)
             if reason is not None:
                 _log(reason)
         return
