@@ -9,7 +9,7 @@
  *     `handler` is called with `{ kind, data, source_id? }` events. `kind`
  *     names one of the event kinds `speakd.daemon.Daemon._publish` emits:
  *
- *       "started"   data: { text, engine, segments }
+ *       "started"   data: { text, engine, segments, paused }
  *                   One utterance is about to be spoken. `text` is the whole
  *                   of it, exactly as it was handed to the daemon — markdown
  *                   and all — and `engine` is "kokoro", "piper" or "openrouter", whichever
@@ -17,6 +17,9 @@
  *                   will be spoken as, in order: { index, text, span_start,
  *                   span_end }. The daemon segments before it speaks, so the
  *                   window can show the whole utterance from the first word.
+ *                   `paused` is whether the daemon's sticky pause is still on: a
+ *                   pause outlives the utterance it was made in, so `started`
+ *                   does not by itself mean sound.
  *                   A segment's `text` is what is *spoken*, after transforms,
  *                   and its span points into `text`; under the markdown
  *                   transform every sentence of a block carries the whole
@@ -51,7 +54,7 @@
  *                   it from an absence of `position` events, which is also
  *                   what a finished utterance sounds like.
  *
- *       "queued"    data: { text, pending }
+ *       "queued"    data: { text, pending, interjects?, resumed? }
  *                   A job was accepted and is waiting its turn. `text` is the
  *                   preview the daemon truncates to QUEUE_PREVIEW_CHARS, not
  *                   the whole utterance; the event's `source_id` names the
@@ -69,7 +72,15 @@
  *
  *       "declined"  data: { text, kind, reason }
  *       "error"     data: { message }
- *       "finished"  data: { cancelled, aborted }
+ *       "finished"  data: { cancelled, aborted, interjected? }
+ *                   `interjected: true` means a short message (a briefing or
+ *                   an attention call, per `speech.interject`) cut this
+ *                   reading off: it is not a hush. The rest of the reading
+ *                   was queued again -- a `queued` with `resumed: true`, just
+ *                   behind the interjection -- and opens with a fresh
+ *                   `started` at the sentence it was cut off in. A `queued`
+ *                   with `interjects: true` is such a message: it went in
+ *                   ahead of the ordinary queue, behind earlier ones.
  *
  *       "mute"      data: { muted, scope }
  *                   An off switch moved, here or in `speakctl`. `scope` is
@@ -101,6 +112,14 @@
  *                   its agent chose to say) and "full" (every response), or it
  *                   gained or lost a briefer. `set_mode` switches it, scoped
  *                   by the source it is sent with, as a channel mute is.
+ *
+ *       "on_prompt" data: { on_prompt, override }
+ *                   What the user's next message in a channel does to the
+ *                   reading in progress: "finish" lets it run out, "hush" cuts
+ *                   it off. `override` is the channel's own choice, or null
+ *                   when it follows `speech.on_prompt`. `set_on_prompt`
+ *                   ("finish", "hush" or "default") sets it, scoped by source.
+ *                   `status` channels carry `on_prompt` and `on_prompt_override`.
  *
  *       "speed"     data: { speed }
  *                   The listener's speed multiplier moved, here or in
@@ -139,6 +158,9 @@
  *     box's channel. A caller that means "everything" has to say so with an
  *     empty string, and has to check the `scope` it gets back, or a window-wide
  *     stop silently becomes a stop of the window's own typing.
+ *
+ *     `status` also reports `paused` (boolean): the sticky pause, readable
+ *     without having seen the `transport` event that set it.
  *
  *     `status` also reports the speed, under `speed`, and what is waiting, under `queue`: entries of
  *     { source_id, text } in play order, next first, NOT including whatever is
@@ -294,7 +316,7 @@ export class SimulatedSource {
     // and Kronikk is muted, so the fold has something in it.
     const now = Date.now() / 1000;
     this._channels = [
-      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation", last_output: now - 20, briefs: true, mode: "brief" },
+      { source_id: FIXTURE_SOURCE, role: "foreground", priority: 10, profile: "philosophy", label: "PhD articulation", last_output: now - 20, briefs: true, mode: "brief", on_prompt: "finish", on_prompt_override: null },
       { source_id: "sim:resem-paper", role: "background", priority: 0, profile: "default", label: "Claude Code · ReSem paper", last_output: now - 3600 },
       { source_id: "sim:kronikk", role: "background", priority: 0, profile: "default", label: "Claude Code · Kronikk", last_output: 0 },
     ];
@@ -440,6 +462,8 @@ export class SimulatedSource {
     return {
       text: this._text,
       engine: this._engineName(),
+      // The fixture's pause is not sticky: whatever starts, plays.
+      paused: false,
       segments: this._segments.map((seg, i) => ({
         index: i,
         text: seg.text,
@@ -499,6 +523,8 @@ export class SimulatedSource {
         return this._doReplay(payload);
       case "set_mode":
         return this._doSetMode(payload, source);
+      case "set_on_prompt":
+        return this._doSetOnPrompt(payload, source);
       case "status":
         return Promise.resolve({ ok: true, data: this._status() });
       case "settings":
@@ -568,8 +594,14 @@ export class SimulatedSource {
   /** Shaped exactly like the daemon's STATUS response. */
   _status() {
     return {
-      channels: this._channels.map((c) => ({ ...c, muted: !!this._channelMuted.get(c.source_id) })),
+      channels: this._channels.map((c) => ({
+        on_prompt: "finish",
+        on_prompt_override: null,
+        ...c,
+        muted: !!this._channelMuted.get(c.source_id),
+      })),
       muted: this._muted,
+      paused: !this._playing && !this._hushed,
       engine: {
         loaded: this._engineLoaded,
         loading: this._engineLoading,
@@ -797,6 +829,24 @@ export class SimulatedSource {
     return Promise.resolve({ ok: true, data: { mode: channel.mode, briefs: true } });
   }
 
+  _doSetOnPrompt(payload, source) {
+    const value = payload.on_prompt;
+    if (value !== "finish" && value !== "hush" && value !== "default") {
+      return Promise.resolve({
+        ok: false,
+        error: "set_on_prompt needs 'on_prompt': 'finish', 'hush' or 'default'",
+      });
+    }
+    const channel = this._channels.find((c) => c.source_id === source);
+    if (!channel) return Promise.resolve({ ok: false, error: `no channel named '${source}'` });
+    channel.on_prompt_override = value === "default" ? null : value;
+    // The fixture's "global" default is finish, as the daemon's is.
+    channel.on_prompt = channel.on_prompt_override ?? "finish";
+    const data = { on_prompt: channel.on_prompt, override: channel.on_prompt_override };
+    this._emit({ kind: "on_prompt", source_id: source, data });
+    return Promise.resolve({ ok: true, data });
+  }
+
   /** Is the fixture mid-utterance, rather than hushed or run to its end? */
   _fixtureLive() {
     if (this._utterance || this._hushed || this._speaking !== FIXTURE_SOURCE) return false;
@@ -982,7 +1032,7 @@ export class SimulatedSource {
     this._speaking = source_id;
     this._hushed = false;
     this._utterance = { source_id, text, remaining: 1800, startedAt: 0 };
-    this._emit({ kind: "started", source_id, data: { text, engine: this._engineName() } });
+    this._emit({ kind: "started", source_id, data: { text, engine: this._engineName(), paused: false } });
     this._emit(this._metricsEvent());
     this._runUtterance();
   }

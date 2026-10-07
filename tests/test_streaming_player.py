@@ -299,6 +299,19 @@ def test_clear_interrupt_forgets_a_stop_aimed_at_finished_playback() -> None:
     assert sink.frames_written == 250
 
 
+def test_interrupt_arms_the_stop_and_silence_leaves_the_next_segment_alone() -> None:
+    sink = FakeSink()
+    player = StreamingPlayer(sink, chunk_frames=100)
+    player.interrupt()
+    player.play(audio(250), 24000)
+    assert player.interrupted is True
+    # A device stop arriving late sets no flag, so the next segment plays whole.
+    player.silence()
+    player.play(audio(250), 24000)
+    assert player.interrupted is False
+    assert sink.frames_written == 250
+
+
 def test_speed_changes_do_not_compound() -> None:
     """Every stretch is taken from the audio as it was made, never from an
     earlier stretch of it: going to 1.5 and back to 1.0 leaves the rest of the

@@ -3,7 +3,8 @@
 Speaks Claude Code's prose responses aloud while the session runs. A follower
 process tails the session transcript and sends each block of text to the
 `speakd` daemon as it lands on disk — while the next tool is still running,
-rather than after it. A new prompt stops whatever is being said.
+rather than after it. A new prompt lets what is being said finish (`speech.on_prompt`, or
+`speakctl on-prompt hush` to cut it off instead).
 
 It also gives each session a way to **brief** you instead: an MCP server,
 `speakd-mcp`, whose `brief` tool the agent calls when it has finished, is stuck,
@@ -11,9 +12,9 @@ or has a question. Whether a session reads every response (full) or only its
 briefings (brief) is chosen per session — see the main README's *Briefings*.
 
 Three hooks, each firing once per turn:
-- `UserPromptSubmit` stops the speech, starts a new turn and tells the
+- `UserPromptSubmit` starts a new turn (and stops the speech under `speech.on_prompt = hush`) and tells the
   follower this session is live.
-- `Notification` speaks the permission prompts.
+- `Notification` speaks the permission prompts (the idle "waiting for your input" reminder queues behind the reading instead of interrupting it).
 - `Stop` says "finished" when a turn ended in brief mode without a briefing.
 
 None of them reads the transcript, so a tool call costs nothing at all.

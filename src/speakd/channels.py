@@ -48,6 +48,10 @@ class Channel:
     # for a code the verb could not parse, so it still reaches
     # speech.unsupported_language rather than silently falling through.
     lang: str | None = None
+    # What a new prompt in this session does to the reading in progress:
+    # "finish" lets it run out, "hush" cuts it off. None follows the global
+    # `speech.on_prompt`. Like `mode` it lasts for the daemon's lifetime only.
+    on_prompt: str | None = None
     # When anything last touched this channel -- a request naming it, or an
     # attempt to speak -- so one nobody has used in a long time can be
     # forgotten rather than listed for ever.
@@ -55,6 +59,12 @@ class Channel:
 
 
 MODES = ("full", "brief")
+ON_PROMPT_POLICIES = ("finish", "hush")
+
+
+def effective_on_prompt(channel: Channel, default: str) -> str:
+    """The new-prompt policy in force: the channel's own, else the global `default`."""
+    return channel.on_prompt if channel.on_prompt in ON_PROMPT_POLICIES else default
 
 
 def effective_mode(channel: Channel) -> str:
@@ -143,6 +153,12 @@ class ChannelTable:
         channel = self.open(source_id)
         with self._lock:
             channel.mode = mode
+        return channel
+
+    def set_on_prompt(self, source_id: str, on_prompt: str | None) -> Channel:
+        channel = self.open(source_id)
+        with self._lock:
+            channel.on_prompt = on_prompt
         return channel
 
     def set_briefs(self, source_id: str, briefs: bool) -> Channel:

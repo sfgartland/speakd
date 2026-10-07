@@ -241,6 +241,48 @@ def test_resume_unpauses(running_daemon) -> None:  # type: ignore[no-untyped-def
     assert daemon.player.paused is False
 
 
+def test_status_reports_the_players_pause(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    status = Request(verb=Verb.STATUS, source_id="s")
+    assert daemon.handle(status).data["paused"] is False
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    assert daemon.handle(status).data["paused"] is True
+    daemon.handle(Request(verb=Verb.RESUME, source_id="s"))
+    assert daemon.handle(status).data["paused"] is False
+
+
+def test_status_paused_is_false_for_a_player_that_cannot_pause(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    daemon = running_daemon(player=RecordingPlayer())
+    assert daemon.handle(Request(verb=Verb.STATUS, source_id="s")).data["paused"] is False
+
+
+def test_started_carries_the_sticky_pause(running_daemon) -> None:  # type: ignore[no-untyped-def]
+    """Pause outlives the utterance it was made in, so `started` must say so.
+
+    A GUI that read `started` as "now playing" showed Pause over a daemon that
+    was still paused and playing nothing.
+    """
+    daemon = running_daemon(player=StreamingPlayer(FakeSink()))
+    seen: list[Event] = []
+    daemon.bus.subscribe(seen.append, kinds=["started"])
+    daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))
+    daemon.handle(enqueue("s", "One."))
+    deadline = time.monotonic() + 5.0
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert seen
+    assert seen[0].data["paused"] is True
+
+
+def test_started_says_not_paused_when_playback_is_running(daemon) -> None:  # type: ignore[no-untyped-def]
+    d, _player, bus = daemon
+    seen: list[Event] = []
+    bus.subscribe(seen.append, kinds=["started"])
+    d.handle(enqueue("s", "One."))
+    assert d.wait_idle(timeout=5.0)
+    assert seen[0].data["paused"] is False
+
+
 def test_pausing_a_player_that_cannot_pause_says_why(running_daemon) -> None:  # type: ignore[no-untyped-def]
     daemon = running_daemon(player=RecordingPlayer())
     response = daemon.handle(Request(verb=Verb.PAUSE, source_id="s"))

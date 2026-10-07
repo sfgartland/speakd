@@ -406,7 +406,12 @@
   .chan-row button.skip { color: var(--lit); border-color: var(--lit-edge); }
   /* Brief or full: a state, like mute, but not an off switch -- so outlined
      and lit when brief rather than filled, which stays mute's alone. */
-  .chan-row button.modeswitch { min-width: 38px; }
+  .chan-row button.modeswitch, .chan-row button.promptswitch { min-width: 38px; }
+  /* What the user's next message does to the reading: lit when it lets it
+     finish, plain when it cuts it off. Same outlined state as brief/full. */
+  .chan-row button.promptswitch[aria-pressed="true"] {
+    background: none; color: var(--lit); border-color: var(--lit-edge);
+  }
   .chan-row button.modeswitch[aria-pressed="true"] {
     background: none; color: var(--lit); border-color: var(--lit-edge);
   }
@@ -765,6 +770,10 @@
   let currentIndex = 0;
   let playing = null; // null until the first event says otherwise
   let hushed = false;
+  // The daemon's own pause, kept apart from `playing`: pause is sticky there
+  // (it survives a hush and spans utterances), so a `started` does not mean
+  // sound. Set only from what the daemon says: `transport`, `status`, `started`.
+  let paused = false;
   let message = null;
   // Kept apart from `message` because the two answer different questions and
   // the link answers the more basic one: a window with no subscription has
@@ -824,7 +833,7 @@
   // does not include what is playing: that is the "now" line's job, and a
   // window that listed it in both places would be counting twice the one
   // thing it is actually certain about.
-  let upNext = []; // [{ source_id, text }]
+  let upNext = []; // [{ source_id, text, interjects }]
 
   const ENGINE_LABEL = { ready: "Unload model", loading: "Loading model…", unloaded: "Load model" };
 
@@ -1263,9 +1272,32 @@
     row.append(star, dot, name, when, skip);
     // Only a channel something can brief for has a mode to choose; on any
     // other the switch would do nothing, so it is not offered.
-    if (channel.briefs) row.append(modeSwitch(channel));
+    // The new-prompt policy is offered on the same channels: they are the
+    // agent sessions, the ones a prompt is sent in.
+    if (channel.briefs) row.append(modeSwitch(channel), promptSwitch(channel));
     row.append(toggle, hide);
     return row;
+  }
+
+  function promptSwitch(channel) {
+    const finish = channel.on_prompt !== "hush";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "promptswitch";
+    button.textContent = finish ? "finish" : "cut off";
+    button.setAttribute("aria-pressed", finish ? "true" : "false");
+    button.title = finish
+      ? "Your next message lets the reading finish. Click to cut it off instead."
+      : "Your next message cuts the reading off. Click to let it finish instead.";
+    button.addEventListener("click", async () => {
+      const wanted = channel.on_prompt === "hush" ? "finish" : "hush";
+      const res = await source.send("set_on_prompt", { on_prompt: wanted }, channel.source_id);
+      if (!res.ok) { message = res.error; render(); return; }
+      // The `on_prompt` event says the same; the shorter road, as mode takes.
+      if (typeof res.data?.on_prompt === "string") channel.on_prompt = res.data.on_prompt;
+      renderChannels();
+    });
+    return button;
   }
 
   function modeSwitch(channel) {
@@ -1426,9 +1458,19 @@
     // sends no `queue` is one with nothing waiting, not one to keep the last
     // reading for: every entry here is a claim about work still to come.
     upNext = Array.isArray(data.queue)
-      ? data.queue.map((entry) => ({ source_id: entry.source_id ?? "", text: entry.text ?? "" }))
+      ? data.queue.map((entry) => ({
+          source_id: entry.source_id ?? "",
+          text: entry.text ?? "",
+          interjects: !!entry.interjects,
+        }))
       : [];
     globalMuted = !!data.muted;
+    if (typeof data.paused === "boolean") {
+      paused = data.paused;
+      // A paused daemon is not playing, whatever the last event implied; this
+      // is also what lets "Play" un-stick a paused daemon that is idle.
+      if (paused) playing = false;
+    }
     if (typeof data.speed === "number") speed = data.speed;
     const engine = data.engine ?? {};
     engineState = engine.loading ? "loading" : engine.loaded ? "ready" : "unloaded";
@@ -1492,7 +1534,7 @@
   }
 
   const ROUTINE_DECLINES = new Set(["muted", "brief mode", "full mode", "already briefed"]);
-  const ABOUT_A_CHANNEL = new Set(["mute", "mode", "engine", "queued", "declined"]);
+  const ABOUT_A_CHANNEL = new Set(["mute", "mode", "on_prompt", "engine", "queued", "declined"]);
 
   function handleEvent(event) {
     const data = event.data ?? {};
@@ -1520,7 +1562,19 @@
         // Accepted, not yet begun. The same unknown-channel question `started`
         // asks: a row is not invented for it, the list is asked for.
         if (event.source_id && !channels.some((c) => c.source_id === event.source_id)) refreshStatus();
-        upNext.push({ source_id: event.source_id || "", text: data.text ?? "" });
+        {
+          const entry = { source_id: event.source_id || "", text: data.text ?? "", interjects: !!data.interjects };
+          if (data.interjects || data.resumed) {
+            // Where the daemon put it: ahead of the ordinary queue, behind
+            // interjections already waiting (an interrupted reading resumes
+            // right after the interjection that cut it off).
+            let i = 0;
+            while (i < upNext.length && upNext[i].interjects) i++;
+            upNext.splice(i, 0, entry);
+          } else {
+            upNext.push(entry);
+          }
+        }
         renderQueue();
         // `pending` is the daemon's own count of work accepted and unspoken,
         // read here as a floor rather than an equality: whether it counts the
@@ -1539,7 +1593,10 @@
         dropQueued(event.source_id, data.text ?? null);
         hushed = false;
         message = null;
-        playing = true; // the daemon says nothing further; `started` means it began
+        // `started` means the utterance began, not that it is audible: a
+        // sticky pause carries over, and the daemon reports it here.
+        if (typeof data.paused === "boolean") paused = data.paused;
+        playing = !paused;
         utterance = data.text ?? "";
         if (typeof data.engine === "string") sentenceEngine = data.engine;
         // A new utterance is a new timeline. Without this the previous one's
@@ -1601,10 +1658,19 @@
         renderChannels();
         break;
       }
+      case "on_prompt": {
+        const channel = channels.find((c) => c.source_id === event.source_id);
+        if (!channel) { refreshStatus(); break; }
+        if (typeof data.on_prompt === "string") channel.on_prompt = data.on_prompt;
+        channel.on_prompt_override = data.override ?? null;
+        renderChannels();
+        break;
+      }
       case "transport":
         // Read rather than inferred: an absence of `position` events is also
         // what a finished utterance sounds like.
-        playing = !data.paused;
+        paused = !!data.paused;
+        playing = !paused;
         break;
       case "discarded":
         message = `${data.count} queued ${data.count === 1 ? "utterance" : "utterances"} dropped`;
@@ -1678,7 +1744,9 @@
         utterance = null;
         sentenceEngine = null; // nothing is being spoken, so nothing was made by any engine
         settleDoc();
-        if (data.cancelled) hushed = true;
+        // An interjection cutting in is not a hush: the reading is queued
+        // again and the window should keep looking like it is playing.
+        if (data.cancelled && !data.interjected) hushed = true;
         break;
       default:
         return; // unknown/forward-compatible event kind — ignore rather than throw
@@ -1862,8 +1930,17 @@
     if (e.ctrlKey || e.metaKey) win.dataset.ctrl = "1";
     else delete win.dataset.ctrl;
   };
+  // Where typing, not shortcuts, is meant: Space there is a space.
+  const TEXT_INPUTS = ["text", "search", "number", "password", "email", "url", "tel"];
+  const isTyping = (t) =>
+    t instanceof HTMLTextAreaElement ||
+    (t instanceof HTMLInputElement && TEXT_INPUTS.includes((t.type || "text").toLowerCase())) ||
+    t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
   document.addEventListener("keyup", (e) => {
     trackCtrl(e);
+    // Button activation by Space happens on keyup in some browsers; the
+    // keydown already did the toggle, so swallow the release.
+    if (e.key === " " && !isTyping(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) e.preventDefault();
     // Letting go of either the arrow or Ctrl ends a hold.
     if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Control" || e.key === "Meta") {
       endHold();
@@ -1879,7 +1956,7 @@
   document.addEventListener("keydown", (e) => {
     trackCtrl(e);
     const t = e.target;
-    if (t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement) return;
+    if (isTyping(t)) return;
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
       e.preventDefault();
       // Held keys repeat; only the first press starts anything.
@@ -1890,8 +1967,11 @@
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    // Space on a focused button is that button's own click; leave it.
-    if (e.key === " " && t instanceof HTMLButtonElement) return;
+    // Space is play/pause even on a focused button: after clicking any
+    // control it would otherwise re-press that control. preventDefault here
+    // stops Chrome's activation; the keyup handler above stops Firefox's,
+    // which clicks on release. A held key repeats and must not flap the state.
+    if (e.key === " " && e.repeat) { e.preventDefault(); return; }
     const action = {
       ArrowLeft: "back",
       ArrowRight: "fwd",

@@ -92,7 +92,12 @@ def test_initialize_hands_over_the_guide(daemon_socket, tmp_path: Path) -> None:
         assert result["protocolVersion"] == "2025-06-18"
         assert "brief" in result["instructions"]
         tools = rpc(proc, "tools/list", id_=2)["result"]["tools"]
-        assert {t["name"] for t in tools} == {"brief", "briefing_status", "set_mode"}
+        assert {t["name"] for t in tools} == {
+            "brief",
+            "briefing_status",
+            "set_mode",
+            "set_on_prompt",
+        }
     finally:
         proc.stdin.close()
         proc.wait(timeout=5)
@@ -116,6 +121,12 @@ def test_brief_answers_with_the_mode(daemon_socket, tmp_path: Path) -> None:  # 
         again = call(proc, "brief", {"text": "More.", "kind": "done"}, 5)
         assert again["structuredContent"]["spoken"] is False
         assert again["structuredContent"]["mode"] == "full"
+        assert status["on_prompt"] == "finish"
+        held = call(proc, "set_on_prompt", {"on_prompt": "hush"}, 6)
+        assert held["isError"] is False
+        assert held["structuredContent"]["on_prompt"] == "hush"
+        bad = call(proc, "set_on_prompt", {"on_prompt": "sometimes"}, 7)
+        assert bad["isError"] is True
     finally:
         proc.stdin.close()
         proc.wait(timeout=5)

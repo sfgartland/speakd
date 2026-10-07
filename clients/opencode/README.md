@@ -1,7 +1,8 @@
 # speakd for OpenCode
 
 Speaks OpenCode's prose responses aloud while the session runs: each text
-block is enqueued the moment it finishes, a new prompt stops the speech, and
+block is enqueued the moment it finishes, a new prompt lets the speech finish (or cuts it off, per
+`speech.on_prompt` / `speakctl on-prompt`), and
 permission prompts are read aloud. It also gives each session a way to
 **brief** you instead — the same `speakd-mcp` server Claude Code uses, whose
 `brief` tool the agent calls when it has finished, is stuck, or has a
@@ -10,7 +11,7 @@ briefings (brief) is chosen per session — see the main README's *Briefings*.
 
 One plugin file does the work OpenCode's own hooks would do in Claude Code:
 
-- `chat.message` stops the speech, starts a new turn and tells the daemon
+- `chat.message` starts a new turn (stopping the speech only under `speech.on_prompt = hush`) and tells the daemon
   this session is live.
 - `permission.ask` speaks "OpenCode needs your permission."
 - `session.idle` says "finished" when a turn ended in brief mode without a

@@ -738,6 +738,25 @@ class StreamingPlayer:
         """
         self._interrupt.clear()
 
+    def interrupt(self) -> None:
+        """Ask the current playback to end, without touching the device.
+
+        Never blocks, so it is safe under a lock. The write loop notices it
+        between chunks; `silence()` is the part that can block, and the one
+        that can safely arrive late, since it sets no flag a later segment
+        could trip over.
+        """
+        self._interrupt.set()
+
+    def silence(self) -> None:
+        """Abort what the sink is writing now. Can block on a real device.
+
+        Sets no interrupt of its own. A sink stop that lands after the next
+        segment has begun costs at most one chunk of it, because `_play`
+        restarts the sink before each write.
+        """
+        self._sink.stop()
+
     def pause(self) -> None:
         """Suspend playback between chunks; `play()` keeps blocking.
 

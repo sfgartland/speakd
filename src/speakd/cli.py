@@ -165,6 +165,16 @@ def _build_parser() -> argparse.ArgumentParser:
     mode = sub.add_parser("mode", parents=[common], help="brief or full narration for a channel")
     # Checked in `_mode`, not by argparse `choices`, for the reason `role` gives.
     mode.add_argument("mode", metavar="{brief,full}", help="brief: what the agent chooses to say")
+    on_prompt = sub.add_parser(
+        "on-prompt",
+        parents=[common],
+        help="what a new message does to the reading: finish it or hush it",
+    )
+    on_prompt.add_argument(
+        "policy",
+        choices=["finish", "hush", "default"],
+        help="finish: let it run out; hush: cut it off; default: follow speech.on_prompt",
+    )
     lang = sub.add_parser("lang", parents=[common], help="set a channel's language")
     lang.add_argument("lang", help="a language code (e.g. fr, pt-br), or 'auto' to clear it")
     seek = sub.add_parser("seek", parents=[common], help="move within what is being spoken")
@@ -542,6 +552,17 @@ def _mode(args: argparse.Namespace) -> int:
     response = _call(
         args.socket,
         Request(verb=Verb.SET_MODE, source_id=args.source, payload={"mode": args.mode}),
+    )
+    if response is None:
+        return _UNREACHABLE
+    return 0 if response.ok else _refused(response)
+
+
+def _on_prompt(args: argparse.Namespace) -> int:
+    """Set a channel's new-prompt policy. Silent on success, like mode."""
+    response = _call(
+        args.socket,
+        Request(verb=Verb.SET_ON_PROMPT, source_id=args.source, payload={"on_prompt": args.policy}),
     )
     if response is None:
         return _UNREACHABLE
@@ -1224,6 +1245,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _seek(args)
     if args.command == "mode":
         return _mode(args)
+    if args.command == "on-prompt":
+        return _on_prompt(args)
     if args.command == "lang":
         return _lang(args)
     if args.command == "role":

@@ -25,7 +25,14 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from speakd import languages, segmenter, state
 from speakd.alert import chime
-from speakd.channels import MODES, Channel, ChannelTable, effective_mode
+from speakd.channels import (
+    MODES,
+    ON_PROMPT_POLICIES,
+    Channel,
+    ChannelTable,
+    effective_mode,
+    effective_on_prompt,
+)
 from speakd.detect import Detector
 from speakd.engines import Declined, EngineChoice, choose_engine
 from speakd.events import Event, EventBus
@@ -118,6 +125,31 @@ _CORE_SPEECH_SETTINGS: tuple[dict[str, object], ...] = (
             "the default language instead, or decline to speak at all."
         ),
         "options": ["default", "decline"],
+    },
+    {
+        "name": "on_prompt",
+        "type": "choice",
+        "default": "finish",
+        "label": "When I send a new message",
+        "help": (
+            "What a new prompt in a session does to the reading in progress: "
+            "finish it (and the rest of that session's queue), or cut it off. "
+            "A session can override this with `speakctl on-prompt`."
+        ),
+        "options": ["finish", "hush"],
+    },
+    {
+        "name": "interject",
+        "type": "choice",
+        "default": "brief",
+        "label": "Let short notes interject",
+        "help": (
+            "Which short messages may cut into a long reading: briefings and "
+            "attention calls, attention calls only, or nothing. An interjection "
+            "is spoken next, and the reading picks up again at the sentence it "
+            "was on."
+        ),
+        "options": ["brief", "attention", "off"],
     },
     {
         "name": "sentence_gap_ms",
@@ -501,6 +533,15 @@ class _Job:
     # parse must still win resolution and reach speech.unsupported_language,
     # not fall through to the channel or default as though nothing were given.
     lang: str | None = None
+    # The enqueue's kind. A replay or a resumed reading keeps the kind of
+    # what it repeats, and says "response" when there is nothing to keep.
+    kind: str = "response"
+    # Whether this job jumped the queue to interject (`speech.interject`),
+    # decided once when it was accepted. Kept as a fact about the job rather
+    # than worked out again from `kind`: a change to the setting must not
+    # reorder what is already waiting, nor make a reading that started as an
+    # ordinary one interruptible by one rule and not another.
+    interjects: bool = False
 
 
 @dataclass
@@ -520,6 +561,15 @@ class _Current:
     # Which engine is making the audio, so an unload of Kokoro knows whether
     # it is pulling the model out from under this utterance.
     engine: str = ""
+    # The job's own `kind` and `interjects`: an interjection never cuts into
+    # another one, only into an ordinary reading.
+    kind: str = "response"
+    interjects: bool = False
+    # Set when an interjection cut this utterance off, so `_speak` queues the
+    # rest of it behind the interjection instead of letting it end. Cleared,
+    # like `seek_to`, by anything that stops speech for real: a hush or a
+    # seek racing the interjection wins.
+    interjected: bool = False
 
 
 class Daemon:
@@ -906,6 +956,12 @@ class Daemon:
                 self._cancel.set()
                 if self._current is not None:
                     self._current.seek_to = None
+                    # A hush that lands after an interjection cut this
+                    # utterance off, but before `_speak` queued its rest,
+                    # must not see it come back: the rest is queued under
+                    # this same lock, and only while this is still set. Once
+                    # queued it is in the queue the drain below empties.
+                    self._current.interjected = False
             # `sounding` is what the hook's channel is; `playing` is whether
             # audio is actually in flight. A scoped hush on a channel whose
             # last utterance has finished matches `_speaking` but must not
@@ -1303,6 +1359,10 @@ class Daemon:
             target = max(0, value if given[0] == "index" else current.index + value)
             ended = target >= len(current.units)
             current.seek_to = None if ended else target
+            # A seek is the listener choosing where to be, so it beats an
+            # interjection that has not yet taken the floor: the reading
+            # moves as asked and the interjection waits at the queue's head.
+            current.interjected = False
             # Set under the lock for the reason `_stop_speaking` gives.
             self._cancel.set()
         self._stop_player()
@@ -1422,6 +1482,17 @@ class Daemon:
         if isinstance(player, Pausable) and player.paused:
             return False
         return self.speaking
+
+    def _player_paused(self) -> bool:
+        """Whether the player is holding playback, False if it cannot pause.
+
+        Pause is sticky in the player: it survives `stop()` and spans
+        utterances. So a client cannot infer it from the utterance lifecycle
+        -- a `started` can arrive while the daemon is still paused, and only
+        this says so. Reported on `status` and `started` for that reason.
+        """
+        player = self.player
+        return isinstance(player, Pausable) and player.paused
 
     def wait_idle(self, timeout: float) -> bool:
         """Block until every accepted utterance has finished. Tests use it.
@@ -1804,12 +1875,24 @@ class Daemon:
                 # treating that as a new turn would bring back the "finished"
                 # the briefing stood in for.
                 self.channels.mark_briefed(request.source_id, False)
+                channel = self.channels.get(request.source_id)
+                if channel is not None and self._on_prompt_for(channel) == "finish":
+                    # The user's policy is to let the reading run out: stop
+                    # nothing and drop nothing, so the rest of this channel's
+                    # queue is still spoken. `held` tells the caller the hush
+                    # was deliberately not acted on, which `discarded: 0`
+                    # alone would not distinguish from an idle channel.
+                    return Response(
+                        ok=True, data={"discarded": 0, "scope": "channel", "held": True}
+                    )
             discarded = self._stop_speaking(
                 request.source_id, drain=request.verb is Verb.HUSH, reason=_DISCARDED_HUSHED
             )
             return Response(ok=True, data={"discarded": discarded, "scope": scope})
         if request.verb is Verb.SET_MODE:
             return self._set_mode(request.source_id, request.payload.get("mode"))
+        if request.verb is Verb.SET_ON_PROMPT:
+            return self._set_on_prompt(request.source_id, request.payload.get("on_prompt"))
         if request.verb is Verb.SET_LANGUAGE:
             return self._set_language(request.source_id, request.payload.get("lang"))
         if request.verb is Verb.SET_CAPABILITIES:
@@ -1835,6 +1918,8 @@ class Daemon:
                             "mode": effective_mode(c),
                             "briefed_this_turn": c.briefed_this_turn,
                             "lang": c.lang,
+                            "on_prompt": self._on_prompt_for(c),
+                            "on_prompt_override": c.on_prompt,
                         }
                         for c in self.channels.all()
                     ],
@@ -1843,7 +1928,9 @@ class Daemon:
                     # so a queue thirty deep and an empty one read the same
                     # until the speech came out of it.
                     "queue": [
+                        # `interjects` only where true, as on `queued`.
                         {"source_id": job.source_id, "text": _preview(job.text)}
+                        | ({"interjects": True} if job.interjects else {})
                         for job in self._pending_jobs()
                     ],
                     # Both levels, separately. A GUI that had only the union
@@ -1851,6 +1938,10 @@ class Daemon:
                     # draw: a channel that is audible behind a global mute
                     # looks identical to one that is muted itself.
                     "muted": self.muted,
+                    # The player's own sticky pause, so a client that missed
+                    # the `transport` event (opened late, or paused before a
+                    # hush) reads the truth rather than guessing.
+                    "paused": self._player_paused(),
                     "notify": {"enabled": self.notify_enabled},
                     "engine": self._engine_status(),
                     "speed": self.tempo.target,
@@ -2083,6 +2174,14 @@ class Daemon:
                 profile=profile,
                 prefix=prefix,
                 lang=job_lang,
+                kind=kind,
+                # Read now, per enqueue, so a change to the setting applies
+                # to the next message rather than at the next restart.
+                # `interject: false` on the enqueue opts this one out: plain
+                # first come, first served. Anything but a literal False
+                # (absent, true, a non-bool) follows the setting, as the
+                # other flags only act on a literal value.
+                interjects=request.payload.get("interject") is not False and self._interjects(kind),
             ),
             at,
         )
@@ -2108,7 +2207,8 @@ class Daemon:
         exists to hold back. `attention` -- what the agent cannot report
         itself -- is spoken in both. Two flags narrow a single enqueue:
         `only_in_mode`, and `unless_briefed`, which is how the end of a turn
-        stays quiet when the agent has already said its piece.
+        stays quiet when the agent has already said its piece. A third,
+        `interject: false`, is not a refusal: it only keeps this job in plain first-come order.
         """
         mode = effective_mode(channel)
         reason: str | None = None
@@ -2148,6 +2248,34 @@ class Daemon:
         self.channels.set_mode(source_id, str(mode))
         data = {"mode": effective_mode(channel), "briefs": channel.briefs}
         self._publish("mode", source_id, dict(data))
+        return Response(ok=True, data=data)
+
+    def _on_prompt_for(self, channel: Channel) -> str:
+        """The channel's new-prompt policy: its override, else `speech.on_prompt`."""
+        return effective_on_prompt(channel, str(self.settings.get("speech.on_prompt")))
+
+    def _set_on_prompt(self, source_id: str, value: object) -> Response:
+        """Set a channel's new-prompt policy: `finish`, `hush`, or `default` to clear.
+
+        Scoped to the channel named, like `set_mode`, and `get` rather than
+        `open` for the same reason: a typo must not create a channel.
+        """
+        if value not in (*ON_PROMPT_POLICIES, "default"):
+            return Response(
+                ok=False, error="set_on_prompt needs 'on_prompt': 'finish', 'hush' or 'default'"
+            )
+        if not source_id:
+            return Response(ok=False, error="set_on_prompt needs a channel")
+        channel = self.channels.get(source_id)
+        if channel is None:
+            return Response(ok=False, error=f"no channel named {source_id!r}")
+        override = None if value == "default" else str(value)
+        self.channels.set_on_prompt(source_id, override)
+        data: dict[str, object] = {
+            "on_prompt": self._on_prompt_for(channel),
+            "override": channel.on_prompt,
+        }
+        self._publish("on_prompt", source_id, dict(data))
         return Response(ok=True, data=data)
 
     def _set_language(self, source_id: str, lang: object) -> Response:
@@ -2233,8 +2361,44 @@ class Daemon:
             return Response(ok=True, data={"spoken": False, "reason": "disabled"})
         return None
 
+    def _interjects(self, kind: str) -> bool:
+        """Whether an enqueue of `kind` interjects, per `speech.interject`."""
+        policy = str(self.settings.get("speech.interject"))
+        if policy == "brief":
+            return kind in ("brief", "attention")
+        if policy == "attention":
+            return kind == "attention"
+        return False
+
+    def _put_ahead(self, job: _Job) -> None:
+        """Queue `job` ahead of ordinary work, behind interjections already waiting.
+
+        So interjections stay first come, first served among themselves, and
+        a resumed reading (which goes through here too) lands directly behind
+        the interjections that cut it off. Never past a stop signal: what
+        `stop()` deposited stays behind everything it was meant to follow, as
+        `_drain_queued` keeps it -- and since `_accept` refuses once
+        `_running` is down, a sentinel is in practice never there to meet.
+
+        `queue.Queue` has no insert, so this does by hand on the deque what
+        `put` does: the same mutex, the same `unfinished_tasks` count, the same
+        wake-up of a worker blocked in `get`. The caller holds `_idle`, which
+        is the lock order `_pending_jobs` documents.
+        """
+        with self._jobs.mutex:
+            items = self._jobs.queue
+            at = next(
+                (i for i, item in enumerate(items) if item is None or not item.interjects),
+                len(items),
+            )
+            items.insert(at, job)
+            self._jobs.unfinished_tasks += 1
+            self._jobs.not_empty.notify()
+
     def _accept(self, job: _Job, at: float) -> Response:
         """Put an accepted job on the queue and say so."""
+        interrupt = False
+        silencer: Callable[[], None] | None = None
         # Counted before the put, so the job is never in the queue while the
         # daemon still looks idle. Both under the lock stop() takes, so a
         # concurrent stop cannot slip its sentinel in between and leave this
@@ -2244,7 +2408,39 @@ class Daemon:
                 return Response(ok=False, error=_NOT_RUNNING)
             self._pending += 1
             self._accepted += 1
-            self._jobs.put(job)
+            if job.interjects:
+                self._put_ahead(job)
+                current = self._current
+                # Cut into the reading only when that is all it would do.
+                # Not into another interjection: those take turns. Not when
+                # the cancel is already set: a hush, seek or stop got there
+                # first and wins, and the interjection simply goes next. Not
+                # while paused: the listener stopped the reading, and cutting
+                # it would only drop them into the interjection, also paused.
+                if (
+                    current is not None
+                    and not current.interjects
+                    and not current.interjected
+                    and not self._cancel.is_set()
+                    and not self._player_paused()
+                ):
+                    interrupt = True
+                    current.interjected = True
+                    current.seek_to = None
+                    # Under the lock, for the reason `_stop_speaking` gives.
+                    self._cancel.set()
+                    # Armed here too, where a player has a non-blocking way to
+                    # say so, so the stop that follows outside the lock only
+                    # has to silence the device and cannot arrive late enough
+                    # to be mistaken for a stop aimed at the next utterance.
+                    arm = getattr(self.player, "interrupt", None)
+                    if callable(arm):
+                        arm()
+                        silence = getattr(self.player, "silence", None)
+                        if callable(silence):
+                            silencer = silence
+            else:
+                self._jobs.put(job)
             # Read inside the same lock as the put, so the number announced is
             # the queue this job actually joined rather than one a concurrent
             # drain has since emptied.
@@ -2254,10 +2450,29 @@ class Daemon:
         # that turned round and asked the daemon anything would deadlock on a
         # lock that does not re-enter. A client watching the stream could not
         # otherwise see an utterance until it began speaking, which for a deep
-        # queue is minutes after it was accepted.
-        self._publish(
-            "queued", job.source_id, {"text": _preview(job.text), "pending": waiting, "at": at}
-        )
+        # queue is minutes after it was accepted. Before the player is stopped,
+        # below: that call can block on a real device, and the worker may take
+        # an interjection the moment the reading yields, so a `queued` sent
+        # after it could follow the job's own `started`.
+        data: dict[str, object] = {"text": _preview(job.text), "pending": waiting, "at": at}
+        if job.interjects:
+            # So a window keeping its own list puts it where it really went:
+            # ahead of the ordinary queue, behind earlier interjections.
+            data["interjects"] = True
+        self._publish("queued", job.source_id, data)
+        if interrupt:
+            # Outside the lock, as `_seek` does: this is the call that can
+            # block on a real device. A player that armed its interrupt under
+            # the lock only has the device left to silence; the rest stop()s.
+            if silencer is not None:
+                try:
+                    silencer()
+                except Exception as exc:
+                    self._publish(
+                        "error", "", {"message": f"could not silence the player: {exc!r}"}
+                    )
+            else:
+                self._stop_player()
         return Response(ok=True, data={"spoken": True})
 
     def _run(self) -> None:
@@ -2616,6 +2831,9 @@ class Daemon:
                 "text": text,
                 "lang": lang,
                 "engine": engine_name,
+                # Pause outlives the previous utterance, so this one may start
+                # silent: a GUI must not read `started` as "now playing".
+                "paused": self._player_paused(),
                 "segments": [
                     {
                         "index": i,
@@ -2636,9 +2854,34 @@ class Daemon:
         # Installed only now, past the early return above, which would
         # otherwise leave it pointing at an utterance that never spoke --
         # and seek and replay treating that as the one in the room.
-        current = _Current(units=tuple(units), engine=engine_name)
+        current = _Current(
+            units=tuple(units),
+            engine=engine_name,
+            kind=job.kind,
+            interjects=job.interjects,
+            # Where this pass begins, so an interjection before the first
+            # `position` resumes a replay where it was asked to start.
+            index=min(job.start, max(0, len(units) - 1)),
+        )
         with self._idle:
             self._current = current
+            # An interjection accepted while this was being prepared found no
+            # `_current` to cut into, and went to the head of the queue to
+            # wait. Without this it would wait out the whole reading, the very
+            # thing it exists not to do -- and preparing can take seconds
+            # (plugin transforms, the detector's first load). So it is cut
+            # into now, before a word of it is heard, by the same path a
+            # later interjection takes. One at the head arrived after this
+            # job left the queue: interjections go in ahead of every ordinary
+            # job, so one already waiting would have been taken first.
+            if (
+                not job.interjects
+                and not cancel.is_set()
+                and not self._player_paused()
+                and self._interjection_waiting()
+            ):
+                current.interjected = True
+                cancel.set()
         # A stop aimed at playback that has already ended -- the hush during
         # a gap between utterances -- arms the player's interrupt with no
         # play() left to consume it, and the next utterance's first sentence
@@ -2870,6 +3113,37 @@ class Daemon:
                 if callable(clear):
                     clear()
                 start = target
+            # Past the loop with `current.interjected` still set means an
+            # interjection cut this off and nothing has overruled it since.
+            spoken = _Spoken(
+                source_id=job.source_id,
+                profile=job.profile,
+                text=text,
+                pieces=tuple(pieces),
+                units=tuple(units),
+            )
+            waiting = self._resume_after_interjection(
+                job, current, spoken, completed=result.completed
+            )
+            if waiting is not None:
+                self._publish(
+                    "queued",
+                    job.source_id,
+                    # `resumed`: it went in behind the interjections, not
+                    # at the back, and a window's list should say so.
+                    {
+                        "text": _preview(text),
+                        "pending": waiting,
+                        "at": time.time(),
+                        "resumed": True,
+                    },
+                )
+                self._publish(
+                    "finished",
+                    job.source_id,
+                    {"cancelled": False, "aborted": False, "interjected": True},
+                )
+                return
         finally:
             with self._idle:
                 if self._current is current:
@@ -2877,8 +3151,65 @@ class Daemon:
         self._publish(
             "finished",
             job.source_id,
-            {"cancelled": result.cancelled, "aborted": result.aborted},
+            # A cancel that arrived after the last unit played out (an
+            # interjection landing in that gap) did not cancel anything.
+            {"cancelled": result.cancelled and not result.completed, "aborted": result.aborted},
         )
+
+    def _interjection_waiting(self) -> bool:
+        """Whether the next job in the queue is an interjection. Caller holds `_idle`."""
+        with self._jobs.mutex:
+            items = self._jobs.queue
+            return bool(items) and items[0] is not None and items[0].interjects
+
+    def _resume_after_interjection(
+        self, job: _Job, current: _Current, spoken: _Spoken, *, completed: bool = False
+    ) -> int | None:
+        """Queue the rest of an interjected utterance, returning the queue length.
+
+        None when it is not to come back: no interjection cut it off, or a
+        hush, mute, cancel or seek cleared the mark since (`_stop_speaking`
+        and `_seek` clear it under this same lock), or the daemon is stopping.
+        That makes the check and the re-queue one step against every one of
+        those: a hush either lands first and finds nothing to bring back, or
+        lands after and finds the rest in the queue its drain empties.
+
+        Played again as a replay of exactly what was prepared -- see `_Spoken`
+        -- from the sentence that was cut off, which is said again whole: a
+        sentence resumed from its middle is not one anybody can follow. It
+        keeps its source, profile and text, so the `started` it opens with
+        is recognisably the same reading. `_current` goes in the same step,
+        so nothing aimed at "the utterance playing" finds this one after its
+        rest is already queued.
+
+        `completed` says every unit was played out: an interjection that
+        landed after the last `play()` returned cut nothing off, so there is
+        no rest to bring back and the reading simply finished.
+        """
+        with self._idle:
+            if self._current is current:
+                self._current = None
+            if completed:
+                current.interjected = False
+                return None
+            if not current.interjected or not self._running:
+                return None
+            current.interjected = False
+            self._pending += 1
+            self._accepted += 1
+            self._put_ahead(
+                _Job(
+                    source_id=job.source_id,
+                    text=spoken.text,
+                    profile=job.profile,
+                    prefix="",
+                    replay=spoken,
+                    start=current.index,
+                    lang=job.lang,
+                    kind=job.kind,
+                )
+            )
+            return len(self._pending_jobs())
 
     def _tick_metrics(self, settled: int) -> None:
         """Publish `metrics` once an interval while there is speech to report.

@@ -63,6 +63,12 @@ class SpeechResult:
     # again -- the whole engine, not one segment -- so the caller can say the
     # rest with a local engine. `timeline` says how far the remote one got.
     remote_error: RemoteEngineError | None = None
+    # True when every unit from the start index to the end was played out: the
+    # producer ran dry, nothing failed, and the last unit was not cut short by
+    # a cancel that was already set when its `play()` returned. A cancel that
+    # lands after that is aimed at an utterance that has, in effect, finished.
+    # Defaulted False so a caller that never reads it behaves as before.
+    completed: bool = False
 
 
 _Item = (
@@ -405,6 +411,8 @@ def speak(
     offset = start_offset
     exhausted = False
     aborted = False
+    # Whether the last unit played was possibly cut short by a cancel.
+    cut_short = False
     unsupported_language: str | None = None
     piper_error: PiperVoiceError | None = None
     remote_error: RemoteEngineError | None = None
@@ -507,6 +515,9 @@ def speak(
                 errors.append(f"player: {exc}")
                 aborted = True
                 break
+            # Read straight after play(): a cancel already set means this
+            # unit may have been interrupted rather than played out.
+            cut_short = cancel.is_set()
             # Appended only once playback has actually succeeded, so a
             # segment whose play() call failed is never added: the timeline
             # returned on the aborted path is exactly what was played.
@@ -557,4 +568,13 @@ def speak(
         unsupported_language=unsupported_language,
         piper_error=piper_error,
         remote_error=remote_error,
+        completed=(
+            exhausted
+            and expected >= len(units)
+            and not aborted
+            and not cut_short
+            and unsupported_language is None
+            and piper_error is None
+            and remote_error is None
+        ),
     )

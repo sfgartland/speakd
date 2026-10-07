@@ -1,7 +1,7 @@
 # speakd for Codex
 
 The Codex client speaks the main assistant's prose as it appears in the local
-session transcript. A prompt or interrupt stops current speech. Permission
+session transcript. An interrupt stops current speech; a new prompt lets it finish by default (`speech.on_prompt`, or `speakctl on-prompt hush` to cut it off). Permission
 requests and turns that end without a briefing can announce themselves. The
 MCP `brief` tool lets Codex send a short update when it finishes, gets stuck,
 or needs an answer. Reasoning, tools, and subagent turns are never spoken.

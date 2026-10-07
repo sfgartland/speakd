@@ -34,6 +34,8 @@ PREAMBLE = (
     "speakd reads to the user aloud. Use `brief` to tell them what matters, "
     "`briefing_status` to see how this session is set, and `set_mode` when "
     'they ask to hear every response ("full") or only briefings ("brief"). '
+    "Use `set_on_prompt` when they say whether a new message of theirs should "
+    'cut off the reading ("hush") or let it finish ("finish"). '
     "In full mode every response is already read aloud, so do not brief then."
     " For Codex, include the source_id supplied by the speakd prompt hook on every call."
 )
@@ -87,6 +89,23 @@ TOOLS = [
                 "mode": {"type": "string", "enum": ["brief", "full"]},
             },
             "required": ["mode"],
+        },
+    },
+    {
+        "name": "set_on_prompt",
+        "description": (
+            "Choose what happens to the reading in progress when the user sends a new "
+            "message in this session: 'finish' lets it run out, 'hush' cuts it off, "
+            "'default' follows the user's global setting. Use it when the user asks "
+            "whether a new message should cut off the reading or let it finish."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **_SOURCE_PROPERTY,
+                "on_prompt": {"type": "string", "enum": ["finish", "hush", "default"]},
+            },
+            "required": ["on_prompt"],
         },
     },
 ]
@@ -154,7 +173,7 @@ class Server:
         arguments = params.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
         try:
-            if name in ("brief", "briefing_status", "set_mode"):
+            if name in ("brief", "briefing_status", "set_mode", "set_on_prompt"):
                 self._arrive(arguments.get("source_id"))
             if name == "brief":
                 data = self._brief(arguments)
@@ -162,6 +181,8 @@ class Server:
                 data = self._status()
             elif name == "set_mode":
                 data = self._set_mode(arguments)
+            elif name == "set_on_prompt":
+                data = self._set_on_prompt(arguments)
             else:
                 raise ToolError(f"unknown tool: {name}")
         except ToolError as exc:
@@ -210,10 +231,21 @@ class Server:
             raise ToolError(answer.error)
         return self._status()
 
+    def _set_on_prompt(self, arguments: dict[str, object]) -> dict[str, object]:
+        value = arguments.get("on_prompt")
+        if value not in ("finish", "hush", "default"):
+            raise ToolError("set_on_prompt needs 'on_prompt': 'finish', 'hush' or 'default'")
+        answer = self._send(Verb.SET_ON_PROMPT, {"on_prompt": value})
+        if isinstance(answer, str):
+            return {"reason": _NOT_RUNNING}
+        if not answer.ok:
+            raise ToolError(answer.error)
+        return self._status()
+
     # ---- the daemon ----
 
     def _settings(self) -> dict[str, object]:
-        """This channel's mode, mute and capability, as the daemon has them."""
+        """This channel's mode, mute, capability and new-prompt policy, as the daemon has them."""
         answer = self._send(Verb.STATUS, {}, source="")
         if isinstance(answer, str) or not answer.ok:
             return {"reason": _NOT_RUNNING}
@@ -226,10 +258,16 @@ class Server:
                     "mode": channel.get("mode", "full"),
                     "muted": muted,
                     "briefs": bool(channel.get("briefs")),
+                    "on_prompt": channel.get("on_prompt", "finish"),
                 }
         # Not listed yet: nothing has opened the channel. Said as unknown
         # rather than guessed, since the agent acts on what this says.
-        return {"mode": "unknown", "muted": bool(answer.data.get("muted")), "briefs": False}
+        return {
+            "mode": "unknown",
+            "muted": bool(answer.data.get("muted")),
+            "briefs": False,
+            "on_prompt": "unknown",
+        }
 
     def _channel_id(self) -> str:
         """The channel this call briefs on, settled by `_arrive`."""

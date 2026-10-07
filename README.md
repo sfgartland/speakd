@@ -151,6 +151,32 @@ under the old meaning typing a prompt in one session silenced a second session
 that had said nothing. The response reports the scope the daemon actually
 applied, rather than leaving a caller to assume it matched the request.
 
+**A new prompt lets the reading finish by default.** The prompt hook's hush
+carries `new_turn: true`; under the `finish` policy the daemon resets
+`briefed_this_turn` and then stops nothing and drops nothing, answering
+`{"discarded": 0, "scope": "channel", "held": true}`. The global default is the
+`speech.on_prompt` setting (`finish` or `hush`); one session overrides it with
+`speakctl on-prompt finish|hush|default --source <id>` (`default` clears the
+override), the window's per-channel toggle, or the agent's `set_on_prompt` MCP
+tool. The override lasts until the daemon restarts, like `mode`. A hush without
+`new_turn` — the window's skip, `speakctl hush` — always stops.
+
+**Short notes interject; long readings wait their turn.** Responses queue first
+come, first served, but a briefing or an attention call ("needs your
+permission", "finished") goes to the head of the queue, behind any other
+interjection already waiting, and cuts into a reading in progress. The reading
+is queued again just behind it and resumes at the start of the sentence it was
+cut off in; its `finished` carries `interjected: true` rather than
+`cancelled`. The `speech.interject` setting chooses what interjects: `brief`
+(briefings and attention calls, the default), `attention` (attention calls
+only), or `off` (plain first come, first served). An enqueue can opt out for
+itself with `"interject": false` in its payload (plain first come, first
+served whatever its kind; the Claude Code hook sends it for the idle
+"waiting for your input" reminder so it does not cut into its own session's
+reading). An interjection never cuts
+into another one, nor into paused speech (it just goes next), and a hush, mute
+or seek that lands meanwhile wins: the interrupted reading is not brought back.
+
 **`status` reports what is waiting**, in play order, next first — the utterance
 being spoken is not in it, having already left the queue. An accepted job also
 announces itself on the bus as `queued` with the depth it joined, so a monitor
@@ -689,15 +715,16 @@ Zotero's plugin sandbox cannot open a Unix socket, so the daemon also serves
 **Claude Code** — [`clients/claude-code/`](clients/claude-code/) is a loadable
 plugin that speaks a session's responses as they land on disk. The speaking is
 done by a follower process the daemon keeps alive, which tails the transcript;
-two hooks remain, both once per turn, to stop the speech when a new prompt
-arrives and to read the permission prompts aloud. Every hook path exits 0 and
+two hooks remain, both once per turn, to tell the daemon a new prompt has
+arrived (which stops the speech only under `speech.on_prompt = hush`; by default
+it lets the reading finish) and to read the permission prompts aloud. Every hook path exits 0 and
 writes nothing to stdout, so a daemon that is not running costs silence and
 nothing else. The `speakd-audiobook` skill is included. See its
 [README](clients/claude-code/README.md) for the install.
 
 **OpenCode** — [`clients/opencode/`](clients/opencode/) is a plugin that
-speaks a session's text blocks as they finish, stops the speech on a new
-prompt, and reads the permission prompts aloud — the same three jobs the
+speaks a session's text blocks as they finish, handles a new prompt per
+`speech.on_prompt` (the reading finishes by default; `hush` stops it), and reads the permission prompts aloud — the same three jobs the
 Claude Code hooks do, from inside OpenCode's own plugin runtime. Install it
 once with `clients/opencode/install.sh`; the `speakd-mcp` server and the
 `speakd-audiobook` skill come with it, so sessions brief and switch modes

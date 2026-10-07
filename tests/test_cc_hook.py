@@ -88,6 +88,31 @@ def test_a_notification_is_an_attention_on_the_main_channel(tmp_path: Path, monk
     assert sent == [("claude-code:s1", "Claude needs your permission.", "attention", None)]
 
 
+def test_an_idle_notification_does_not_interject(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    sent: list[Sent] = []
+    body = payload(
+        hook_event_name="Notification",
+        message="Claude is waiting for your input",
+        notification_type="idle_prompt",
+    )
+    assert run(monkeypatch, body, sent) == 0
+    assert sent == [
+        ("claude-code:s1", "Claude is waiting for your input", "attention", {"interject": False})
+    ]
+
+
+@pytest.mark.parametrize("kind", ["permission_prompt", "auth_success", "elicitation_dialog"])
+def test_other_notification_types_still_interject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
+    sent: list[Sent] = []
+    body = payload(hook_event_name="Notification", message="Needs you.", notification_type=kind)
+    assert run(monkeypatch, body, sent) == 0
+    assert sent == [("claude-code:s1", "Needs you.", "attention", None)]
+
+
 def test_a_prompt_hushes_the_session(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "state"))
     sent: list[Sent] = []

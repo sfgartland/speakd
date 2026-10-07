@@ -85,7 +85,11 @@ def enqueue(
     """Speak `text` on `source`. Blank text is a no-op, not a request.
 
     `kind` is what the daemon weighs against the channel's mode; `flags` are
-    per-enqueue conditions it checks, such as `unless_briefed`.
+    per-enqueue conditions it checks, such as `unless_briefed`. `interject`
+    set to False keeps a briefing or attention call in plain first come,
+    first served order (no queue jump, no cutting into a reading) even where
+    `speech.interject` would let its kind interject; any other value, or
+    leaving it out, follows the setting.
     """
     if not text.strip():
         return None
@@ -107,7 +111,10 @@ def hush(
     """Stop `source` talking and drop what it had queued.
 
     `new_turn` says the user has just prompted, which is what resets whether
-    the agent has briefed this turn.
+    the agent has briefed this turn. With it, whether anything actually stops
+    follows the channel's `speech.on_prompt` policy: under the default,
+    `finish`, the reading carries on and nothing is dropped; only `hush`
+    stops it. Without `new_turn` this always stops.
     """
     payload: dict[str, object] = {"new_turn": True} if new_turn else {}
     return send(
