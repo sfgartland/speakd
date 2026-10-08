@@ -136,6 +136,29 @@ export interface DroppedSegment {
   readonly why: "running head" | "footnote";
 }
 
+/** One borderline footnote the batch classifier is asked about, by its original index. */
+export interface ClassifyResidue {
+  readonly index: number;
+  readonly text: string;
+}
+
+/**
+ * A document's `classify` footnotes, with their original indices: the export
+ * path's batch input (Task 11). Empty under `drop_all`/`defer_all`, so the
+ * export makes no call there either.
+ */
+export function classificationResidue<S extends PlanSegment>(
+  segments: readonly S[],
+  policy: FootnotePolicy,
+): ClassifyResidue[] {
+  const { tagged } = tagSegments(segments, policy);
+  const residue: ClassifyResidue[] = [];
+  tagged.forEach((segment, index) => {
+    if (segment.tag === "classify") residue.push({ index, text: segment.text });
+  });
+  return residue;
+}
+
 /** Both filters over a whole document's segments, for whoever builds sections or parts. */
 export interface SegmentsPlan<S extends PlanSegment> {
   /** The whole list, tagged for `buildSections`: a dropped one never appears in a section, a deferred one waits for its section's end. */
@@ -148,10 +171,11 @@ export interface SegmentsPlan<S extends PlanSegment> {
  * The running-head filter and the footnote plan over a whole document's
  * segments (proposal §4.2), in that order: the head filter first, so the
  * footnote plan sees what is left. Under `classify`, what the shape rules
- * could not decide is kept -- deferred to its section's end -- until a
- * semantic stage exists: a wrong kept footnote is preferable to a wrong
- * dropped paragraph. Nothing here drops by content; only recurrence,
- * geometry, markers and the shape rules decide.
+ * could not decide is tagged `classify` and held back by `buildSections`
+ * exactly as a `defer` is -- read at its section's end -- until a semantic
+ * stage resolves it: a wrong kept footnote is preferable to a wrong dropped
+ * paragraph. Nothing here drops by content; only recurrence, geometry,
+ * markers and the shape rules decide.
  */
 export function tagSegments<S extends PlanSegment>(segments: readonly S[], policy: FootnotePolicy): SegmentsPlan<S> {
   const kept = filterRunningHeads(segments);
@@ -171,7 +195,7 @@ export function tagSegments<S extends PlanSegment>(segments: readonly S[], polic
     }
     const tag = plan.tags[index] ?? "body";
     if (tag === "drop") dropped.push({ text: segment.text, why: "footnote" });
-    tagged.push({ ...segment, tag: tag === "classify" ? "defer" : tag });
+    tagged.push({ ...segment, tag });
   }
   return { tagged, dropped };
 }

@@ -7,15 +7,22 @@
 
 import { parseSettings, type ExportSettings } from "./export/dialog";
 import { type FootnotePolicy } from "./footnotes";
+import { type LlmConfig } from "./llm";
 import type { LinkConfig } from "./link";
 
 export const PREF_PREFIX = "extensions.speakd-reader.";
 export const PORT_PREF = `${PREF_PREFIX}port`;
 export const TOKEN_PREF = `${PREF_PREFIX}token`;
 export const FOOTNOTE_POLICY_PREF = `${PREF_PREFIX}footnote_policy`;
+export const LLM_ENABLED_PREF = `${PREF_PREFIX}llm_enabled`;
+export const LLM_ENDPOINT_PREF = `${PREF_PREFIX}llm_endpoint`;
+export const LLM_KEY_PREF = `${PREF_PREFIX}llm_key`;
+export const LLM_MODEL_PREF = `${PREF_PREFIX}llm_model`;
 export const DEFAULT_PORT = 8642;
 /** How a read treats footnotes (proposal §3, the brief's open question 1): drop the bare citations, read the rest at their section's end. */
 export const DEFAULT_FOOTNOTE_POLICY: FootnotePolicy = "classify";
+/** The one-line disclosure the preference pane carries when the LLM is on (reader-design revision #7). */
+export const LLM_DISCLOSURE = "When enabled, this sends the paper's text to this endpoint.";
 
 /** The link's configuration from the preferences' raw values, whatever the user typed. */
 export function parseConfig(port: unknown, token: unknown): LinkConfig {
@@ -48,6 +55,38 @@ export function readFootnotePolicy(): FootnotePolicy {
 /** The policy as set, or the default for anything else. */
 export function parseFootnotePolicy(value: unknown): FootnotePolicy {
   return value === "drop_all" || value === "defer_all" ? value : DEFAULT_FOOTNOTE_POLICY;
+}
+
+/**
+ * The LLM's configuration as the preferences hold it (proposal §4.2): off
+ * until an endpoint and a model are set, whatever the switch says. The key is
+ * a string, masked in the pane, never logged.
+ */
+export function parseLlmConfig(values: {
+  enabled?: unknown;
+  endpoint?: unknown;
+  key?: unknown;
+  model?: unknown;
+}): LlmConfig {
+  const endpoint = typeof values.endpoint === "string" ? values.endpoint.trim() : "";
+  const model = typeof values.model === "string" ? values.model.trim() : "";
+  return {
+    enabled: values.enabled === true && endpoint !== "" && model !== "",
+    endpoint,
+    apiKey: typeof values.key === "string" ? values.key.trim() : "",
+    model,
+  };
+}
+
+/** The LLM's configuration as the preferences stand. */
+export function readLlmConfig(): LlmConfig {
+  const get = (name: string): unknown => Zotero.Prefs.get(name, true);
+  return parseLlmConfig({
+    enabled: get(LLM_ENABLED_PREF),
+    endpoint: get(LLM_ENDPOINT_PREF),
+    key: get(LLM_KEY_PREF),
+    model: get(LLM_MODEL_PREF),
+  });
 }
 
 /** The audiobook export dialog's defaults, declared in addon/prefs.js as `export_*`. */

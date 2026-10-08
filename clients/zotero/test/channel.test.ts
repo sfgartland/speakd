@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Channel, type Problem } from "../src/channel";
+import { cleanup } from "../src/cleanup";
 import type { FootnotePolicy } from "../src/footnotes";
-import type { CallResult, SpeakdEvent } from "../src/speakd";
+import { cleanWithLlm, LlmClient, type FootnoteClassifier, type FootnoteKind, type FootnoteLabel, type LlmTimers } from "../src/llm";
+import type { CallResult, FetchLike, SpeakdEvent } from "../src/speakd";
 
 const SOURCE = "zotero:ABC123";
 
@@ -535,5 +537,182 @@ describe("Channel", () => {
     expect(problems).toEqual([{ kind: "empty", error: "this document has no text to read" }]);
     expect(daemon.calls).toEqual([]);
     expect(channel.reading).toBe(false);
+  });
+});
+
+// A classifier whose cache the test pre-seeds, so the channel's cache-first
+// resolution can be driven without a network; `hang` models a call that
+// never answers.
+class FakeClassifier implements FootnoteClassifier {
+  readonly configured = true;
+  readonly calls: FootnoteLabel[][] = [];
+  constructor(
+    private readonly kinds = new Map<string, FootnoteKind>(),
+    private readonly hang = false,
+  ) {}
+  cached(text: string): FootnoteKind | undefined {
+    return this.kinds.get(text);
+  }
+  async classifyFootnotes(residue: readonly FootnoteLabel[]): Promise<Map<number, FootnoteKind>> {
+    this.calls.push([...residue]);
+    if (this.hang) return new Promise(() => {});
+    const out = new Map<number, FootnoteKind>();
+    for (const footnote of residue) {
+      const kind = this.kinds.get(footnote.text);
+      if (kind !== undefined) out.set(footnote.index, kind);
+    }
+    return out;
+  }
+}
+
+// A stubbed chat endpoint: each answer is a completion holding `content`, or
+// "hang"; what was asked is recorded.
+function stubLlm(answers: (string | "hang")[]) {
+  const requests: { body?: string }[] = [];
+  const fetch: FetchLike = async (_url, init) => {
+    requests.push({ body: init?.body });
+    const answer = answers.shift();
+    if (answer === undefined || answer === "hang") return new Promise(() => {});
+    return new Response(JSON.stringify({ choices: [{ message: { content: answer } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  return { fetch, requests };
+}
+
+const PROSE_NOTE =
+  "2 A footnote of page 0 holds real prose, and it argues its case across the sentences at length.";
+
+describe("Channel with a footnote classifier", () => {
+  it("drops a cache-resolved citation footnote, and the body still reads", async () => {
+    const classifier = new FakeClassifier(new Map([[PROSE_NOTE, "citation"]]));
+    const daemon = new FakeDaemon();
+    const channel = new Channel({
+      client: daemon.client,
+      sourceId: SOURCE,
+      label: "A Paper",
+      size: 60,
+      footnotes: "classify",
+      footnoteClassifier: classifier,
+    });
+    daemon.channel = channel;
+    await channel.start(PAPER, 0);
+    const first = daemon.enqueued()[0]!;
+    expect(first).not.toContain("holds real prose");
+    expect(first).toContain("The body of page 0 opens.");
+  });
+
+  it("never blocks enqueueNext on a classification that hangs", async () => {
+    const classifier = new FakeClassifier(new Map(), true);
+    const daemon = new FakeDaemon();
+    const channel = new Channel({
+      client: daemon.client,
+      sourceId: SOURCE,
+      label: "A Paper",
+      size: 60,
+      footnotes: "classify",
+      footnoteClassifier: classifier,
+    });
+    daemon.channel = channel;
+    await channel.start(PAPER, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    expect(daemon.enqueued().length).toBeGreaterThan(1);
+  });
+
+  it("makes zero classification calls under drop_all and defer_all", async () => {
+    for (const policy of ["drop_all", "defer_all"] as const) {
+      const classifier = new FakeClassifier(new Map(), true);
+      const daemon = new FakeDaemon();
+      const channel = new Channel({
+        client: daemon.client,
+        sourceId: SOURCE,
+        label: "A Paper",
+        size: 60,
+        footnotes: policy,
+        footnoteClassifier: classifier,
+      });
+      daemon.channel = channel;
+      await channel.start(PAPER, 0);
+      await channel.idle();
+      daemon.started(daemon.enqueued()[0]!);
+      await channel.idle();
+      expect(classifier.calls).toEqual([]);
+    }
+  });
+});
+
+// Three one-sentence sections ([0], [1], [2]) with a typo in the second, for
+// the LLM repair stage.
+const SECTIONS = [
+  { text: "First section text." },
+  { text: "Second section has a tbe typo." },
+  { text: "Third section is here." },
+];
+
+const instantTimers = {
+  setTimeout: (callback: () => void) => {
+    queueMicrotask(callback);
+    return 0;
+  },
+  clearTimeout: () => {},
+};
+const neverTimers = { setTimeout: () => 0, clearTimeout: () => {} };
+
+function llmChannel(answers: (string | "hang")[], timers: LlmTimers, enabled = true) {
+  const { fetch, requests } = stubLlm(answers);
+  const client = new LlmClient({
+    config: { enabled, endpoint: enabled ? "https://e.test/v1" : "", apiKey: "k", model: enabled ? "m" : "" },
+    fetch,
+    timers,
+    log: () => {},
+  });
+  const daemon = new FakeDaemon();
+  const channel = new Channel({
+    client: daemon.client,
+    sourceId: SOURCE,
+    label: "A Paper",
+    firstSize: 1,
+    size: 30,
+    clean: cleanWithLlm(client),
+  });
+  daemon.channel = channel;
+  return { daemon, channel, requests };
+}
+
+describe("Channel with the Stage B clean", () => {
+  it("skips the LLM for ordinal 0: zero fetches and the deterministic text", async () => {
+    const { daemon, channel, requests } = llmChannel(["changed"], neverTimers);
+    await channel.start(SECTIONS, 0);
+    expect(requests).toHaveLength(0);
+    expect(daemon.enqueued()[0]).toBe(cleanup(SECTIONS[0]!.text).text);
+  });
+
+  it("repairs sections after the first with a configured endpoint", async () => {
+    const { daemon, channel, requests } = llmChannel(["Second section has a the typo."], neverTimers);
+    await channel.start(SECTIONS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    expect(requests).toHaveLength(1);
+    expect(daemon.enqueued()[1]).toBe("Second section has a the typo.");
+  });
+
+  it("leaves speech identical to rules-only when the model fails", async () => {
+    const { daemon, channel } = llmChannel(["hang"], instantTimers);
+    await channel.start(SECTIONS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    expect(daemon.enqueued()[1]).toBe(cleanup(SECTIONS[1]!.text).text);
+  });
+
+  it("is indistinguishable from Stage A when unconfigured", async () => {
+    const configured = llmChannel([], neverTimers);
+    const unconfigured = llmChannel([], neverTimers, false);
+    await configured.channel.start(SECTIONS, 0);
+    await unconfigured.channel.start(SECTIONS, 0);
+    expect(configured.requests).toHaveLength(0);
+    expect(unconfigured.requests).toHaveLength(0);
+    expect(unconfigured.daemon.enqueued()).toEqual(configured.daemon.enqueued());
   });
 });

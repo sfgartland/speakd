@@ -20,7 +20,7 @@ export interface SegmentText {
  * original indices and highlight their own rects.
  */
 export interface TaggedSegment extends SegmentText {
-  readonly tag?: "body" | "drop" | "defer";
+  readonly tag?: "body" | "drop" | "defer" | "classify";
   /** The page it starts on; a segment without one inherits its predecessor's. */
   readonly pageIndex?: number | null;
 }
@@ -48,11 +48,13 @@ const DEFAULT_SIZE = 1800;
  * skipped: there is nothing to say for them, and nothing to highlight.
  *
  * A segment the footnote plan tagged is read by its tag: a dropped one never
- * appears, a deferred one is held back and lands at the end of the section
- * that owns its page -- the one holding the last body segment of that page
- * or an earlier one. Sizes and the first-section rule are unchanged; a
- * footnote tail rides along. Original indices are kept throughout, so a
- * deferred footnote highlights its own rect.
+ * appears, a deferred or `classify` one is held back and lands at the end of
+ * the section that owns its page -- the one holding the last body segment of
+ * that page or an earlier one. `classify` is held back exactly as `defer` is
+ * (a wrong kept footnote beats a wrong dropped paragraph); a Stage B
+ * classifier may later resolve it to a drop. Sizes and the first-section
+ * rule are unchanged; a footnote tail rides along. Original indices are kept
+ * throughout, so a deferred footnote highlights its own rect.
  */
 export function buildSections(
   segments: readonly TaggedSegment[],
@@ -75,7 +77,7 @@ export function buildSections(
     const segment = segments[index]!;
     if (segment.text.trim() === "") continue;
     if (segment.tag === "drop") continue;
-    if (segment.tag === "defer") waiting.push(index);
+    if (segment.tag === "defer" || segment.tag === "classify") waiting.push(index);
     else body.push(index);
   }
   // A document with nothing but deferred footnotes still reads them, in order.

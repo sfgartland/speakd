@@ -8,6 +8,7 @@
 
 import { cleanup } from "../cleanup";
 import { tagSegments, type FootnotePolicy } from "../footnotes";
+import type { FootnoteKind } from "../llm";
 import type { TaggedSegment } from "../sections";
 import { findReferencesCut, type ReferencesSegment } from "./references";
 
@@ -17,11 +18,13 @@ export interface PartSegment extends ReferencesSegment {
 }
 
 /** A captured segment as the footnote plan leaves it: tagged for what the part reads. */
-type PlannedSegment = PartSegment & Pick<TaggedSegment, "tag">;
+type PlannedSegment = PartSegment & Pick<TaggedSegment, "tag"> & { readonly footnoteKind?: FootnoteKind };
 
 /** What the parts' filters take: the footnote policy (the `footnote_policy` pref). */
 export interface PartsOptions {
   readonly footnotes?: FootnotePolicy;
+  /** The Stage B batch's labels, by original captured index (Task 11). */
+  readonly footnoteKinds?: ReadonlyMap<number, FootnoteKind>;
 }
 
 export interface ChapterSelection {
@@ -57,8 +60,16 @@ export function isBookItemType(itemType: string): boolean {
  * as freely as the read's do.
  */
 function joinText(segments: readonly PlannedSegment[]): string {
-  const body = segments.filter((segment) => segment.tag !== "drop" && segment.tag !== "defer");
-  const deferred = segments.filter((segment) => segment.tag === "defer");
+  // A `classify` footnote the batch labelled a citation goes; anything else
+  // `classify` (including a miss) is kept, deferred to the part's end.
+  const gone = (segment: PlannedSegment): boolean =>
+    segment.tag === "drop" || (segment.tag === "classify" && segment.footnoteKind === "citation");
+  const body = segments.filter(
+    (segment) => !gone(segment) && segment.tag !== "defer" && segment.tag !== "classify",
+  );
+  const deferred = segments.filter(
+    (segment) => !gone(segment) && (segment.tag === "defer" || segment.tag === "classify"),
+  );
   const raw = [...body, ...deferred]
     .map((segment) => segment.text)
     .filter((text) => text.length > 0)
@@ -97,8 +108,13 @@ export function buildParts(
 ): Part[] {
   // The same filters as the read (proposal §4.2), before any selection: a
   // running head recurs no matter which pages are chosen, and a dropped
-  // footnote never appears in a range either.
-  const { tagged: planned } = tagSegments(segments, options.footnotes ?? "classify");
+  // footnote never appears in a range either. The Stage B kinds, keyed by
+  // original captured index, ride along on their segments.
+  const withKinds: PlannedSegment[] = segments.map((segment, index) => ({
+    ...segment,
+    footnoteKind: options.footnoteKinds?.get(index),
+  }));
+  const { tagged: planned } = tagSegments(withKinds, options.footnotes ?? "classify");
   if (selection.kind === "whole") {
     const cut = selection.skipReferences ? findReferencesCut(planned) : null;
     const included = cut === null ? planned : planned.slice(0, cut);

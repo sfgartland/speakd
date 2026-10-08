@@ -14,6 +14,7 @@
 
 import { cleanup } from "./cleanup";
 import { tagSegments, type FootnotePolicy } from "./footnotes";
+import type { FootnoteClassifier, FootnoteLabel } from "./llm";
 import { planHighlights } from "./mapping";
 import { apply, identity, type Stage } from "./offsetmap";
 import { buildSections, type Section, type SegmentText, type TaggedSegment } from "./sections";
@@ -52,6 +53,11 @@ export interface ChannelOptions {
   size?: number;
   /** The footnote policy (prefs.ts `footnote_policy`); `classify` by default. */
   footnotes?: FootnotePolicy;
+  /**
+   * The Stage B classifier (Task 11): consulted cache-first for a section's
+   * `classify` residue, never awaited. Absent means rules-only.
+   */
+  footnoteClassifier?: FootnoteClassifier;
   /** Says one line per dropped segment: the filter's audit trail. */
   log?: (message: string) => void;
 }
@@ -77,10 +83,14 @@ interface Entry {
 /** One start's read. It is replaced, never reused, by the next start. */
 interface Read {
   readonly generation: number;
-  readonly sections: readonly Section[];
+  readonly sections: Section[];
   readonly entries: Entry[];
+  /** The planned segments, by original index: what a `classify` tag means. */
+  readonly tagged: readonly TaggedSegment[];
   /** The next section to enqueue. */
   next: number;
+  /** Sections whose classification has already been asked for, so it is asked once. */
+  readonly requested: Set<number>;
 }
 
 /** The section being spoken, and its highlight plan. */
@@ -98,6 +108,7 @@ export class Channel {
   private readonly firstSize: number | undefined;
   private readonly size: number | undefined;
   private readonly footnotes: FootnotePolicy;
+  private readonly footnoteClassifier: FootnoteClassifier | undefined;
   private readonly log: (message: string) => void;
 
   private _generation = 0;
@@ -133,6 +144,7 @@ export class Channel {
     this.firstSize = options.firstSize;
     this.size = options.size;
     this.footnotes = options.footnotes ?? "classify";
+    this.footnoteClassifier = options.footnoteClassifier;
     this.log = options.log ?? (() => {});
   }
 
@@ -216,7 +228,8 @@ export class Channel {
         this.fail(NO_TEXT);
         return;
       }
-      const sections = buildSections(this.planned(segments), startIndex, this.firstSize, this.size);
+      const tagged = this.planned(segments);
+      const sections = buildSections(tagged, startIndex, this.firstSize, this.size);
       // Past the end of a document that has text: nothing left to read.
       if (sections.length === 0) return;
       // On every start, not once: the daemon forgets a channel idle for
@@ -227,7 +240,7 @@ export class Channel {
         this.fail(labelled);
         return;
       }
-      const read: Read = { generation, sections, entries: [], next: 0 };
+      const read: Read = { generation, sections, entries: [], tagged, next: 0, requested: new Set() };
       this.read = read;
       await this.enqueueNext(read);
     });
@@ -401,7 +414,11 @@ export class Channel {
   private async enqueueNext(read: Read): Promise<void> {
     while (read.next < read.sections.length) {
       const ordinal = read.next++;
-      const section = read.sections[ordinal]!;
+      const section = this.resolveFootnotes(read, read.sections[ordinal]!);
+      read.sections[ordinal] = section;
+      // One section ahead, matching how sections are cleaned: the next
+      // residue is asked for while this section speaks, never all at once.
+      this.requestClassification(read, ordinal + 1);
       const stage = await this.cleaned(section.text, ordinal);
       if (read !== this.read) return;
       // A section cleaned to nothing -- a page number alone -- has nothing
@@ -428,6 +445,57 @@ export class Channel {
       }
       return;
     }
+  }
+
+  /**
+   * The section's `classify` footnotes the cache has resolved to citations
+   * are dropped now -- whole segments, so the offsets stay true -- and the
+   * rest stand as kept. A miss is the policy default immediately, never a
+   * wait. Dropped here, like every drop, is logged: no silent loss.
+   */
+  private resolveFootnotes(read: Read, section: Section): Section {
+    const classifier = this.footnoteClassifier;
+    if (classifier === undefined) return section;
+    const kept: number[] = [];
+    let changed = false;
+    for (const index of section.segmentIndices) {
+      const segment = read.tagged[index];
+      if (segment?.tag === "classify" && classifier.cached(segment.text) === "citation") {
+        this.log(`a footnote was not read: ${brief(segment.text)}`);
+        changed = true;
+        continue;
+      }
+      kept.push(index);
+    }
+    if (!changed) return section;
+    let text = "";
+    const offsets: number[] = [];
+    for (const index of kept) {
+      const piece = read.tagged[index]!.text.trim();
+      offsets.push(text === "" ? 0 : text.length + 1);
+      text = text === "" ? piece : `${text} ${piece}`;
+    }
+    return { segmentIndices: kept, text, offsets };
+  }
+
+  /**
+   * Ask the classifier for one section's borderline residue, in the
+   * background. Guarded so a section is asked once, and never awaited: a
+   * call that hangs costs nothing but the cache miss it already was.
+   */
+  private requestClassification(read: Read, ordinal: number): void {
+    const classifier = this.footnoteClassifier;
+    if (classifier === undefined || !classifier.configured) return;
+    if (ordinal <= 0 || ordinal >= read.sections.length || read.requested.has(ordinal)) return;
+    const section = read.sections[ordinal]!;
+    const residue: FootnoteLabel[] = [];
+    for (const index of section.segmentIndices) {
+      const segment = read.tagged[index];
+      if (segment?.tag === "classify") residue.push({ index, text: segment.text });
+    }
+    if (residue.length === 0) return;
+    read.requested.add(ordinal);
+    void classifier.classifyFootnotes(residue).catch(() => {});
   }
 
   /**

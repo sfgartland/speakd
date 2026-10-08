@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planFootnotes, type FootnotePolicy } from "../src/footnotes";
+import { classificationResidue, planFootnotes, type FootnotePolicy } from "../src/footnotes";
 
 // Geometry as Stage 0 measured it (docs/design/2026-10-08-pdf-text-cleanup-stage0.md
 // (c)): an 842-pt page, rect y running bottom-up -- body paragraphs high
@@ -171,5 +171,18 @@ describe("planFootnotes", () => {
     // The pageless continuation sits in page 0's group, in a band it has no y
     // for: kept, never dropped on a guess.
     expect([...plan.tags]).toEqual(["drop", "body", "drop"]);
+  });
+});
+
+describe("classificationResidue", () => {
+  it("gathers only the classify tags, with their original document indices", () => {
+    const residue = classificationResidue([...citedPage(0), ...prosePage(1)], "classify");
+    expect(residue).toEqual([{ index: 10, text: prosePage(1)[2]!.text }]);
+  });
+
+  it("is empty under drop_all and defer_all", () => {
+    const segments = [...citedPage(0), ...prosePage(1)];
+    expect(classificationResidue(segments, "drop_all")).toEqual([]);
+    expect(classificationResidue(segments, "defer_all")).toEqual([]);
   });
 });

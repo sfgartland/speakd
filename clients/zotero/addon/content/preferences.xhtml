@@ -19,4 +19,49 @@
       The port is 8642 unless speakd's config says otherwise.
     </description>
   </groupbox>
+  <groupbox>
+    <label><html:h2>Footnotes</html:h2></label>
+    <description>
+      How a read treats footnotes. Classify drops the bare citations and reads the rest at
+      the end of their section; drop removes every footnote; defer keeps every one.
+    </description>
+    <hbox align="center">
+      <label control="speakd-reader-footnotes" value="Policy"/>
+      <menulist id="speakd-reader-footnotes"
+                preference="extensions.speakd-reader.footnote_policy">
+        <menupopup>
+          <menuitem label="Classify citations, keep the rest" value="classify"/>
+          <menuitem label="Drop every footnote" value="drop_all"/>
+          <menuitem label="Keep and defer every footnote" value="defer_all"/>
+        </menupopup>
+      </menulist>
+    </hbox>
+  </groupbox>
+  <groupbox>
+    <label><html:h2>Language model (optional)</html:h2></label>
+    <description>
+      An OpenAI-compatible chat endpoint for the optional Stage B: it repairs small OCR
+      errors and classifies borderline footnotes. Off until an endpoint and a model are set.
+    </description>
+    <checkbox id="speakd-reader-llm-enabled" label="Use a language model"
+              preference="extensions.speakd-reader.llm_enabled"/>
+    <hbox align="center">
+      <label control="speakd-reader-llm-endpoint" value="Endpoint"/>
+      <html:input id="speakd-reader-llm-endpoint" type="text" size="50" autocomplete="off"
+                  preference="extensions.speakd-reader.llm_endpoint"/>
+    </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-llm-key" value="API key"/>
+      <html:input id="speakd-reader-llm-key" type="password" size="40" autocomplete="off"
+                  preference="extensions.speakd-reader.llm_key"/>
+    </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-llm-model" value="Model"/>
+      <html:input id="speakd-reader-llm-model" type="text" size="40" autocomplete="off"
+                  preference="extensions.speakd-reader.llm_model"/>
+    </hbox>
+    <description>
+      When enabled, this sends the paper's text to this endpoint.
+    </description>
+  </groupbox>
 </vbox>

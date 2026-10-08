@@ -6,6 +6,13 @@ pref("extensions.speakd-reader.token", "");
 // read the rest at their section's end (classify), drop every footnote, or
 // keep and defer every one.
 pref("extensions.speakd-reader.footnote_policy", "classify");
+// The optional Stage B LLM (src/llm.ts): off until an endpoint and a model
+// are set here. The key is masked in the pane. When on, the paper's text is
+// sent to the endpoint (the pane says so).
+pref("extensions.speakd-reader.llm_enabled", false);
+pref("extensions.speakd-reader.llm_endpoint", "");
+pref("extensions.speakd-reader.llm_key", "");
+pref("extensions.speakd-reader.llm_model", "");
 // The audiobook export dialog's starting points (src/export/dialog.ts).
 // Formats are mp3, opus or m4b; the destination is attach or folder; an
 // empty folder means ask.

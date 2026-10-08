@@ -12,7 +12,8 @@ import { busy, notify, zoteroExporterHost } from "./export/host";
 import { registerExportPane } from "./export/pane";
 import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
-import { observeConfig, readConfig } from "./prefs";
+import { LlmClient } from "./llm";
+import { observeConfig, readConfig, readLlmConfig } from "./prefs";
 import { Takeover } from "./reader-takeover";
 import { SpeakdClient, type FetchLike } from "./speakd";
 
@@ -83,6 +84,7 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   // every connection: a render goes on while Zotero is closed.
   const exporter = new Exporter(
     zoteroExporterHost({ call: (verb, sourceId, payload) => link.call(verb, sourceId, payload), warn }),
+    new LlmClient({ config: readLlmConfig(), fetch: sandboxFetch, log }),
   );
   link.onEvent((event) => exporter.onEvent(event));
   let connected = false;

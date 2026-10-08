@@ -27,7 +27,9 @@ import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import { adoptionProblem } from "./export/capture";
 import { dumpToFile, type DumpResult } from "./export/debugdump";
-import { readFootnotePolicy } from "./prefs";
+import { cleanWithLlm, LlmClient } from "./llm";
+import { readFootnotePolicy, readLlmConfig } from "./prefs";
+import type { FetchLike } from "./speakd";
 import type { Link } from "./link";
 import {
   NO_TEXT,
@@ -311,6 +313,15 @@ class Adopted implements ReaderHandle {
     }, win);
     this.hooked = true;
 
+    const llm = new LlmClient({
+      // The Stage B endpoint as the preferences stand when the reader is
+      // adopted: off until configured, and re-read on the next adoption.
+      config: readLlmConfig(),
+      fetch: fetch as unknown as FetchLike,
+      log: (message) => this.log.log(message),
+      // The one bar mark a failed call leaves; for now it is the debug log.
+      onFailure: () => this.log.log("the language model failed; the rules-only text stands"),
+    });
     const session = new ReaderSession(
       new Channel({
         client: this.takeover.options.link,
@@ -319,6 +330,10 @@ class Adopted implements ReaderHandle {
         // The footnote policy as the preferences stand when the reader is
         // adopted: the filters' word for what a read skips and what it keeps.
         footnotes: readFootnotePolicy(),
+        // Stage B: the deterministic cleanup always, the model on top of it
+        // after the first section, and cache-first footnote classification.
+        clean: cleanWithLlm(llm),
+        footnoteClassifier: llm,
         log: (message) => this.log.log(message),
       }),
       {

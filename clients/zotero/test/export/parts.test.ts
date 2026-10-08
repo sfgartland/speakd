@@ -180,4 +180,23 @@ describe("buildParts with the cleanup filters", () => {
     const parts = buildParts(segments, "My Paper", { kind: "whole" });
     expect(parts).toEqual([{ title: "My Paper", text: "A file of a hyphenated word. Next page." }]);
   });
+
+  it("drops only the classify footnotes the Stage B batch labelled citations", () => {
+    const selection = { kind: "pages" as const, ranges: [{ startPage: 0, endPage: 0 }] };
+    // Page 0 of the paper: [head, body, citation, prose]; the prose footnote
+    // (index 3) is the `classify` residue.
+    const kept = buildParts(paper(), "My Book", selection, { footnotes: "classify" });
+    expect(kept[0]?.text).toContain("holds real prose");
+    const dropped = buildParts(paper(), "My Book", selection, {
+      footnotes: "classify",
+      footnoteKinds: new Map([[3, "citation"]]),
+    });
+    expect(dropped[0]?.text).not.toContain("holds real prose");
+    // A substantive label keeps it, at the part's end as ever.
+    const substantive = buildParts(paper(), "My Book", selection, {
+      footnotes: "classify",
+      footnoteKinds: new Map([[3, "substantive"]]),
+    });
+    expect(substantive[0]?.text).toContain("holds real prose");
+  });
 });
