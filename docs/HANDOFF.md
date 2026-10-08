@@ -250,6 +250,13 @@ Built in a cloud session, then verified and finished locally the same day.
 
 ## Deferred and known gaps
 
+- **PDF text cleanup for narration (requested 2026-10-08, unstarted; architectural —
+  needs a spec and a plan):** remove running headers/footers, handle footnotes
+  gracefully (today read inline) and multi-column text, on both the Zotero
+  plugin path and the `speakd-audiobook` skill. Includes the question of an LLM
+  cleanup stage in the plugin, with the constraints that decide it (never
+  mis-highlight, time-to-first-audio, export vs. live). Brief and open questions:
+  `docs/design/2026-10-08-pdf-text-cleanup-request.md`.
 - **Housekeeping (needs the user's go-ahead):** ~25 merged worktrees under
   `../speakd-worktrees/` hold untracked `.superpowers/` reports. Removing them
   was blocked as destructive; the plan was to copy each `.superpowers/` into
