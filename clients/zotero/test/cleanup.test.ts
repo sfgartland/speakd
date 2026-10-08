@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { cleanup, collapseWhitespace, dropPageNumbers, joinHyphenation } from "../src/cleanup";
+import {
+  cleanup,
+  collapseWhitespace,
+  dropPageNumbers,
+  fixLigatures,
+  joinHyphenation,
+  ocrSuspicion,
+} from "../src/cleanup";
 import { lookup, verify } from "../src/offsetmap";
 
 // Where in `input` the output's `word` came from, so a test can check that
@@ -74,6 +81,62 @@ describe("dropPageNumbers", () => {
   });
 });
 
+describe("fixLigatures", () => {
+  it("expands broken ligatures, mapping the expansion back into the ligature's span", () => {
+    const input = "a ﬁle of ﬂow, an eﬀect of the oﬃce's staﬀ";
+    const stage = fixLigatures(input);
+    expect(stage.text).toBe("a file of flow, an effect of the office's staff");
+    expect(verify(stage.map, input.length, stage.text.length)).toBe(true);
+    // Every character of the expansion resolves back into the ligature's own
+    // span: a highlight over it lights the ligature word, never its neighbour.
+    const at = stage.text.indexOf("flow");
+    const start = input.indexOf("ﬂ");
+    for (let i = 0; i < "flow".length; i++) {
+      const back = lookup(stage.map, at + i);
+      expect(back).toBeGreaterThanOrEqual(start);
+      expect(back).toBeLessThan(start + "ﬂow".length);
+    }
+    expect(source(input, stage, "ow")).toBe("ow");
+    expect(source(input, stage, "staff")).toBe("staﬀ");
+  });
+
+  it("removes zero-width, control and BOM characters and stray marks", () => {
+    const input = "a\u200Bb\u0007c\uFEFFd\u00ADe\u00B7f\u00ACg";
+    const stage = fixLigatures(input);
+    expect(stage.text).toBe("abcdefg");
+    expect(verify(stage.map, input.length, stage.text.length)).toBe(true);
+    expect(source(input, stage, "e")).toBe("e");
+  });
+
+  it("leaves tabs, newlines and carriage returns to the whitespace rule", () => {
+    const input = "one\ntwo\tthree\rfour";
+    expect(fixLigatures(input).text).toBe(input);
+  });
+});
+
+describe("ocrSuspicion", () => {
+  it("is higher on an OCR-mangled text than on clean prose", () => {
+    // The exact cut-off is provisional (a real scan fixture has not arrived);
+    // what the tests pin is the ordering.
+    const mangled =
+      "Tbe modem ﬁle says tbat in 1 994 was tbe year of tbe scan\u00AC, \u00B7 and rn.";
+    const clean =
+      "The modern file says that in 1994 was the year of the edition, and the argument holds.";
+    expect(ocrSuspicion(mangled)).toBeGreaterThan(ocrSuspicion(clean));
+    expect(ocrSuspicion(clean)).toBeLessThan(ocrSuspicion(mangled));
+  });
+
+  it("counts a number broken by a space as a split-digit hit, not a range", () => {
+    // "12- 20" is a range torn by the line break; "1 994" is a broken year.
+    expect(ocrSuspicion("in 1 994 it began")).toBeGreaterThan(ocrSuspicion("pp. 12- 20 it ran"));
+    expect(ocrSuspicion("pp. 12- 20 it ran")).toBeGreaterThanOrEqual(ocrSuspicion("pp. 12-20 it ran"));
+  });
+
+  it("is zero on clean prose with long words and no marks", () => {
+    expect(ocrSuspicion("Philosophy reads argumentatively throughout")).toBe(0);
+  });
+});
+
 describe("cleanup", () => {
   it("runs every rule, with one map from the result back to the input", () => {
     const input = "  a Heideg-\n gerian  reading. 17 Then   Dasein. ";
@@ -83,6 +146,15 @@ describe("cleanup", () => {
     expect(source(input, stage, "Then")).toBe("Then");
     expect(source(input, stage, "reading")).toBe("reading");
     expect(source(input, stage, "Heideg")).toBe("Heideg");
+  });
+
+  it("runs every rule, ligatures first, with one map from the result back to the input", () => {
+    const input = "a ﬁle of ﬂow. 12 Next   page.";
+    const stage = cleanup(input);
+    expect(stage.text).toBe("a file of flow. Next page.");
+    expect(verify(stage.map, input.length, stage.text.length)).toBe(true);
+    expect(source(input, stage, "ow")).toBe("ow");
+    expect(source(input, stage, "Next")).toBe("Next");
   });
 
   it("is the identity on text that needs no cleaning", () => {

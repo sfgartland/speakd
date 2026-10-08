@@ -126,5 +126,5 @@ the recorded outcome above is the decision record.
 | Running-head recurrence (both surfaces) | 40% of ≥ 5 pages | established (`prepare_text.py:20-21`), mirrored |
 | Bottom-band percentile (plugin) | bottom ~25% of the page's observed y-range | **provisional** — holds on the fixtures; final value conditional on the owner's sample |
 | OCR suspicion cut-off | conservative/high | **provisional** — conditional on a real OCR-scan fixture |
-| `joinSplitDigits` | — | **cut** unless dump evidence shows real split-digit artefacts (none seen; the fixtures are born-digital) |
+| `joinSplitDigits` | — | **cut** (Task 6): Stage 0's dumps show no split-digit artefacts — the fixtures are born-digital, and the owner's sample has not arrived. Re-open only with real scan evidence. `ocrSuspicion` still counts split-digit hits as a signal. |
 | Skill-path extractor | `mutool stext` + tolerant fallback | decided here: poppler default fails the fixture |
