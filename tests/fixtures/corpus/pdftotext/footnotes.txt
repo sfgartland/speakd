@@ -1,0 +1,173 @@
+Footnotes and the Reader
+
+P0 L0 alpha bravo charlie delta echo foxtrot.
+P0 L1 hotel india juliet kilo lima alpha.
+P1 L0 hotel india juliet kilo lima alpha.
+P0 L2 charlie delta echo foxtrot golf hotel.
+P1 L1 charlie delta echo foxtrot golf hotel.
+P2 L0 charlie delta echo foxtrot golf hotel.
+P1 L2 juliet kilo lima alpha bravo charlie.
+P2 L1 juliet kilo lima alpha bravo charlie.
+P3 L0 juliet kilo lima alpha bravo charlie.
+P2 L2 echo foxtrot golf hotel india juliet.
+P3 L1 echo foxtrot golf hotel india juliet.
+P4 L0 echo foxtrot golf hotel india juliet.
+P3 L2 lima alpha bravo charlie delta echo.
+P4 L1 lima alpha bravo charlie delta echo.
+P5 L0 lima alpha bravo charlie delta echo.
+P4 L2 golf hotel india juliet kilo lima.
+P5 L1 golf hotel india juliet kilo lima.
+P5 L2 bravo charlie delta echo foxtrot golf.
+
+1 Kant, KrV, B25.
+2 Heidegger 1962, p. 65.
+3 Ibid.
+4 Cf. KrV, A51/B75.
+5 See op. cit., pp. 12-20.
+
+1
+
+Footnotes and the Reader
+
+P6 L0 golf hotel india juliet kilo lima.
+P6 L1 bravo charlie delta echo foxtrot golf.
+P7 L0 bravo charlie delta echo foxtrot golf.
+P6 L2 india juliet kilo lima alpha bravo.
+P7 L1 india juliet kilo lima alpha bravo.
+P8 L0 india juliet kilo lima alpha bravo.
+P7 L2 delta echo foxtrot golf hotel india.
+P8 L1 delta echo foxtrot golf hotel india.
+P9 L0 delta echo foxtrot golf hotel india.
+P8 L2 kilo lima alpha bravo charlie delta.
+P9 L1 kilo lima alpha bravo charlie delta.
+P10 L0 kilo lima alpha bravo charlie delta.
+P9 L2 foxtrot golf hotel india juliet kilo.
+P10 L1 foxtrot golf hotel india juliet kilo.
+P11 L0 foxtrot golf hotel india juliet kilo.
+P10 L2 alpha bravo charlie delta echo foxtrot.
+P11 L1 alpha bravo charlie delta echo foxtrot.
+P11 L2 hotel india juliet kilo lima alpha.
+
+1 The inaugurating gesture of the lecture is reversed here, and what that
+2 reversal means for the order of asking is worked out across pages.
+3 A third prose footnote wraps onto this line and keeps its argument.
+4 The fourth footnote carries the last remark of the page's margin.
+
+2
+
+Footnotes and the Reader
+
+P12 L0 alpha bravo charlie delta echo foxtrot.
+P12 L1 hotel india juliet kilo lima alpha.
+P13 L0 hotel india juliet kilo lima alpha.
+P12 L2 charlie delta echo foxtrot golf hotel.
+P13 L1 charlie delta echo foxtrot golf hotel.
+P14 L0 charlie delta echo foxtrot golf hotel.
+P13 L2 juliet kilo lima alpha bravo charlie.
+P14 L1 juliet kilo lima alpha bravo charlie.
+P15 L0 juliet kilo lima alpha bravo charlie.
+P14 L2 echo foxtrot golf hotel india juliet.
+P15 L1 echo foxtrot golf hotel india juliet.
+P16 L0 echo foxtrot golf hotel india juliet.
+P15 L2 lima alpha bravo charlie delta echo.
+P16 L1 lima alpha bravo charlie delta echo.
+P17 L0 lima alpha bravo charlie delta echo.
+P16 L2 golf hotel india juliet kilo lima.
+P17 L1 golf hotel india juliet kilo lima.
+1994 was the year the reading began in earnest.
+P17 L2 bravo charlie delta echo foxtrot golf.
+
+1 Kant, KrV, B25.
+2 Heidegger 1962, p. 65.
+3 Ibid.
+4 Cf. KrV, A51/B75.
+5 See op. cit., pp. 12-20.
+
+3
+
+Footnotes and the Reader
+
+P18 L0 golf hotel india juliet kilo lima.
+P18 L1 bravo charlie delta echo foxtrot golf.
+P19 L0 bravo charlie delta echo foxtrot golf.
+P18 L2 india juliet kilo lima alpha bravo.
+P19 L1 india juliet kilo lima alpha bravo.
+P20 L0 india juliet kilo lima alpha bravo.
+P19 L2 delta echo foxtrot golf hotel india.
+P20 L1 delta echo foxtrot golf hotel india.
+P21 L0 delta echo foxtrot golf hotel india.
+P20 L2 kilo lima alpha bravo charlie delta.
+P21 L1 kilo lima alpha bravo charlie delta.
+P22 L0 kilo lima alpha bravo charlie delta.
+P21 L2 foxtrot golf hotel india juliet kilo.
+P22 L1 foxtrot golf hotel india juliet kilo.
+P23 L0 foxtrot golf hotel india juliet kilo.
+P22 L2 alpha bravo charlie delta echo foxtrot.
+P23 L1 alpha bravo charlie delta echo foxtrot.
+P23 L2 hotel india juliet kilo lima alpha.
+
+1 The inaugurating gesture of the lecture is reversed here, and what that
+2 reversal means for the order of asking is worked out across pages.
+3 A third prose footnote wraps onto this line and keeps its argument.
+4 The fourth footnote carries the last remark of the page's margin.
+
+4
+
+Footnotes and the Reader
+
+P24 L0 alpha bravo charlie delta echo foxtrot.
+P24 L1 hotel india juliet kilo lima alpha.
+P25 L0 hotel india juliet kilo lima alpha.
+P24 L2 charlie delta echo foxtrot golf hotel.
+P25 L1 charlie delta echo foxtrot golf hotel.
+P26 L0 charlie delta echo foxtrot golf hotel.
+P25 L2 juliet kilo lima alpha bravo charlie.
+P26 L1 juliet kilo lima alpha bravo charlie.
+P27 L0 juliet kilo lima alpha bravo charlie.
+P26 L2 echo foxtrot golf hotel india juliet.
+P27 L1 echo foxtrot golf hotel india juliet.
+P28 L0 echo foxtrot golf hotel india juliet.
+P27 L2 lima alpha bravo charlie delta echo.
+P28 L1 lima alpha bravo charlie delta echo.
+P29 L0 lima alpha bravo charlie delta echo.
+P28 L2 golf hotel india juliet kilo lima.
+P29 L1 golf hotel india juliet kilo lima.
+P29 L2 bravo charlie delta echo foxtrot golf.
+
+1 Kant, KrV, B25.
+2 Heidegger 1962, p. 65.
+3 Ibid.
+4 Cf. KrV, A51/B75.
+5 See op. cit., pp. 12-20.
+
+5
+
+Footnotes and the Reader
+
+P30 L0 golf hotel india juliet kilo lima.
+P30 L1 bravo charlie delta echo foxtrot golf.
+P31 L0 bravo charlie delta echo foxtrot golf.
+P30 L2 india juliet kilo lima alpha bravo.
+P31 L1 india juliet kilo lima alpha bravo.
+P32 L0 india juliet kilo lima alpha bravo.
+P31 L2 delta echo foxtrot golf hotel india.
+P32 L1 delta echo foxtrot golf hotel india.
+P33 L0 delta echo foxtrot golf hotel india.
+P32 L2 kilo lima alpha bravo charlie delta.
+P33 L1 kilo lima alpha bravo charlie delta.
+P34 L0 kilo lima alpha bravo charlie delta.
+P33 L2 foxtrot golf hotel india juliet kilo.
+P34 L1 foxtrot golf hotel india juliet kilo.
+P35 L0 foxtrot golf hotel india juliet kilo.
+P34 L2 alpha bravo charlie delta echo foxtrot.
+P35 L1 alpha bravo charlie delta echo foxtrot.
+P35 L2 hotel india juliet kilo lima alpha.
+
+1 The inaugurating gesture of the lecture is reversed here, and what that
+2 reversal means for the order of asking is worked out across pages.
+3 A third prose footnote wraps onto this line and keeps its argument.
+4 The fourth footnote carries the last remark of the page's margin.
+
+6
+
+

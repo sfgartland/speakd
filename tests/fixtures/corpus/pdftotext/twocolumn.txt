@@ -1,0 +1,1505 @@
+A Tale of Two Columns
+
+P0 L0 alpha bravo charlie delta echo foxtrot.
+
+and ends in the rightmost column.
+
+P0 L1 hotel india juliet kilo lima alpha.
+
+P15 L1 echo foxtrot golf hotel india juliet.
+
+P0 L2 charlie delta echo foxtrot golf hotel.
+
+P15 L2 lima alpha bravo charlie delta echo.
+
+P1 L0 hotel india juliet kilo lima alpha.
+
+P16 L0 echo foxtrot golf hotel india juliet.
+
+P1 L1 charlie delta echo foxtrot golf hotel.
+
+P16 L1 lima alpha bravo charlie delta echo.
+
+P1 L2 juliet kilo lima alpha bravo charlie.
+
+P16 L2 golf hotel india juliet kilo lima.
+
+P2 L0 charlie delta echo foxtrot golf hotel.
+
+P17 L0 lima alpha bravo charlie delta echo.
+
+P2 L1 juliet kilo lima alpha bravo charlie.
+
+P17 L1 golf hotel india juliet kilo lima.
+
+P2 L2 echo foxtrot golf hotel india juliet.
+
+P17 L2 bravo charlie delta echo foxtrot golf.
+
+P3 L0 juliet kilo lima alpha bravo charlie.
+
+P18 L0 golf hotel india juliet kilo lima.
+
+P3 L1 echo foxtrot golf hotel india juliet.
+
+P18 L1 bravo charlie delta echo foxtrot golf.
+
+P3 L2 lima alpha bravo charlie delta echo.
+
+P18 L2 india juliet kilo lima alpha bravo.
+
+P4 L0 echo foxtrot golf hotel india juliet.
+
+P19 L0 bravo charlie delta echo foxtrot golf.
+
+P4 L1 lima alpha bravo charlie delta echo.
+
+P19 L1 india juliet kilo lima alpha bravo.
+
+P4 L2 golf hotel india juliet kilo lima.
+
+P19 L2 delta echo foxtrot golf hotel india.
+
+P5 L0 lima alpha bravo charlie delta echo.
+
+P20 L0 india juliet kilo lima alpha bravo.
+
+P5 L1 golf hotel india juliet kilo lima.
+
+P20 L1 delta echo foxtrot golf hotel india.
+
+P5 L2 bravo charlie delta echo foxtrot golf.
+
+P20 L2 kilo lima alpha bravo charlie delta.
+
+P6 L0 golf hotel india juliet kilo lima.
+
+P21 L0 delta echo foxtrot golf hotel india.
+
+P6 L1 bravo charlie delta echo foxtrot golf.
+
+P21 L1 kilo lima alpha bravo charlie delta.
+
+P6 L2 india juliet kilo lima alpha bravo.
+
+P21 L2 foxtrot golf hotel india juliet kilo.
+
+P7 L0 bravo charlie delta echo foxtrot golf.
+
+P22 L0 kilo lima alpha bravo charlie delta.
+
+P7 L1 india juliet kilo lima alpha bravo.
+
+P22 L1 foxtrot golf hotel india juliet kilo.
+
+P7 L2 delta echo foxtrot golf hotel india.
+
+P22 L2 alpha bravo charlie delta echo foxtrot.
+
+P8 L0 india juliet kilo lima alpha bravo.
+
+P23 L0 foxtrot golf hotel india juliet kilo.
+
+P8 L1 delta echo foxtrot golf hotel india.
+
+P23 L1 alpha bravo charlie delta echo foxtrot.
+
+P8 L2 kilo lima alpha bravo charlie delta.
+
+P23 L2 hotel india juliet kilo lima alpha.
+
+P9 L0 delta echo foxtrot golf hotel india.
+
+P24 L0 alpha bravo charlie delta echo foxtrot.
+
+P9 L1 kilo lima alpha bravo charlie delta.
+
+P24 L1 hotel india juliet kilo lima alpha.
+
+P9 L2 foxtrot golf hotel india juliet kilo.
+
+P24 L2 charlie delta echo foxtrot golf hotel.
+
+P10 L0 kilo lima alpha bravo charlie delta.
+
+P25 L0 hotel india juliet kilo lima alpha.
+
+P10 L1 foxtrot golf hotel india juliet kilo.
+
+P25 L1 charlie delta echo foxtrot golf hotel.
+
+P10 L2 alpha bravo charlie delta echo foxtrot.
+
+P25 L2 juliet kilo lima alpha bravo charlie.
+
+P11 L0 foxtrot golf hotel india juliet kilo.
+
+P26 L0 charlie delta echo foxtrot golf hotel.
+
+P11 L1 alpha bravo charlie delta echo foxtrot.
+
+P26 L1 juliet kilo lima alpha bravo charlie.
+
+P11 L2 hotel india juliet kilo lima alpha.
+
+P26 L2 echo foxtrot golf hotel india juliet.
+
+P12 L0 alpha bravo charlie delta echo foxtrot.
+
+P27 L0 juliet kilo lima alpha bravo charlie.
+
+P12 L1 hotel india juliet kilo lima alpha.
+
+P27 L1 echo foxtrot golf hotel india juliet.
+
+P12 L2 charlie delta echo foxtrot golf hotel.
+
+P27 L2 lima alpha bravo charlie delta echo.
+
+P13 L0 hotel india juliet kilo lima alpha.
+
+P28 L0 echo foxtrot golf hotel india juliet.
+
+P13 L1 charlie delta echo foxtrot golf hotel.
+
+P28 L1 lima alpha bravo charlie delta echo.
+
+P13 L2 juliet kilo lima alpha bravo charlie.
+
+P28 L2 golf hotel india juliet kilo lima.
+
+P14 L0 charlie delta echo foxtrot golf hotel.
+
+P29 L0 lima alpha bravo charlie delta echo.
+
+P14 L1 juliet kilo lima alpha bravo charlie.
+
+P29 L1 golf hotel india juliet kilo lima.
+
+P14 L2 echo foxtrot golf hotel india juliet.
+
+P29 L2 bravo charlie delta echo foxtrot golf.
+
+The cross column sentence begins
+
+P30 L0 golf hotel india juliet kilo lima.
+
+1
+
+A Tale of Two Columns
+
+P30 L0 golf hotel india juliet kilo lima.
+
+P45 L0 delta echo foxtrot golf hotel india.
+
+P30 L1 bravo charlie delta echo foxtrot golf.
+
+P45 L1 kilo lima alpha bravo charlie delta.
+
+P30 L2 india juliet kilo lima alpha bravo.
+
+P45 L2 foxtrot golf hotel india juliet kilo.
+
+P31 L0 bravo charlie delta echo foxtrot golf.
+
+P46 L0 kilo lima alpha bravo charlie delta.
+
+P31 L1 india juliet kilo lima alpha bravo.
+
+P46 L1 foxtrot golf hotel india juliet kilo.
+
+P31 L2 delta echo foxtrot golf hotel india.
+
+P46 L2 alpha bravo charlie delta echo foxtrot.
+
+P32 L0 india juliet kilo lima alpha bravo.
+
+P47 L0 foxtrot golf hotel india juliet kilo.
+
+P32 L1 delta echo foxtrot golf hotel india.
+
+P47 L1 alpha bravo charlie delta echo foxtrot.
+
+P32 L2 kilo lima alpha bravo charlie delta.
+
+P47 L2 hotel india juliet kilo lima alpha.
+
+P33 L0 delta echo foxtrot golf hotel india.
+
+P48 L0 alpha bravo charlie delta echo foxtrot.
+
+P33 L1 kilo lima alpha bravo charlie delta.
+
+P48 L1 hotel india juliet kilo lima alpha.
+
+P33 L2 foxtrot golf hotel india juliet kilo.
+
+P48 L2 charlie delta echo foxtrot golf hotel.
+
+P34 L0 kilo lima alpha bravo charlie delta.
+
+P49 L0 hotel india juliet kilo lima alpha.
+
+P34 L1 foxtrot golf hotel india juliet kilo.
+
+P49 L1 charlie delta echo foxtrot golf hotel.
+
+P34 L2 alpha bravo charlie delta echo foxtrot.
+
+P49 L2 juliet kilo lima alpha bravo charlie.
+
+P35 L0 foxtrot golf hotel india juliet kilo.
+
+P50 L0 charlie delta echo foxtrot golf hotel.
+
+P35 L1 alpha bravo charlie delta echo foxtrot.
+
+P50 L1 juliet kilo lima alpha bravo charlie.
+
+P35 L2 hotel india juliet kilo lima alpha.
+
+P50 L2 echo foxtrot golf hotel india juliet.
+
+P36 L0 alpha bravo charlie delta echo foxtrot.
+
+P51 L0 juliet kilo lima alpha bravo charlie.
+
+P36 L1 hotel india juliet kilo lima alpha.
+
+P51 L1 echo foxtrot golf hotel india juliet.
+
+P36 L2 charlie delta echo foxtrot golf hotel.
+
+P51 L2 lima alpha bravo charlie delta echo.
+
+P37 L0 hotel india juliet kilo lima alpha.
+
+P52 L0 echo foxtrot golf hotel india juliet.
+
+P37 L1 charlie delta echo foxtrot golf hotel.
+
+P52 L1 lima alpha bravo charlie delta echo.
+
+P37 L2 juliet kilo lima alpha bravo charlie.
+
+P52 L2 golf hotel india juliet kilo lima.
+
+P38 L0 charlie delta echo foxtrot golf hotel.
+
+P53 L0 lima alpha bravo charlie delta echo.
+
+P38 L1 juliet kilo lima alpha bravo charlie.
+
+P53 L1 golf hotel india juliet kilo lima.
+
+P38 L2 echo foxtrot golf hotel india juliet.
+
+P53 L2 bravo charlie delta echo foxtrot golf.
+
+P39 L0 juliet kilo lima alpha bravo charlie.
+
+P54 L0 golf hotel india juliet kilo lima.
+
+P39 L1 echo foxtrot golf hotel india juliet.
+
+P54 L1 bravo charlie delta echo foxtrot golf.
+
+P39 L2 lima alpha bravo charlie delta echo.
+
+P54 L2 india juliet kilo lima alpha bravo.
+
+P40 L0 echo foxtrot golf hotel india juliet.
+
+P55 L0 bravo charlie delta echo foxtrot golf.
+
+P40 L1 lima alpha bravo charlie delta echo.
+
+P55 L1 india juliet kilo lima alpha bravo.
+
+P40 L2 golf hotel india juliet kilo lima.
+
+P55 L2 delta echo foxtrot golf hotel india.
+
+P41 L0 lima alpha bravo charlie delta echo.
+
+P56 L0 india juliet kilo lima alpha bravo.
+
+P41 L1 golf hotel india juliet kilo lima.
+
+P56 L1 delta echo foxtrot golf hotel india.
+
+P41 L2 bravo charlie delta echo foxtrot golf.
+
+P56 L2 kilo lima alpha bravo charlie delta.
+
+P42 L0 golf hotel india juliet kilo lima.
+
+P57 L0 delta echo foxtrot golf hotel india.
+
+P42 L1 bravo charlie delta echo foxtrot golf.
+
+P57 L1 kilo lima alpha bravo charlie delta.
+
+P42 L2 india juliet kilo lima alpha bravo.
+
+P57 L2 foxtrot golf hotel india juliet kilo.
+
+P43 L0 bravo charlie delta echo foxtrot golf.
+
+P58 L0 kilo lima alpha bravo charlie delta.
+
+P43 L1 india juliet kilo lima alpha bravo.
+
+P58 L1 foxtrot golf hotel india juliet kilo.
+
+P43 L2 delta echo foxtrot golf hotel india.
+
+P58 L2 alpha bravo charlie delta echo foxtrot.
+
+P44 L0 india juliet kilo lima alpha bravo.
+
+P59 L0 foxtrot golf hotel india juliet kilo.
+
+P44 L1 delta echo foxtrot golf hotel india.
+
+P59 L1 alpha bravo charlie delta echo foxtrot.
+
+P44 L2 kilo lima alpha bravo charlie delta.
+
+P59 L2 hotel india juliet kilo lima alpha.
+
+P45 L0 delta echo foxtrot golf hotel india.
+
+P60 L0 alpha bravo charlie delta echo foxtrot.
+
+2
+
+A Tale of Two Columns
+
+P60 L0 alpha bravo charlie delta echo foxtrot.
+
+P75 L0 juliet kilo lima alpha bravo charlie.
+
+P60 L1 hotel india juliet kilo lima alpha.
+
+P75 L1 echo foxtrot golf hotel india juliet.
+
+P60 L2 charlie delta echo foxtrot golf hotel.
+
+P75 L2 lima alpha bravo charlie delta echo.
+
+P61 L0 hotel india juliet kilo lima alpha.
+
+P76 L0 echo foxtrot golf hotel india juliet.
+
+P61 L1 charlie delta echo foxtrot golf hotel.
+
+P76 L1 lima alpha bravo charlie delta echo.
+
+P61 L2 juliet kilo lima alpha bravo charlie.
+
+P76 L2 golf hotel india juliet kilo lima.
+
+P62 L0 charlie delta echo foxtrot golf hotel.
+
+P77 L0 lima alpha bravo charlie delta echo.
+
+P62 L1 juliet kilo lima alpha bravo charlie.
+
+P77 L1 golf hotel india juliet kilo lima.
+
+P62 L2 echo foxtrot golf hotel india juliet.
+
+P77 L2 bravo charlie delta echo foxtrot golf.
+
+P63 L0 juliet kilo lima alpha bravo charlie.
+
+P78 L0 golf hotel india juliet kilo lima.
+
+P63 L1 echo foxtrot golf hotel india juliet.
+
+P78 L1 bravo charlie delta echo foxtrot golf.
+
+P63 L2 lima alpha bravo charlie delta echo.
+
+P78 L2 india juliet kilo lima alpha bravo.
+
+P64 L0 echo foxtrot golf hotel india juliet.
+
+P79 L0 bravo charlie delta echo foxtrot golf.
+
+P64 L1 lima alpha bravo charlie delta echo.
+
+P79 L1 india juliet kilo lima alpha bravo.
+
+P64 L2 golf hotel india juliet kilo lima.
+
+P79 L2 delta echo foxtrot golf hotel india.
+
+P65 L0 lima alpha bravo charlie delta echo.
+
+P80 L0 india juliet kilo lima alpha bravo.
+
+P65 L1 golf hotel india juliet kilo lima.
+
+P80 L1 delta echo foxtrot golf hotel india.
+
+P65 L2 bravo charlie delta echo foxtrot golf.
+
+P80 L2 kilo lima alpha bravo charlie delta.
+
+P66 L0 golf hotel india juliet kilo lima.
+
+P81 L0 delta echo foxtrot golf hotel india.
+
+P66 L1 bravo charlie delta echo foxtrot golf.
+
+P81 L1 kilo lima alpha bravo charlie delta.
+
+P66 L2 india juliet kilo lima alpha bravo.
+
+P81 L2 foxtrot golf hotel india juliet kilo.
+
+P67 L0 bravo charlie delta echo foxtrot golf.
+
+P82 L0 kilo lima alpha bravo charlie delta.
+
+P67 L1 india juliet kilo lima alpha bravo.
+
+P82 L1 foxtrot golf hotel india juliet kilo.
+
+P67 L2 delta echo foxtrot golf hotel india.
+
+P82 L2 alpha bravo charlie delta echo foxtrot.
+
+P68 L0 india juliet kilo lima alpha bravo.
+
+P83 L0 foxtrot golf hotel india juliet kilo.
+
+P68 L1 delta echo foxtrot golf hotel india.
+
+P83 L1 alpha bravo charlie delta echo foxtrot.
+
+P68 L2 kilo lima alpha bravo charlie delta.
+
+P83 L2 hotel india juliet kilo lima alpha.
+
+P69 L0 delta echo foxtrot golf hotel india.
+
+P84 L0 alpha bravo charlie delta echo foxtrot.
+
+P69 L1 kilo lima alpha bravo charlie delta.
+
+P84 L1 hotel india juliet kilo lima alpha.
+
+P69 L2 foxtrot golf hotel india juliet kilo.
+
+P84 L2 charlie delta echo foxtrot golf hotel.
+
+P70 L0 kilo lima alpha bravo charlie delta.
+
+P85 L0 hotel india juliet kilo lima alpha.
+
+P70 L1 foxtrot golf hotel india juliet kilo.
+
+P85 L1 charlie delta echo foxtrot golf hotel.
+
+P70 L2 alpha bravo charlie delta echo foxtrot.
+
+P85 L2 juliet kilo lima alpha bravo charlie.
+
+P71 L0 foxtrot golf hotel india juliet kilo.
+
+P86 L0 charlie delta echo foxtrot golf hotel.
+
+P71 L1 alpha bravo charlie delta echo foxtrot.
+
+P86 L1 juliet kilo lima alpha bravo charlie.
+
+P71 L2 hotel india juliet kilo lima alpha.
+
+P86 L2 echo foxtrot golf hotel india juliet.
+
+P72 L0 alpha bravo charlie delta echo foxtrot.
+
+P87 L0 juliet kilo lima alpha bravo charlie.
+
+P72 L1 hotel india juliet kilo lima alpha.
+
+P87 L1 echo foxtrot golf hotel india juliet.
+
+P72 L2 charlie delta echo foxtrot golf hotel.
+
+P87 L2 lima alpha bravo charlie delta echo.
+
+P73 L0 hotel india juliet kilo lima alpha.
+
+P88 L0 echo foxtrot golf hotel india juliet.
+
+P73 L1 charlie delta echo foxtrot golf hotel.
+
+P88 L1 lima alpha bravo charlie delta echo.
+
+P73 L2 juliet kilo lima alpha bravo charlie.
+
+P88 L2 golf hotel india juliet kilo lima.
+
+P74 L0 charlie delta echo foxtrot golf hotel.
+
+P89 L0 lima alpha bravo charlie delta echo.
+
+P74 L1 juliet kilo lima alpha bravo charlie.
+
+P89 L1 golf hotel india juliet kilo lima.
+
+P74 L2 echo foxtrot golf hotel india juliet.
+
+P89 L2 bravo charlie delta echo foxtrot golf.
+
+P75 L0 juliet kilo lima alpha bravo charlie.
+
+P90 L0 golf hotel india juliet kilo lima.
+
+3
+
+A Tale of Two Columns
+
+P90 L0 golf hotel india juliet kilo lima.
+
+P105 L0 delta echo foxtrot golf hotel india.
+
+P90 L1 bravo charlie delta echo foxtrot golf.
+
+P105 L1 kilo lima alpha bravo charlie delta.
+
+P90 L2 india juliet kilo lima alpha bravo.
+
+P105 L2 foxtrot golf hotel india juliet kilo.
+
+P91 L0 bravo charlie delta echo foxtrot golf.
+
+P106 L0 kilo lima alpha bravo charlie delta.
+
+P91 L1 india juliet kilo lima alpha bravo.
+
+P106 L1 foxtrot golf hotel india juliet kilo.
+
+P91 L2 delta echo foxtrot golf hotel india.
+
+P106 L2 alpha bravo charlie delta echo foxtrot.
+
+P92 L0 india juliet kilo lima alpha bravo.
+
+P107 L0 foxtrot golf hotel india juliet kilo.
+
+P92 L1 delta echo foxtrot golf hotel india.
+
+P107 L1 alpha bravo charlie delta echo foxtrot.
+
+P92 L2 kilo lima alpha bravo charlie delta.
+
+P107 L2 hotel india juliet kilo lima alpha.
+
+P93 L0 delta echo foxtrot golf hotel india.
+
+P108 L0 alpha bravo charlie delta echo foxtrot.
+
+P93 L1 kilo lima alpha bravo charlie delta.
+
+P108 L1 hotel india juliet kilo lima alpha.
+
+P93 L2 foxtrot golf hotel india juliet kilo.
+
+P108 L2 charlie delta echo foxtrot golf hotel.
+
+P94 L0 kilo lima alpha bravo charlie delta.
+
+P109 L0 hotel india juliet kilo lima alpha.
+
+P94 L1 foxtrot golf hotel india juliet kilo.
+
+P109 L1 charlie delta echo foxtrot golf hotel.
+
+P94 L2 alpha bravo charlie delta echo foxtrot.
+
+P109 L2 juliet kilo lima alpha bravo charlie.
+
+P95 L0 foxtrot golf hotel india juliet kilo.
+
+P110 L0 charlie delta echo foxtrot golf hotel.
+
+P95 L1 alpha bravo charlie delta echo foxtrot.
+
+P110 L1 juliet kilo lima alpha bravo charlie.
+
+P95 L2 hotel india juliet kilo lima alpha.
+
+P110 L2 echo foxtrot golf hotel india juliet.
+
+P96 L0 alpha bravo charlie delta echo foxtrot.
+
+P111 L0 juliet kilo lima alpha bravo charlie.
+
+P96 L1 hotel india juliet kilo lima alpha.
+
+P111 L1 echo foxtrot golf hotel india juliet.
+
+P96 L2 charlie delta echo foxtrot golf hotel.
+
+P111 L2 lima alpha bravo charlie delta echo.
+
+P97 L0 hotel india juliet kilo lima alpha.
+
+P112 L0 echo foxtrot golf hotel india juliet.
+
+P97 L1 charlie delta echo foxtrot golf hotel.
+
+P112 L1 lima alpha bravo charlie delta echo.
+
+P97 L2 juliet kilo lima alpha bravo charlie.
+
+P112 L2 golf hotel india juliet kilo lima.
+
+P98 L0 charlie delta echo foxtrot golf hotel.
+
+P113 L0 lima alpha bravo charlie delta echo.
+
+P98 L1 juliet kilo lima alpha bravo charlie.
+
+P113 L1 golf hotel india juliet kilo lima.
+
+P98 L2 echo foxtrot golf hotel india juliet.
+
+P113 L2 bravo charlie delta echo foxtrot golf.
+
+P99 L0 juliet kilo lima alpha bravo charlie.
+
+P114 L0 golf hotel india juliet kilo lima.
+
+P99 L1 echo foxtrot golf hotel india juliet.
+
+P114 L1 bravo charlie delta echo foxtrot golf.
+
+P99 L2 lima alpha bravo charlie delta echo.
+
+P114 L2 india juliet kilo lima alpha bravo.
+
+P100 L0 echo foxtrot golf hotel india juliet.
+
+P115 L0 bravo charlie delta echo foxtrot golf.
+
+P100 L1 lima alpha bravo charlie delta echo.
+
+P115 L1 india juliet kilo lima alpha bravo.
+
+P100 L2 golf hotel india juliet kilo lima.
+
+P115 L2 delta echo foxtrot golf hotel india.
+
+P101 L0 lima alpha bravo charlie delta echo.
+
+P116 L0 india juliet kilo lima alpha bravo.
+
+P101 L1 golf hotel india juliet kilo lima.
+
+P116 L1 delta echo foxtrot golf hotel india.
+
+P101 L2 bravo charlie delta echo foxtrot golf.
+
+P116 L2 kilo lima alpha bravo charlie delta.
+
+P102 L0 golf hotel india juliet kilo lima.
+
+P117 L0 delta echo foxtrot golf hotel india.
+
+P102 L1 bravo charlie delta echo foxtrot golf.
+
+P117 L1 kilo lima alpha bravo charlie delta.
+
+P102 L2 india juliet kilo lima alpha bravo.
+
+P117 L2 foxtrot golf hotel india juliet kilo.
+
+P103 L0 bravo charlie delta echo foxtrot golf.
+
+P118 L0 kilo lima alpha bravo charlie delta.
+
+P103 L1 india juliet kilo lima alpha bravo.
+
+P118 L1 foxtrot golf hotel india juliet kilo.
+
+P103 L2 delta echo foxtrot golf hotel india.
+
+P118 L2 alpha bravo charlie delta echo foxtrot.
+
+P104 L0 india juliet kilo lima alpha bravo.
+
+P119 L0 foxtrot golf hotel india juliet kilo.
+
+P104 L1 delta echo foxtrot golf hotel india.
+
+P119 L1 alpha bravo charlie delta echo foxtrot.
+
+P104 L2 kilo lima alpha bravo charlie delta.
+
+P119 L2 hotel india juliet kilo lima alpha.
+
+P105 L0 delta echo foxtrot golf hotel india.
+
+P120 L0 alpha bravo charlie delta echo foxtrot.
+
+4
+
+A Tale of Two Columns
+
+P120 L0 alpha bravo charlie delta echo foxtrot.
+
+P135 L0 juliet kilo lima alpha bravo charlie.
+
+P120 L1 hotel india juliet kilo lima alpha.
+
+P135 L1 echo foxtrot golf hotel india juliet.
+
+P120 L2 charlie delta echo foxtrot golf hotel.
+
+P135 L2 lima alpha bravo charlie delta echo.
+
+P121 L0 hotel india juliet kilo lima alpha.
+
+P136 L0 echo foxtrot golf hotel india juliet.
+
+P121 L1 charlie delta echo foxtrot golf hotel.
+
+P136 L1 lima alpha bravo charlie delta echo.
+
+P121 L2 juliet kilo lima alpha bravo charlie.
+
+P136 L2 golf hotel india juliet kilo lima.
+
+P122 L0 charlie delta echo foxtrot golf hotel.
+
+P137 L0 lima alpha bravo charlie delta echo.
+
+P122 L1 juliet kilo lima alpha bravo charlie.
+
+P137 L1 golf hotel india juliet kilo lima.
+
+P122 L2 echo foxtrot golf hotel india juliet.
+
+P137 L2 bravo charlie delta echo foxtrot golf.
+
+P123 L0 juliet kilo lima alpha bravo charlie.
+
+P138 L0 golf hotel india juliet kilo lima.
+
+P123 L1 echo foxtrot golf hotel india juliet.
+
+P138 L1 bravo charlie delta echo foxtrot golf.
+
+P123 L2 lima alpha bravo charlie delta echo.
+
+P138 L2 india juliet kilo lima alpha bravo.
+
+P124 L0 echo foxtrot golf hotel india juliet.
+
+P139 L0 bravo charlie delta echo foxtrot golf.
+
+P124 L1 lima alpha bravo charlie delta echo.
+
+P139 L1 india juliet kilo lima alpha bravo.
+
+P124 L2 golf hotel india juliet kilo lima.
+
+P139 L2 delta echo foxtrot golf hotel india.
+
+P125 L0 lima alpha bravo charlie delta echo.
+
+P140 L0 india juliet kilo lima alpha bravo.
+
+P125 L1 golf hotel india juliet kilo lima.
+
+P140 L1 delta echo foxtrot golf hotel india.
+
+P125 L2 bravo charlie delta echo foxtrot golf.
+
+P140 L2 kilo lima alpha bravo charlie delta.
+
+P126 L0 golf hotel india juliet kilo lima.
+
+P141 L0 delta echo foxtrot golf hotel india.
+
+P126 L1 bravo charlie delta echo foxtrot golf.
+
+P141 L1 kilo lima alpha bravo charlie delta.
+
+P126 L2 india juliet kilo lima alpha bravo.
+
+P141 L2 foxtrot golf hotel india juliet kilo.
+
+P127 L0 bravo charlie delta echo foxtrot golf.
+
+P142 L0 kilo lima alpha bravo charlie delta.
+
+P127 L1 india juliet kilo lima alpha bravo.
+
+P142 L1 foxtrot golf hotel india juliet kilo.
+
+P127 L2 delta echo foxtrot golf hotel india.
+
+P142 L2 alpha bravo charlie delta echo foxtrot.
+
+P128 L0 india juliet kilo lima alpha bravo.
+
+P143 L0 foxtrot golf hotel india juliet kilo.
+
+P128 L1 delta echo foxtrot golf hotel india.
+
+P143 L1 alpha bravo charlie delta echo foxtrot.
+
+P128 L2 kilo lima alpha bravo charlie delta.
+
+P143 L2 hotel india juliet kilo lima alpha.
+
+P129 L0 delta echo foxtrot golf hotel india.
+
+P144 L0 alpha bravo charlie delta echo foxtrot.
+
+P129 L1 kilo lima alpha bravo charlie delta.
+
+P144 L1 hotel india juliet kilo lima alpha.
+
+P129 L2 foxtrot golf hotel india juliet kilo.
+
+P144 L2 charlie delta echo foxtrot golf hotel.
+
+P130 L0 kilo lima alpha bravo charlie delta.
+
+P145 L0 hotel india juliet kilo lima alpha.
+
+P130 L1 foxtrot golf hotel india juliet kilo.
+
+P145 L1 charlie delta echo foxtrot golf hotel.
+
+P130 L2 alpha bravo charlie delta echo foxtrot.
+
+P145 L2 juliet kilo lima alpha bravo charlie.
+
+P131 L0 foxtrot golf hotel india juliet kilo.
+
+P146 L0 charlie delta echo foxtrot golf hotel.
+
+P131 L1 alpha bravo charlie delta echo foxtrot.
+
+P146 L1 juliet kilo lima alpha bravo charlie.
+
+P131 L2 hotel india juliet kilo lima alpha.
+
+P146 L2 echo foxtrot golf hotel india juliet.
+
+P132 L0 alpha bravo charlie delta echo foxtrot.
+
+P147 L0 juliet kilo lima alpha bravo charlie.
+
+P132 L1 hotel india juliet kilo lima alpha.
+
+P147 L1 echo foxtrot golf hotel india juliet.
+
+P132 L2 charlie delta echo foxtrot golf hotel.
+
+P147 L2 lima alpha bravo charlie delta echo.
+
+P133 L0 hotel india juliet kilo lima alpha.
+
+P148 L0 echo foxtrot golf hotel india juliet.
+
+P133 L1 charlie delta echo foxtrot golf hotel.
+
+P148 L1 lima alpha bravo charlie delta echo.
+
+P133 L2 juliet kilo lima alpha bravo charlie.
+
+P148 L2 golf hotel india juliet kilo lima.
+
+P134 L0 charlie delta echo foxtrot golf hotel.
+
+P149 L0 lima alpha bravo charlie delta echo.
+
+P134 L1 juliet kilo lima alpha bravo charlie.
+
+P149 L1 golf hotel india juliet kilo lima.
+
+P134 L2 echo foxtrot golf hotel india juliet.
+
+P149 L2 bravo charlie delta echo foxtrot golf.
+
+P135 L0 juliet kilo lima alpha bravo charlie.
+
+P150 L0 golf hotel india juliet kilo lima.
+
+5
+
+A Tale of Two Columns
+
+P150 L0 golf hotel india juliet kilo lima.
+
+P165 L0 delta echo foxtrot golf hotel india.
+
+P150 L1 bravo charlie delta echo foxtrot golf.
+
+P165 L1 kilo lima alpha bravo charlie delta.
+
+P150 L2 india juliet kilo lima alpha bravo.
+
+P165 L2 foxtrot golf hotel india juliet kilo.
+
+P151 L0 bravo charlie delta echo foxtrot golf.
+
+P166 L0 kilo lima alpha bravo charlie delta.
+
+P151 L1 india juliet kilo lima alpha bravo.
+
+P166 L1 foxtrot golf hotel india juliet kilo.
+
+P151 L2 delta echo foxtrot golf hotel india.
+
+P166 L2 alpha bravo charlie delta echo foxtrot.
+
+P152 L0 india juliet kilo lima alpha bravo.
+
+P167 L0 foxtrot golf hotel india juliet kilo.
+
+P152 L1 delta echo foxtrot golf hotel india.
+
+P167 L1 alpha bravo charlie delta echo foxtrot.
+
+P152 L2 kilo lima alpha bravo charlie delta.
+
+P167 L2 hotel india juliet kilo lima alpha.
+
+P153 L0 delta echo foxtrot golf hotel india.
+
+P168 L0 alpha bravo charlie delta echo foxtrot.
+
+P153 L1 kilo lima alpha bravo charlie delta.
+
+P168 L1 hotel india juliet kilo lima alpha.
+
+P153 L2 foxtrot golf hotel india juliet kilo.
+
+P168 L2 charlie delta echo foxtrot golf hotel.
+
+P154 L0 kilo lima alpha bravo charlie delta.
+
+P169 L0 hotel india juliet kilo lima alpha.
+
+P154 L1 foxtrot golf hotel india juliet kilo.
+
+P169 L1 charlie delta echo foxtrot golf hotel.
+
+P154 L2 alpha bravo charlie delta echo foxtrot.
+
+P169 L2 juliet kilo lima alpha bravo charlie.
+
+P155 L0 foxtrot golf hotel india juliet kilo.
+
+P170 L0 charlie delta echo foxtrot golf hotel.
+
+P155 L1 alpha bravo charlie delta echo foxtrot.
+
+P170 L1 juliet kilo lima alpha bravo charlie.
+
+P155 L2 hotel india juliet kilo lima alpha.
+
+P170 L2 echo foxtrot golf hotel india juliet.
+
+P156 L0 alpha bravo charlie delta echo foxtrot.
+
+P171 L0 juliet kilo lima alpha bravo charlie.
+
+P156 L1 hotel india juliet kilo lima alpha.
+
+P171 L1 echo foxtrot golf hotel india juliet.
+
+P156 L2 charlie delta echo foxtrot golf hotel.
+
+P171 L2 lima alpha bravo charlie delta echo.
+
+P157 L0 hotel india juliet kilo lima alpha.
+
+P172 L0 echo foxtrot golf hotel india juliet.
+
+P157 L1 charlie delta echo foxtrot golf hotel.
+
+P172 L1 lima alpha bravo charlie delta echo.
+
+P157 L2 juliet kilo lima alpha bravo charlie.
+
+P172 L2 golf hotel india juliet kilo lima.
+
+P158 L0 charlie delta echo foxtrot golf hotel.
+
+P173 L0 lima alpha bravo charlie delta echo.
+
+P158 L1 juliet kilo lima alpha bravo charlie.
+
+P173 L1 golf hotel india juliet kilo lima.
+
+P158 L2 echo foxtrot golf hotel india juliet.
+
+P173 L2 bravo charlie delta echo foxtrot golf.
+
+P159 L0 juliet kilo lima alpha bravo charlie.
+
+P174 L0 golf hotel india juliet kilo lima.
+
+P159 L1 echo foxtrot golf hotel india juliet.
+
+P174 L1 bravo charlie delta echo foxtrot golf.
+
+P159 L2 lima alpha bravo charlie delta echo.
+
+P174 L2 india juliet kilo lima alpha bravo.
+
+P160 L0 echo foxtrot golf hotel india juliet.
+
+P175 L0 bravo charlie delta echo foxtrot golf.
+
+P160 L1 lima alpha bravo charlie delta echo.
+
+P175 L1 india juliet kilo lima alpha bravo.
+
+P160 L2 golf hotel india juliet kilo lima.
+
+P175 L2 delta echo foxtrot golf hotel india.
+
+P161 L0 lima alpha bravo charlie delta echo.
+
+P176 L0 india juliet kilo lima alpha bravo.
+
+P161 L1 golf hotel india juliet kilo lima.
+
+P176 L1 delta echo foxtrot golf hotel india.
+
+P161 L2 bravo charlie delta echo foxtrot golf.
+
+P176 L2 kilo lima alpha bravo charlie delta.
+
+P162 L0 golf hotel india juliet kilo lima.
+
+P177 L0 delta echo foxtrot golf hotel india.
+
+P162 L1 bravo charlie delta echo foxtrot golf.
+
+P177 L1 kilo lima alpha bravo charlie delta.
+
+P162 L2 india juliet kilo lima alpha bravo.
+
+P177 L2 foxtrot golf hotel india juliet kilo.
+
+P163 L0 bravo charlie delta echo foxtrot golf.
+
+P178 L0 kilo lima alpha bravo charlie delta.
+
+P163 L1 india juliet kilo lima alpha bravo.
+
+P178 L1 foxtrot golf hotel india juliet kilo.
+
+P163 L2 delta echo foxtrot golf hotel india.
+
+P178 L2 alpha bravo charlie delta echo foxtrot.
+
+P164 L0 india juliet kilo lima alpha bravo.
+
+P179 L0 foxtrot golf hotel india juliet kilo.
+
+P164 L1 delta echo foxtrot golf hotel india.
+
+P179 L1 alpha bravo charlie delta echo foxtrot.
+
+P164 L2 kilo lima alpha bravo charlie delta.
+
+P179 L2 hotel india juliet kilo lima alpha.
+
+P165 L0 delta echo foxtrot golf hotel india.
+
+P180 L0 alpha bravo charlie delta echo foxtrot.
+
+6
+
+A Tale of Two Columns
+
+P180 L0 alpha bravo charlie delta echo foxtrot.
+
+P195 L0 juliet kilo lima alpha bravo charlie.
+
+P180 L1 hotel india juliet kilo lima alpha.
+
+P195 L1 echo foxtrot golf hotel india juliet.
+
+P180 L2 charlie delta echo foxtrot golf hotel.
+
+P195 L2 lima alpha bravo charlie delta echo.
+
+P181 L0 hotel india juliet kilo lima alpha.
+
+P196 L0 echo foxtrot golf hotel india juliet.
+
+P181 L1 charlie delta echo foxtrot golf hotel.
+
+P196 L1 lima alpha bravo charlie delta echo.
+
+P181 L2 juliet kilo lima alpha bravo charlie.
+
+P196 L2 golf hotel india juliet kilo lima.
+
+P182 L0 charlie delta echo foxtrot golf hotel.
+
+P197 L0 lima alpha bravo charlie delta echo.
+
+P182 L1 juliet kilo lima alpha bravo charlie.
+
+P197 L1 golf hotel india juliet kilo lima.
+
+P182 L2 echo foxtrot golf hotel india juliet.
+
+P197 L2 bravo charlie delta echo foxtrot golf.
+
+P183 L0 juliet kilo lima alpha bravo charlie.
+
+P198 L0 golf hotel india juliet kilo lima.
+
+P183 L1 echo foxtrot golf hotel india juliet.
+
+P198 L1 bravo charlie delta echo foxtrot golf.
+
+P183 L2 lima alpha bravo charlie delta echo.
+
+P198 L2 india juliet kilo lima alpha bravo.
+
+P184 L0 echo foxtrot golf hotel india juliet.
+
+P199 L0 bravo charlie delta echo foxtrot golf.
+
+P184 L1 lima alpha bravo charlie delta echo.
+
+P199 L1 india juliet kilo lima alpha bravo.
+
+P184 L2 golf hotel india juliet kilo lima.
+
+P199 L2 delta echo foxtrot golf hotel india.
+
+P185 L0 lima alpha bravo charlie delta echo.
+
+P200 L0 india juliet kilo lima alpha bravo.
+
+P185 L1 golf hotel india juliet kilo lima.
+
+P200 L1 delta echo foxtrot golf hotel india.
+
+P185 L2 bravo charlie delta echo foxtrot golf.
+
+P200 L2 kilo lima alpha bravo charlie delta.
+
+P186 L0 golf hotel india juliet kilo lima.
+
+P201 L0 delta echo foxtrot golf hotel india.
+
+P186 L1 bravo charlie delta echo foxtrot golf.
+
+P201 L1 kilo lima alpha bravo charlie delta.
+
+P186 L2 india juliet kilo lima alpha bravo.
+
+P201 L2 foxtrot golf hotel india juliet kilo.
+
+P187 L0 bravo charlie delta echo foxtrot golf.
+
+P202 L0 kilo lima alpha bravo charlie delta.
+
+P187 L1 india juliet kilo lima alpha bravo.
+
+P202 L1 foxtrot golf hotel india juliet kilo.
+
+P187 L2 delta echo foxtrot golf hotel india.
+
+P202 L2 alpha bravo charlie delta echo foxtrot.
+
+P188 L0 india juliet kilo lima alpha bravo.
+
+P203 L0 foxtrot golf hotel india juliet kilo.
+
+P188 L1 delta echo foxtrot golf hotel india.
+
+P203 L1 alpha bravo charlie delta echo foxtrot.
+
+P188 L2 kilo lima alpha bravo charlie delta.
+
+P203 L2 hotel india juliet kilo lima alpha.
+
+P189 L0 delta echo foxtrot golf hotel india.
+
+P204 L0 alpha bravo charlie delta echo foxtrot.
+
+P189 L1 kilo lima alpha bravo charlie delta.
+
+P204 L1 hotel india juliet kilo lima alpha.
+
+P189 L2 foxtrot golf hotel india juliet kilo.
+
+P204 L2 charlie delta echo foxtrot golf hotel.
+
+P190 L0 kilo lima alpha bravo charlie delta.
+
+P205 L0 hotel india juliet kilo lima alpha.
+
+P190 L1 foxtrot golf hotel india juliet kilo.
+
+P205 L1 charlie delta echo foxtrot golf hotel.
+
+P190 L2 alpha bravo charlie delta echo foxtrot.
+
+P205 L2 juliet kilo lima alpha bravo charlie.
+
+P191 L0 foxtrot golf hotel india juliet kilo.
+
+P206 L0 charlie delta echo foxtrot golf hotel.
+
+P191 L1 alpha bravo charlie delta echo foxtrot.
+
+P206 L1 juliet kilo lima alpha bravo charlie.
+
+P191 L2 hotel india juliet kilo lima alpha.
+
+P206 L2 echo foxtrot golf hotel india juliet.
+
+P192 L0 alpha bravo charlie delta echo foxtrot.
+
+P207 L0 juliet kilo lima alpha bravo charlie.
+
+P192 L1 hotel india juliet kilo lima alpha.
+
+P207 L1 echo foxtrot golf hotel india juliet.
+
+P192 L2 charlie delta echo foxtrot golf hotel.
+
+P207 L2 lima alpha bravo charlie delta echo.
+
+P193 L0 hotel india juliet kilo lima alpha.
+
+P208 L0 echo foxtrot golf hotel india juliet.
+
+P193 L1 charlie delta echo foxtrot golf hotel.
+
+P208 L1 lima alpha bravo charlie delta echo.
+
+P193 L2 juliet kilo lima alpha bravo charlie.
+
+P208 L2 golf hotel india juliet kilo lima.
+
+P194 L0 charlie delta echo foxtrot golf hotel.
+
+P209 L0 lima alpha bravo charlie delta echo.
+
+P194 L1 juliet kilo lima alpha bravo charlie.
+
+P209 L1 golf hotel india juliet kilo lima.
+
+P194 L2 echo foxtrot golf hotel india juliet.
+
+P209 L2 bravo charlie delta echo foxtrot golf.
+
+P195 L0 juliet kilo lima alpha bravo charlie.
+
+P210 L0 golf hotel india juliet kilo lima.
+
+7
+
+A Tale of Two Columns
+
+P210 L0 golf hotel india juliet kilo lima.
+
+P225 L0 delta echo foxtrot golf hotel india.
+
+P210 L1 bravo charlie delta echo foxtrot golf.
+
+P225 L1 kilo lima alpha bravo charlie delta.
+
+P210 L2 india juliet kilo lima alpha bravo.
+
+P225 L2 foxtrot golf hotel india juliet kilo.
+
+P211 L0 bravo charlie delta echo foxtrot golf.
+
+P226 L0 kilo lima alpha bravo charlie delta.
+
+P211 L1 india juliet kilo lima alpha bravo.
+
+P226 L1 foxtrot golf hotel india juliet kilo.
+
+P211 L2 delta echo foxtrot golf hotel india.
+
+P226 L2 alpha bravo charlie delta echo foxtrot.
+
+P212 L0 india juliet kilo lima alpha bravo.
+
+P227 L0 foxtrot golf hotel india juliet kilo.
+
+P212 L1 delta echo foxtrot golf hotel india.
+
+P227 L1 alpha bravo charlie delta echo foxtrot.
+
+P212 L2 kilo lima alpha bravo charlie delta.
+
+P227 L2 hotel india juliet kilo lima alpha.
+
+P213 L0 delta echo foxtrot golf hotel india.
+
+P228 L0 alpha bravo charlie delta echo foxtrot.
+
+P213 L1 kilo lima alpha bravo charlie delta.
+
+P228 L1 hotel india juliet kilo lima alpha.
+
+P213 L2 foxtrot golf hotel india juliet kilo.
+
+P228 L2 charlie delta echo foxtrot golf hotel.
+
+P214 L0 kilo lima alpha bravo charlie delta.
+
+P229 L0 hotel india juliet kilo lima alpha.
+
+P214 L1 foxtrot golf hotel india juliet kilo.
+
+P229 L1 charlie delta echo foxtrot golf hotel.
+
+P214 L2 alpha bravo charlie delta echo foxtrot.
+
+P229 L2 juliet kilo lima alpha bravo charlie.
+
+P215 L0 foxtrot golf hotel india juliet kilo.
+
+P230 L0 charlie delta echo foxtrot golf hotel.
+
+P215 L1 alpha bravo charlie delta echo foxtrot.
+
+P230 L1 juliet kilo lima alpha bravo charlie.
+
+P215 L2 hotel india juliet kilo lima alpha.
+
+P230 L2 echo foxtrot golf hotel india juliet.
+
+P216 L0 alpha bravo charlie delta echo foxtrot.
+
+P231 L0 juliet kilo lima alpha bravo charlie.
+
+P216 L1 hotel india juliet kilo lima alpha.
+
+P231 L1 echo foxtrot golf hotel india juliet.
+
+P216 L2 charlie delta echo foxtrot golf hotel.
+
+P231 L2 lima alpha bravo charlie delta echo.
+
+P217 L0 hotel india juliet kilo lima alpha.
+
+P232 L0 echo foxtrot golf hotel india juliet.
+
+P217 L1 charlie delta echo foxtrot golf hotel.
+
+P232 L1 lima alpha bravo charlie delta echo.
+
+P217 L2 juliet kilo lima alpha bravo charlie.
+
+P232 L2 golf hotel india juliet kilo lima.
+
+P218 L0 charlie delta echo foxtrot golf hotel.
+
+P233 L0 lima alpha bravo charlie delta echo.
+
+P218 L1 juliet kilo lima alpha bravo charlie.
+
+P233 L1 golf hotel india juliet kilo lima.
+
+P218 L2 echo foxtrot golf hotel india juliet.
+
+P233 L2 bravo charlie delta echo foxtrot golf.
+
+P219 L0 juliet kilo lima alpha bravo charlie.
+
+P234 L0 golf hotel india juliet kilo lima.
+
+P219 L1 echo foxtrot golf hotel india juliet.
+
+P234 L1 bravo charlie delta echo foxtrot golf.
+
+P219 L2 lima alpha bravo charlie delta echo.
+
+P234 L2 india juliet kilo lima alpha bravo.
+
+P220 L0 echo foxtrot golf hotel india juliet.
+
+P235 L0 bravo charlie delta echo foxtrot golf.
+
+P220 L1 lima alpha bravo charlie delta echo.
+
+P235 L1 india juliet kilo lima alpha bravo.
+
+P220 L2 golf hotel india juliet kilo lima.
+
+P235 L2 delta echo foxtrot golf hotel india.
+
+P221 L0 lima alpha bravo charlie delta echo.
+
+P236 L0 india juliet kilo lima alpha bravo.
+
+P221 L1 golf hotel india juliet kilo lima.
+
+P236 L1 delta echo foxtrot golf hotel india.
+
+P221 L2 bravo charlie delta echo foxtrot golf.
+
+P236 L2 kilo lima alpha bravo charlie delta.
+
+P222 L0 golf hotel india juliet kilo lima.
+
+P237 L0 delta echo foxtrot golf hotel india.
+
+P222 L1 bravo charlie delta echo foxtrot golf.
+
+P237 L1 kilo lima alpha bravo charlie delta.
+
+P222 L2 india juliet kilo lima alpha bravo.
+
+P237 L2 foxtrot golf hotel india juliet kilo.
+
+P223 L0 bravo charlie delta echo foxtrot golf.
+
+P238 L0 kilo lima alpha bravo charlie delta.
+
+P223 L1 india juliet kilo lima alpha bravo.
+
+P238 L1 foxtrot golf hotel india juliet kilo.
+
+P223 L2 delta echo foxtrot golf hotel india.
+
+P238 L2 alpha bravo charlie delta echo foxtrot.
+
+P224 L0 india juliet kilo lima alpha bravo.
+
+P239 L0 foxtrot golf hotel india juliet kilo.
+
+P224 L1 delta echo foxtrot golf hotel india.
+
+P239 L1 alpha bravo charlie delta echo foxtrot.
+
+P224 L2 kilo lima alpha bravo charlie delta.
+
+P239 L2 hotel india juliet kilo lima alpha.
+
+P225 L0 delta echo foxtrot golf hotel india.
+
+P240 L0 alpha bravo charlie delta echo foxtrot.
+
+8
+
+
