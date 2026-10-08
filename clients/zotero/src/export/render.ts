@@ -28,7 +28,9 @@ export interface ItemTags {
 
 /** The render request for an export, or null when its selection has no text to render. */
 export function renderPayload(request: ExportRequest, out: string, tags: ItemTags): RenderPayload | null {
-  const parts = buildParts(request.segments, request.title, request.choice.selection);
+  const parts = buildParts(request.segments, request.title, request.choice.selection, {
+    footnotes: request.footnotes,
+  });
   if (parts.length === 0) return null;
   const metadata: Record<string, string> = { title: request.title, album: request.title };
   if (tags.artist) metadata.artist = tags.artist;

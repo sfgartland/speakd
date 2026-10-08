@@ -13,6 +13,9 @@
 // bottom-up, so the bottom band of a page is *low* y, the lowest share of
 // the page's observed y-range.
 
+import { filterRunningHeads } from "./segmentfilter";
+import type { TaggedSegment } from "./sections";
+
 /** How a read's footnotes are treated (proposal §3, the brief's open question 1). */
 export type FootnotePolicy = "classify" | "drop_all" | "defer_all";
 
@@ -40,7 +43,8 @@ export interface FootnoteOptions {
 /** What detection needs of a segment. */
 export interface PlanSegment {
   readonly text: string;
-  readonly anchor: string | null;
+  /** The paragraph anchor; a segment that carries none is never a candidate. */
+  readonly anchor?: string | null;
   /** The page it starts on; null inherits its predecessor's. */
   readonly pageIndex?: number | null;
   /** The y of its first rect, or null when it carries none. */
@@ -124,6 +128,52 @@ function pageGroups(segments: readonly PlanSegment[]): Map<number, number[]> {
     else group.push(index);
   });
   return groups;
+}
+
+/** Why one segment was dropped, for the log line a caller writes. */
+export interface DroppedSegment {
+  readonly text: string;
+  readonly why: "running head" | "footnote";
+}
+
+/** Both filters over a whole document's segments, for whoever builds sections or parts. */
+export interface SegmentsPlan<S extends PlanSegment> {
+  /** The whole list, tagged for `buildSections`: a dropped one never appears in a section, a deferred one waits for its section's end. */
+  readonly tagged: readonly (S & Pick<TaggedSegment, "tag">)[];
+  /** Every dropped segment, in document order: the filter's audit trail. */
+  readonly dropped: readonly DroppedSegment[];
+}
+
+/**
+ * The running-head filter and the footnote plan over a whole document's
+ * segments (proposal §4.2), in that order: the head filter first, so the
+ * footnote plan sees what is left. Under `classify`, what the shape rules
+ * could not decide is kept -- deferred to its section's end -- until a
+ * semantic stage exists: a wrong kept footnote is preferable to a wrong
+ * dropped paragraph. Nothing here drops by content; only recurrence,
+ * geometry, markers and the shape rules decide.
+ */
+export function tagSegments<S extends PlanSegment>(segments: readonly S[], policy: FootnotePolicy): SegmentsPlan<S> {
+  const kept = filterRunningHeads(segments);
+  // The kept list holds the input's own segment objects, so identity tells
+  // kept from dropped; each kept one knows its place in the kept list.
+  const keptAt = new Map<PlanSegment, number>();
+  kept.forEach((segment, index) => keptAt.set(segment, index));
+  const plan = planFootnotes(kept, policy);
+  const tagged: (S & Pick<TaggedSegment, "tag">)[] = [];
+  const dropped: DroppedSegment[] = [];
+  for (const segment of segments) {
+    const index = keptAt.get(segment);
+    if (index === undefined) {
+      dropped.push({ text: segment.text, why: "running head" });
+      tagged.push({ ...segment, tag: "drop" });
+      continue;
+    }
+    const tag = plan.tags[index] ?? "body";
+    if (tag === "drop") dropped.push({ text: segment.text, why: "footnote" });
+    tagged.push({ ...segment, tag: tag === "classify" ? "defer" : tag });
+  }
+  return { tagged, dropped };
 }
 
 export function planFootnotes(

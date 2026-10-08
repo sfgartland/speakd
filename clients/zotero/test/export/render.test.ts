@@ -18,6 +18,7 @@ function request(choice: Partial<ExportChoice> = {}, segments = [text("One."), t
     attachmentID: 7,
     segments,
     choice: { selection: { kind: "whole" }, format: "mp3", destination: "attach", folder: null, ...choice },
+    footnotes: "classify",
   };
 }
 

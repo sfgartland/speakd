@@ -13,9 +13,10 @@
 // by the one thing that tells sections apart: their text.
 
 import { cleanup } from "./cleanup";
+import { tagSegments, type FootnotePolicy } from "./footnotes";
 import { planHighlights } from "./mapping";
 import { apply, identity, type Stage } from "./offsetmap";
-import { buildSections, type Section, type SegmentText } from "./sections";
+import { buildSections, type Section, type SegmentText, type TaggedSegment } from "./sections";
 import type { CallResult, SpeakdEvent } from "./speakd";
 
 /** What the channel needs of the client: verbs, and nothing else. */
@@ -49,6 +50,21 @@ export interface ChannelOptions {
   /** Sections' sizes, as `buildSections` takes them. */
   firstSize?: number;
   size?: number;
+  /** The footnote policy (prefs.ts `footnote_policy`); `classify` by default. */
+  footnotes?: FootnotePolicy;
+  /** Says one line per dropped segment: the filter's audit trail. */
+  log?: (message: string) => void;
+}
+
+/**
+ * What the read start can use of a segment, beyond its text: the filters'
+ * inputs. A segment that carries none of them -- text alone -- is read as
+ * ever, with nothing to filter and nothing to plan.
+ */
+export interface ReadSegment extends SegmentText {
+  readonly anchor?: string | null;
+  readonly pageIndex?: number | null;
+  readonly firstRectY?: number | null;
 }
 
 /** A section as enqueued: its segments, and the cleaned text the daemon was given. */
@@ -81,6 +97,8 @@ export class Channel {
   private readonly clean: Clean;
   private readonly firstSize: number | undefined;
   private readonly size: number | undefined;
+  private readonly footnotes: FootnotePolicy;
+  private readonly log: (message: string) => void;
 
   private _generation = 0;
   private read: Read | null = null;
@@ -114,6 +132,8 @@ export class Channel {
     this.clean = options.clean ?? ((text) => cleanup(text));
     this.firstSize = options.firstSize;
     this.size = options.size;
+    this.footnotes = options.footnotes ?? "classify";
+    this.log = options.log ?? (() => {});
   }
 
   /** Bumped by every start and stop. */
@@ -187,7 +207,7 @@ export class Channel {
    * already under way. Resolves once the first section is enqueued, or the
    * read has failed and said why.
    */
-  start(segments: readonly SegmentText[], startIndex: number): Promise<void> {
+  start(segments: readonly ReadSegment[], startIndex: number): Promise<void> {
     const generation = this.supersede();
     return this.serially(async () => {
       if (generation !== this._generation) return;
@@ -196,7 +216,7 @@ export class Channel {
         this.fail(NO_TEXT);
         return;
       }
-      const sections = buildSections(segments, startIndex, this.firstSize, this.size);
+      const sections = buildSections(this.planned(segments), startIndex, this.firstSize, this.size);
       // Past the end of a document that has text: nothing left to read.
       if (sections.length === 0) return;
       // On every start, not once: the daemon forgets a channel idle for
@@ -211,6 +231,26 @@ export class Channel {
       this.read = read;
       await this.enqueueNext(read);
     });
+  }
+
+  /**
+   * The read's segments as the footnote plan leaves them: running heads and
+   * dropped footnotes never appear, kept ones wait for their section's end.
+   * Runs at read start, synchronously -- pure arithmetic over the segment
+   * list, milliseconds -- so the first sound is as quick as ever. A filter
+   * that fails costs its cleanup, never the speech: the segments are read
+   * exactly as they came. A segment without a dropped word for the log is
+   * read as ever; one that was dropped says so, once, in the debug log:
+   * silent drops are a filter's worst failure, and this is the trace.
+   */
+  private planned(segments: readonly ReadSegment[]): readonly TaggedSegment[] {
+    try {
+      const { tagged, dropped } = tagSegments(segments, this.footnotes);
+      for (const segment of dropped) this.log(`a ${segment.why} was not read: ${brief(segment.text)}`);
+      return tagged;
+    } catch {
+      return segments;
+    }
   }
 
   /**
@@ -435,6 +475,12 @@ export class Channel {
     if (index !== null) this._lastIndex = index;
     for (const listener of this.highlightListeners) listener(index);
   }
+}
+
+// One dropped segment, said shortly: its first sixty characters, one line.
+function brief(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed;
 }
 
 function isDaemonSegment(value: unknown): value is { index: number; span_start: number; span_end: number } {

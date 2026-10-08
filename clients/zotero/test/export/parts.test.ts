@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { buildParts, isBookItemType } from "../../src/export/parts";
 
-function seg(text: string, pageIndex: number, anchor: string | null = null) {
-  return { text, pageIndex, anchor };
+function seg(
+  text: string,
+  pageIndex: number,
+  anchor: string | null = null,
+  firstRectY: number | null = null,
+) {
+  return { text, pageIndex, anchor, firstRectY };
 }
 
 describe("isBookItemType", () => {
@@ -108,5 +113,71 @@ describe("buildParts", () => {
     const segments = [seg("One.", 0), seg("", 0), seg("Two.", 0)];
     const parts = buildParts(segments, "Title", { kind: "whole" });
     expect(parts[0]?.text).toBe("One. Two.");
+  });
+});
+
+describe("buildParts with the cleanup filters", () => {
+  // Six pages of a paper with a running head, a citation footnote and a prose
+  // footnote on every page, as the filters see them: rect y running bottom-up
+  // (footnotes low, body high).
+  function paper() {
+    const segments = [];
+    for (let n = 0; n < 6; n++) {
+      segments.push(seg("Sample Journal", n, "paragraphStart", 770));
+      segments.push(seg(`Body of page ${n} opens.`, n, "paragraphStart", 740));
+      segments.push(seg("1 Kant, KrV, B25.", n, "paragraphStart", 140));
+      segments.push(
+        seg(
+          `2 A footnote of page ${n} holds real prose, and it argues its case across the sentences at length.`,
+          n,
+          "paragraphStart",
+          120,
+        ),
+      );
+    }
+    return segments;
+  }
+
+  it("drops running heads and citation footnotes, deferring kept ones to the part's end", () => {
+    const parts = buildParts(
+      paper(),
+      "My Book",
+      { kind: "pages", ranges: [{ startPage: 0, endPage: 2 }] },
+      { footnotes: "classify" },
+    );
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.text).not.toContain("Sample Journal");
+    expect(parts[0]?.text).not.toContain("Kant, KrV");
+    // The prose footnote was kept -- and read after the part's body, not inline.
+    expect(parts[0]?.text).toContain("holds real prose");
+    expect(parts[0]?.text?.endsWith("at length.")).toBe(true);
+  });
+
+  it("takes the footnote policy: defer_all keeps the citation too, drop_all keeps neither", () => {
+    const deferAll = buildParts(
+      paper(),
+      "My Book",
+      { kind: "pages", ranges: [{ startPage: 0, endPage: 0 }] },
+      { footnotes: "defer_all" },
+    );
+    expect(deferAll[0]?.text).toContain("Kant, KrV");
+    expect(deferAll[0]?.text?.endsWith("at length.")).toBe(true);
+    const dropAll = buildParts(
+      paper(),
+      "My Book",
+      { kind: "pages", ranges: [{ startPage: 0, endPage: 0 }] },
+      { footnotes: "drop_all" },
+    );
+    expect(dropAll[0]?.text).not.toContain("Kant, KrV");
+    expect(dropAll[0]?.text).not.toContain("holds real prose");
+  });
+
+  it("cleans each part's text: ligatures, hyphenation, page numbers, whitespace", () => {
+    const segments = [
+      seg("A \uFB01le of a hyphen-\nated word.", 0, "paragraphStart"),
+      seg("12 Next   page.", 0),
+    ];
+    const parts = buildParts(segments, "My Paper", { kind: "whole" });
+    expect(parts).toEqual([{ title: "My Paper", text: "A file of a hyphenated word. Next page." }]);
   });
 });

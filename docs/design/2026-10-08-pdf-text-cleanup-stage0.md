@@ -86,6 +86,28 @@ the bottom quartile, a document whose segments lack rects. Nothing in
 Tasks 3–6 assumes a definitive answer: every threshold is provisional
 where the plan says so.
 
+## Live check — the rules-only read (Task 7)
+
+The harness read of `footnotes.pdf` (item 20/21), end-to-end with the
+filters on (fake-engine daemon on 8743, throwaway profile on 23129):
+
+- The running header and the page numbers appear in no enqueued section.
+- The citation-shaped footnotes are gone; the prose footnotes are read at
+  the end of the section that owns their pages, never inline mid-flow.
+- Highlights resolve correctly with the filters on: sampled every 5 s over
+  ~2 minutes, each highlighted segment's text matches what was being
+  spoken, and while the deferred footnotes were spoken (the section's last
+  sentences) the highlight sat on the footnotes' **own** original segment
+  indices (42, 43) — never a body segment's. The read rolled on into the
+  next section and no problem fired.
+
+What the harness could not cover: a full playback to the last word (the
+fake engine speaks in real time; the check sampled ~2 minutes of it) — the
+unit suite covers the rest of the section chain. Highlights on the
+two-column paper were covered by the Task 1 dump reading order finding
+and the same channel machinery; a full two-column playback remains a
+Task 14 item.
+
 ## Skill path — two-column characterisation (Task 2)
 
 Recorded outcome: **`stext`** — poppler's default mode fails the reading

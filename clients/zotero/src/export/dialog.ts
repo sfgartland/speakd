@@ -5,6 +5,7 @@
 // Pure: the dialog window (addon/content/export-dialog.xhtml) only shows
 // this module's state and feeds the user's edits back into it.
 
+import { type FootnotePolicy } from "../footnotes";
 import { estimateSeconds, formatEstimate, DEFAULT_RTF } from "./estimate";
 import { outlineToChapters, type ChapterRange } from "./outline";
 import { buildParts, isBookItemType, type PartSegment, type PartsSelection } from "./parts";
@@ -191,10 +192,11 @@ export function describeState(
   item: DialogItem,
   state: DialogState,
   rtf = DEFAULT_RTF,
+  footnotes: FootnotePolicy = "classify",
 ): DescribeResult {
   const resolved = resolveChoice({ ...state, destination: "attach" }, item);
   if (!resolved.ok) return resolved;
-  const parts = buildParts(segments, item.title, resolved.choice.selection);
+  const parts = buildParts(segments, item.title, resolved.choice.selection, { footnotes });
   const characters = parts.reduce((total, part) => total + part.text.length, 0);
   if (characters === 0) return { ok: false, error: "The selection has no text." };
   return { ok: true, estimate: formatEstimate(estimateSeconds(characters, 1, rtf)) };

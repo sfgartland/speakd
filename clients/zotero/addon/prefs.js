@@ -2,6 +2,10 @@
 // plugin's root. The pane is addon/content/preferences.xhtml.
 pref("extensions.speakd-reader.port", 8642);
 pref("extensions.speakd-reader.token", "");
+// How a read treats footnotes (src/footnotes.ts): drop the bare citations and
+// read the rest at their section's end (classify), drop every footnote, or
+// keep and defer every one.
+pref("extensions.speakd-reader.footnote_policy", "classify");
 // The audiobook export dialog's starting points (src/export/dialog.ts).
 // Formats are mp3, opus or m4b; the destination is attach or folder; an
 // empty folder means ask.

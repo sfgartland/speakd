@@ -27,6 +27,7 @@ import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import { adoptionProblem } from "./export/capture";
 import { dumpToFile, type DumpResult } from "./export/debugdump";
+import { readFootnotePolicy } from "./prefs";
 import type { Link } from "./link";
 import {
   NO_TEXT,
@@ -311,7 +312,15 @@ class Adopted implements ReaderHandle {
     this.hooked = true;
 
     const session = new ReaderSession(
-      new Channel({ client: this.takeover.options.link, sourceId: this.sourceId, label: this.title() }),
+      new Channel({
+        client: this.takeover.options.link,
+        sourceId: this.sourceId,
+        label: this.title(),
+        // The footnote policy as the preferences stand when the reader is
+        // adopted: the filters' word for what a read skips and what it keeps.
+        footnotes: readFootnotePolicy(),
+        log: (message) => this.log.log(message),
+      }),
       {
         defer: (task) => {
           Promise.resolve()

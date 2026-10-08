@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Channel, type Problem } from "../src/channel";
+import type { FootnotePolicy } from "../src/footnotes";
 import type { CallResult, SpeakdEvent } from "../src/speakd";
 
 const SOURCE = "zotero:ABC123";
@@ -89,6 +90,33 @@ function setup() {
   return { daemon, channel, highlights, problems };
 }
 
+// Six pages of a paper with a running head, a citation footnote and a prose
+// footnote on every page, as the filters see them: rect y running bottom-up
+// (footnotes low, body high).
+const PAPER = [0, 1, 2, 3, 4, 5].flatMap((n) => [
+  { text: "Sample Journal", anchor: "paragraphStart" as const, pageIndex: n, firstRectY: 770 },
+  { text: `The body of page ${n} opens.`, anchor: "paragraphStart" as const, pageIndex: n, firstRectY: 740 },
+  { text: `The body of page ${n} goes on.`, anchor: null, pageIndex: n, firstRectY: 726 },
+  { text: "1 Kant, KrV, B25.", anchor: "paragraphStart" as const, pageIndex: n, firstRectY: 140 },
+  {
+    text: `2 A footnote of page ${n} holds real prose, and it argues its case across the sentences at length.`,
+    anchor: "paragraphStart" as const,
+    pageIndex: n,
+    firstRectY: 120,
+  },
+]);
+
+function setupPaper(footnotes: FootnotePolicy = "classify") {
+  const daemon = new FakeDaemon();
+  const channel = new Channel({ client: daemon.client, sourceId: SOURCE, label: "A Paper", size: 60, footnotes });
+  daemon.channel = channel;
+  const highlights: (number | null)[] = [];
+  const problems: Problem[] = [];
+  channel.onHighlight((index) => highlights.push(index));
+  channel.onProblem((problem) => problems.push(problem));
+  return { daemon, channel, highlights, problems };
+}
+
 describe("Channel", () => {
   it("labels the channel and enqueues the first section with the pdf profile", async () => {
     const { daemon, channel } = setup();
@@ -151,19 +179,68 @@ describe("Channel", () => {
   });
 
   it("still starts with speech when the first page's every segment is dropped", async () => {
-    const { daemon, channel, highlights } = setup();
-    const tagged = [
-      { text: "1 Kant, KrV, B25.", tag: "drop" as const, pageIndex: 0 },
-      ...SEGMENTS.map((segment, index) => ({ ...segment, pageIndex: 1 + Math.floor(index / 3) })),
+    const { daemon, channel, highlights } = setupPaper();
+    // Page 0 holds only a citation footnote, dropped by the plan; the body
+    // starts on page 1.
+    const segments = [
+      { text: "1 Kant, KrV, B25.", anchor: "paragraphStart" as const, pageIndex: 0, firstRectY: 140 },
+      ...PAPER.slice(5),
     ];
-    await channel.start(tagged, 0);
-    // The dropped citation never appears; the first section is the first
-    // body page's, and speech starts with it as ever.
-    expect(daemon.enqueued()).toEqual(["Zero is first. One follows."]);
+    await channel.start(segments, 0);
+    // The dropped citation never appears; the first section is the next
+    // body page's, and speech starts with it as ever. (The footnote's bare
+    // marker digit is the page-number rule's to drop, as ever.)
+    expect(daemon.enqueued()).toEqual([
+      "The body of page 1 opens. The body of page 1 goes on. A footnote of page 1 holds real prose, " +
+        "and it argues its case across the sentences at length.",
+    ]);
     daemon.started(daemon.enqueued()[0]!);
     daemon.position(0);
-    daemon.position(1);
-    expect(highlights).toEqual([1, 2]);
+    daemon.position(2);
+    expect(highlights).toEqual([2, 5]);
+  });
+
+  it("reads without running heads and citation footnotes, prose deferred to its section's end", async () => {
+    const { daemon, channel, highlights } = setupPaper();
+    await channel.start(PAPER, 0);
+    // The prose footnote of page 0 rides at the end of the section that owns
+    // page 0, after the page's body, never inline. (Its bare marker digit is
+    // the page-number rule's to drop, as ever.)
+    expect(daemon.enqueued()).toEqual([
+      "The body of page 0 opens. The body of page 0 goes on. A footnote of page 0 holds real " +
+        "prose, and it argues its case across the sentences at length.",
+    ]);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    // Every section of the read, not just the first: the head and the
+    // citations are gone from all of them.
+    expect(daemon.enqueued().length).toBeGreaterThan(1);
+    for (const text of daemon.enqueued()) {
+      expect(text).not.toContain("Sample Journal");
+      expect(text).not.toContain("Kant, KrV");
+    }
+    // Highlights still resolve, by original document index: the deferred
+    // footnote is segment 4, never a body segment.
+    daemon.position(0);
+    daemon.position(2);
+    expect(highlights).toEqual([1, 4]);
+  });
+
+  it("changes exactly the footnotes' treatment when the policy pref flips", async () => {
+    const deferAll = setupPaper("defer_all");
+    await deferAll.channel.start(PAPER, 0);
+    const first = deferAll.daemon.enqueued()[0]!;
+    // The citation is kept now too, and read at the section's end, in order.
+    // (Its bare marker digit is the page-number rule's to drop, as ever.)
+    expect(first).toContain("Kant, KrV, B25.");
+    expect(first.endsWith("at length.")).toBe(true);
+
+    const dropAll = setupPaper("drop_all");
+    await dropAll.channel.start(PAPER, 0);
+    for (const text of dropAll.daemon.enqueued()) {
+      expect(text).not.toContain("Kant, KrV");
+      expect(text).not.toContain("holds real prose");
+    }
   });
 
   it("maps positions for a read started partway through the document", async () => {

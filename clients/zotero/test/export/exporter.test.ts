@@ -22,6 +22,7 @@ function request(choice: Partial<ExportChoice> = {}): ExportRequest {
     attachmentID: 7,
     segments: [text("x".repeat(150))],
     choice: { selection: { kind: "whole" }, format: "mp3", destination: "attach", folder: null, ...choice },
+    footnotes: "classify",
   };
 }
 

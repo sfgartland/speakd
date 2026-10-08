@@ -40,6 +40,7 @@ function setup(options: { capture: CaptureResult; choice?: ExportChoice | null; 
   const deps: ExportFlowDeps = {
     title: "A Paper",
     itemType: "journalArticle",
+    footnotes: () => "classify",
     captureHost: host,
     structure: async () => {
       if (options.structureFails) throw new Error("no outline");
@@ -104,7 +105,9 @@ describe("exportFlow", () => {
     expect(run.problems).toEqual([]);
     expect(run.dialogs).toHaveLength(1);
     expect(run.dialogs[0]).toMatchObject({ item: { itemType: "journalArticle", title: "A Paper", pageCount: 4 }, segments });
-    expect(run.requests).toEqual([{ itemID: 3, title: "A Paper", attachmentID: 7, segments, choice: CHOICE }]);
+    expect(run.requests).toEqual([
+      { itemID: 3, title: "A Paper", attachmentID: 7, segments, choice: CHOICE, footnotes: "classify" },
+    ]);
   });
 
   it("makes no request when the dialog is cancelled", async () => {
