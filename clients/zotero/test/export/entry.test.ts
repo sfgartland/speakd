@@ -64,7 +64,13 @@ function setup(options: { capture: CaptureResult; choice?: ExportChoice | null; 
   return { deps, log, problems, requests, dialogs, opened: () => opened };
 }
 
-const text = (value: string, pageIndex = 0) => ({ text: value, pageIndex, anchor: null });
+const text = (value: string, pageIndex = 0) => ({
+  text: value,
+  pageIndex,
+  anchor: null,
+  rectCount: null,
+  firstRectY: null,
+});
 
 describe("exportFlow", () => {
   it("shows the no-text problem for a capture with no text, opening no dialog and making no request", async () => {

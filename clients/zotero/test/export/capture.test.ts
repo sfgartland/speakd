@@ -6,8 +6,8 @@ import type { CaptureResult } from "../../src/session";
 const SEGMENTS: CaptureResult = {
   ok: true,
   segments: [
-    { text: "A title", pageIndex: 0, anchor: "paragraphStart" },
-    { text: "A sentence.", pageIndex: 0, anchor: null },
+    { text: "A title", pageIndex: 0, anchor: "paragraphStart", rectCount: null, firstRectY: null },
+    { text: "A sentence.", pageIndex: 0, anchor: null, rectCount: 2, firstRectY: 81.5 },
   ],
 };
 

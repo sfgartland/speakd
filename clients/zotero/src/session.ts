@@ -57,6 +57,10 @@ export interface SegmentInfo {
   readonly anchor: string | null;
   /** The page it starts on (`sourcePosition.pageIndex`), when Zotero knows. */
   readonly pageIndex?: number | null;
+  /** How many rects `sourcePosition.rects` had, or null when there were none. */
+  readonly rectCount?: number | null;
+  /** The y of the segment's first rect, or null when there were none. */
+  readonly firstRectY?: number | null;
 }
 
 /** A segment as an export takes it: the shape export/parts.ts reads. */
@@ -64,6 +68,9 @@ export interface CapturedSegment {
   readonly text: string;
   readonly pageIndex: number;
   readonly anchor: string | null;
+  /** Geometry coverage, null when the segment carried no rects (internals §3.2). */
+  readonly rectCount: number | null;
+  readonly firstRectY: number | null;
 }
 
 export type CaptureResult =
@@ -79,7 +86,13 @@ export function capturedSegments(segments: readonly SegmentInfo[]): CapturedSegm
   let page = 0;
   return segments.map((segment) => {
     if (typeof segment.pageIndex === "number") page = segment.pageIndex;
-    return { text: segment.text, pageIndex: page, anchor: segment.anchor };
+    return {
+      text: segment.text,
+      pageIndex: page,
+      anchor: segment.anchor,
+      rectCount: segment.rectCount ?? null,
+      firstRectY: segment.firstRectY ?? null,
+    };
   });
 }
 

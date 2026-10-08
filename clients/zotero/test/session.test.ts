@@ -523,6 +523,9 @@ describe("ReaderSession.capture", () => {
         // Zotero gave no page for the last: it is read where its predecessor was.
         pageIndex: index === 7 ? 2 : Math.floor(index / 3),
         anchor: segment.anchor,
+        // These segments carried no rects: null geometry, never a drop.
+        rectCount: null,
+        firstRectY: null,
       })),
     });
     expect(channel.log).toEqual([]);

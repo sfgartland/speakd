@@ -26,6 +26,7 @@
 import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import { adoptionProblem } from "./export/capture";
+import { dumpToFile, type DumpResult } from "./export/debugdump";
 import type { Link } from "./link";
 import {
   NO_TEXT,
@@ -98,6 +99,12 @@ export interface ReaderHandle {
   skip(direction: 1 | -1): void;
   /** The document's segments, through Zotero's Read Aloud, with nothing played. Never rejects. */
   capture(): Promise<CaptureResult>;
+  /**
+   * Dev-only, for the Stage 0 characterisation: the captured segments with
+   * their geometry coverage, dumped as JSONL to `path` (absolute). No
+   * shipped UI reaches it; the live-test bridge drives it. Never rejects.
+   */
+  dumpSegments(path: string): Promise<DumpResult>;
   /** Hear the handle's state change. Returns an unsubscribe. */
   onChange(listener: () => void): () => void;
 }
@@ -113,6 +120,9 @@ class Unadopted implements ReaderHandle {
   skip(): void {}
   capture(): Promise<CaptureResult> {
     return Promise.resolve(adoptionProblem(this.adoption));
+  }
+  dumpSegments(): Promise<DumpResult> {
+    return Promise.resolve({ ok: false, error: "this reader is not speakd's" });
   }
   onChange(): () => void {
     return () => {};
@@ -434,11 +444,29 @@ class Adopted implements ReaderHandle {
     const infos: SegmentInfo[] = [];
     for (let index = 0; index < list.length; index++) {
       const segment = waive(list[index]);
-      const pageIndex = waive(segment.sourcePosition)?.pageIndex;
+      const position = waive(segment.sourcePosition);
+      const pageIndex = position?.pageIndex;
+      // Rect coverage is unverified (internals §3.2: the position itself may
+      // be null), so a segment without rects is null geometry, never a throw
+      // and never a drop. The rect's own shape is read tolerantly too: a
+      // `y` member or an `[x, y, w, h]` array, whichever Zotero's PDF worker
+      // left there. Nothing may throw into Zotero's controller build.
+      const rects = waive(position?.rects);
+      const first = Array.isArray(rects) ? waive(rects[0]) : null;
+      const firstRectY =
+        first === null
+          ? null
+          : typeof first.y === "number"
+            ? first.y
+            : Array.isArray(first) && typeof first[1] === "number"
+              ? first[1]
+              : null;
       infos.push({
         text: String(segment.text ?? ""),
         anchor: typeof segment.anchor === "string" ? segment.anchor : null,
         pageIndex: typeof pageIndex === "number" ? pageIndex : null,
+        rectCount: Array.isArray(rects) ? rects.length : null,
+        firstRectY,
       });
     }
     return infos;
@@ -653,6 +681,11 @@ class Adopted implements ReaderHandle {
       this.session?.giveUp({ kind: "zotero", error: "Zotero's Read Aloud could not be started" });
       return Promise.resolve({ ok: false, problem: { kind: "zotero", error: `capturing the segments failed: ${String(error)}` } });
     }
+  }
+
+  /** The Stage 0 dev action: capture (as `capture` does), and write the dump. */
+  dumpSegments(path: string): Promise<DumpResult> {
+    return dumpToFile(() => this.capture(), path);
   }
 
   onChange(listener: () => void): () => void {

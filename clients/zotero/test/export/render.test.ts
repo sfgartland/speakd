@@ -3,7 +3,13 @@ import type { ExportChoice } from "../../src/export/dialog";
 import type { ExportRequest } from "../../src/export/entry";
 import { expectedAudioSeconds, fileStem, folderOut, renderPayload, stagingOut } from "../../src/export/render";
 
-const text = (value: string, pageIndex = 0, anchor: string | null = null) => ({ text: value, pageIndex, anchor });
+const text = (value: string, pageIndex = 0, anchor: string | null = null) => ({
+  text: value,
+  pageIndex,
+  anchor,
+  rectCount: null,
+  firstRectY: null,
+});
 
 function request(choice: Partial<ExportChoice> = {}, segments = [text("One."), text("Two.", 1)]): ExportRequest {
   return {

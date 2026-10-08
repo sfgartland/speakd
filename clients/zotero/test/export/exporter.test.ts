@@ -7,7 +7,13 @@ import type { CallResult } from "../../src/speakd";
 
 const STAGING = "/home/u/profile/speakd-exports";
 
-const text = (value: string, pageIndex = 0) => ({ text: value, pageIndex, anchor: null });
+const text = (value: string, pageIndex = 0) => ({
+  text: value,
+  pageIndex,
+  anchor: null,
+  rectCount: null,
+  firstRectY: null,
+});
 
 function request(choice: Partial<ExportChoice> = {}): ExportRequest {
   return {
