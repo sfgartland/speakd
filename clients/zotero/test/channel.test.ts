@@ -150,6 +150,22 @@ describe("Channel", () => {
     expect(ends).toHaveLength(1);
   });
 
+  it("still starts with speech when the first page's every segment is dropped", async () => {
+    const { daemon, channel, highlights } = setup();
+    const tagged = [
+      { text: "1 Kant, KrV, B25.", tag: "drop" as const, pageIndex: 0 },
+      ...SEGMENTS.map((segment, index) => ({ ...segment, pageIndex: 1 + Math.floor(index / 3) })),
+    ];
+    await channel.start(tagged, 0);
+    // The dropped citation never appears; the first section is the first
+    // body page's, and speech starts with it as ever.
+    expect(daemon.enqueued()).toEqual(["Zero is first. One follows."]);
+    daemon.started(daemon.enqueued()[0]!);
+    daemon.position(0);
+    daemon.position(1);
+    expect(highlights).toEqual([1, 2]);
+  });
+
   it("maps positions for a read started partway through the document", async () => {
     const { daemon, channel, highlights } = setup();
     await channel.start(SEGMENTS, 5);
