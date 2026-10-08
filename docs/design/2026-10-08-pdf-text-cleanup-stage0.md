@@ -138,8 +138,20 @@ stext path lands, the characterisation is re-pinned to the `pdftotext`
 whole truth.
 
 Making this test always-run needs a dependency decision from the owner
-(PyMuPDF in the project venv); until then it `importorskip`s `fitz` and
-the recorded outcome above is the decision record.
+(PyMuPDF in the project venv); until then the fixture-based tests
+`importorskip` `fitz` (only those -- the stext/fallback/flag tests run
+always), and the recorded outcome above is the decision record.
+
+**Task 8's outcome, per this branch:** the stext extractor landed
+(`mutool draw -F stext`, tolerant `pdftotext` fallback with marker-only
+footnote deferral), `--footnotes classify|drop|defer` and `--ocr-report`
+with it. The characterisation test above is re-pinned to the fallback
+path, where poppler's interleaved order is still the whole truth; the
+stext-path test reads the same fixture in correct column order with the
+cross-column sentence intact. The `--ocr-report` gate (6.0) is
+provisional and conservative, conditional on a real scan fixture; the
+bottom band (25% of the page height, from stext's own geometry) mirrors
+the plugin's provisional constant.
 
 ## Thresholds after Stage 0
 

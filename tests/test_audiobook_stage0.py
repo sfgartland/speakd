@@ -15,15 +15,12 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 from test_audiobook_prepare import prep
-
-fitz: Any = pytest.importorskip(
-    "fitz", reason="generates the two-column fixture; PyMuPDF is optional"
-)
 
 WORDS = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split()
 # The sentence planted to cross page 1's column break: any reading-order fix
@@ -45,7 +42,7 @@ def _lines(paragraph: int, n: int) -> list[str]:
     return out
 
 
-def make_two_column_pdf(path: Path) -> None:
+def make_two_column_pdf(fitz: Any, path: Path) -> None:
     """The layout a two-column academic paper has: two equal columns, a
     running header, a page number per page, and one sentence planted to start
     at the bottom of page 1's left column and end at the top of its right."""
@@ -71,8 +68,15 @@ def make_two_column_pdf(path: Path) -> None:
 
 @pytest.fixture(scope="module")
 def two_column_pdf(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The two-column fixture, generated with PyMuPDF: not a project
+    dependency, so without it the real-PDF tests skip -- the recorded outcome
+    in the Stage 0 notes is the decision record, and making them always-run
+    needs a dependency decision from the owner."""
+    fitz: Any = pytest.importorskip(
+        "fitz", reason="generates the two-column fixture; PyMuPDF is optional"
+    )
     pdf = tmp_path_factory.mktemp("stage0") / "twocolumn.pdf"
-    make_two_column_pdf(pdf)
+    make_two_column_pdf(fitz, pdf)
     return pdf
 
 
@@ -114,14 +118,16 @@ def test_pdftotext_splits_the_cross_column_sentence(two_column_pdf: Path) -> Non
 
 
 @pytest.mark.skipif(shutil.which("pdftotext") is None, reason="needs poppler tools")
-def test_prepare_pdf_today_inherits_popplers_interleaved_order(two_column_pdf: Path) -> None:
-    """Characterisation of today's pipeline: prepare_pdf has no column logic
-    of its own, so its part carries poppler's interleaved order -- the cross
-    sentence's halves separated by most of the paper, its second half read
-    before its first. Superseded when Stage 0's recorded branch (the stext
-    extractor) lands, at which point this is re-pinned to the `pdftotext`
-    fallback path it characterises. The running header and page numbers are
-    still gone, which is the existing heuristics' doing, not column logic."""
+def test_prepare_pdf_fallback_inherits_popplers_interleaved_order(
+    two_column_pdf: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Characterisation of the `pdftotext` fallback (the stext extractor has
+    landed, per Stage 0's recorded branch): mutool absent, the pipeline is
+    poppler's own order -- line-band interleaving, the cross sentence's
+    halves separated by most of the paper, its second half read before its
+    first. A characterisation, not an endorsement: it records which order
+    poppler's default mode produces, and the degraded fallback inherits it."""
+    monkeypatch.setattr(prep, "_stext_pages_or_none", lambda pdf, pages, footnotes: None)
     parts = prep.prepare_pdf(two_column_pdf, None, "none", True)
     text = "\n".join(parts)
     assert HEADER not in text
@@ -129,3 +135,275 @@ def test_prepare_pdf_today_inherits_popplers_interleaved_order(two_column_pdf: P
     second = text.index(CROSS_SECOND)
     assert second < first
     assert first - second > 4000
+
+
+@pytest.mark.skipif(
+    shutil.which("mutool") is None or shutil.which("pdftotext") is None,
+    reason="needs poppler and mupdf tools",
+)
+def test_prepare_pdf_reads_two_columns_in_order(two_column_pdf: Path) -> None:
+    """The stext extractor's payoff (Stage 0's recorded branch): the columns
+    read in order, and the sentence planted across the column break comes
+    out intact and adjacent -- what poppler's default mode cannot do."""
+    parts = prep.prepare_pdf(two_column_pdf, None, "none", True)
+    text = "\n".join(parts)
+    assert HEADER not in text
+    first = text.index(CROSS_FIRST)
+    second = text.index(CROSS_SECOND)
+    # The left column's last line straight into the right column's first.
+    assert second > first
+    assert second - first <= len(CROSS_FIRST) + 2
+    # Left column in full before the right one begins.
+    assert text.index("P0 L0") < text.index("P14 L2") < text.index("P15 L1")
+
+
+# ---- Task 8: the stext extractor, the fallback, the flags ----
+
+
+def stext_line(text: str, x0: float, top: float, x1: float, size: float) -> str:
+    """One line's worth of stext: a block, a line carrying its text, a font."""
+    bottom = top + size
+    return (
+        f'<block bbox="{x0} {top} {x1} {bottom}">'
+        f'<line bbox="{x0} {top} {x1} {bottom}" text="{text}">'
+        f'<font name="Test" size="{size}"/></line></block>'
+    )
+
+
+def stext_doc(pages: list[str]) -> str:
+    return '<?xml version="1.0"?><document>' + "".join(pages) + "</document>"
+
+
+def stext_page(lines: list[str]) -> str:
+    return '<page width="595" height="842">' + "".join(lines) + "</page>"
+
+
+def paper_pages() -> list[str]:
+    """Six pages: a recurring top-band head, a body paragraph, two footnotes."""
+    return [
+        stext_page(
+            [
+                stext_line("Sample Journal", 72, 24, 176, 9),
+                stext_line(f"The body of page {n} opens.", 72, 62, 400, 11),
+                stext_line("1 Kant, KrV, B25.", 72, 700, 300, 8),
+                stext_line(
+                    f"2 A footnote of page {'abcdef'[n]} with prose that runs on and on "
+                    "well past any bare citation, and it argues at length.",
+                    72,
+                    715,
+                    500,
+                    8,
+                ),
+            ]
+        )
+        for n in range(6)
+    ]
+
+
+def test_stext_orders_columns_before_rows() -> None:
+    """Column by column, each top to bottom: the reading order poppler cannot do."""
+    doc = stext_doc(
+        [
+            stext_page(
+                [
+                    stext_line("Left one.", 54, 60, 250, 11),
+                    stext_line("Right one.", 311, 60, 507, 11),
+                    stext_line("Left two.", 54, 76, 250, 11),
+                    stext_line("Right two.", 311, 76, 507, 11),
+                ]
+            )
+        ]
+    )
+    bodies, notes = prep.stext_body_pages(doc, "classify")
+    assert bodies == [["Left one.", "Left two.", "", "Right one.", "Right two."]]
+    assert notes == [[]]
+
+
+def test_stext_drops_recurring_top_band_heads() -> None:
+    bodies, _ = prep.stext_body_pages(stext_doc(paper_pages()), "classify")
+    assert all("Sample Journal" not in lines for lines in bodies)
+    # Under five pages nothing is a running head, as ever.
+    four, _ = prep.stext_body_pages(stext_doc(paper_pages()[:4]), "classify")
+    assert four[0][0] == "Sample Journal"
+
+
+def test_stext_footnotes_by_policy() -> None:
+    doc = stext_doc(paper_pages())
+    bodies, notes = prep.stext_body_pages(doc, "classify")
+    assert bodies[0] == ["The body of page 0 opens."]
+    # The citation is dropped on shape; the prose is kept, for the page's end.
+    assert notes[0] == [
+        [
+            "2 A footnote of page a with prose that runs on and on well past "
+            "any bare citation, and it argues at length."
+        ]
+    ]
+    defer = prep.stext_body_pages(doc, "defer")
+    assert defer[1][0][0] == ["1 Kant, KrV, B25."]
+    drop = prep.stext_body_pages(doc, "drop")
+    assert drop[1] == [[] for _ in paper_pages()]
+
+
+def test_stext_detects_footnotes_by_size_or_band() -> None:
+    # A small-print marker-led line mid-page is a footnote without the band:
+    # the body's flow runs past it, so the band is nowhere near.
+    mid_small = stext_page(
+        [
+            stext_line("The body opens.", 72, 62, 400, 11),
+            stext_line("The body goes on early.", 72, 96, 400, 11),
+            stext_line("1 A small-print note set mid-page.", 72, 300, 400, 8),
+        ]
+    )
+    bodies, notes = prep.stext_body_pages(stext_doc([mid_small]), "defer")
+    assert bodies[0] == ["The body opens.", "The body goes on early."]
+    assert notes[0] == [["1 A small-print note set mid-page."]]
+    # A body-size marker-led line in the bottom band is a footnote without the size.
+    band = stext_page(
+        [
+            stext_line("The body opens.", 72, 62, 400, 11),
+            stext_line("More body sits here.", 72, 96, 400, 11),
+            stext_line("1 A note in the bottom band, body size.", 72, 700, 400, 11),
+        ]
+    )
+    bodies, notes = prep.stext_body_pages(stext_doc([band]), "defer")
+    assert bodies[0] == ["The body opens.", "More body sits here."]
+    assert notes[0] == [["1 A note in the bottom band, body size."]]
+    # A marker-led body line mid-page, body size, is body still.
+    body = stext_page(
+        [
+            stext_line("12 of them were counted mid-page.", 72, 300, 400, 11),
+            stext_line("The body goes on.", 72, 330, 400, 11),
+        ]
+    )
+    bodies, notes = prep.stext_body_pages(stext_doc([body]), "defer")
+    assert bodies[0] == ["12 of them were counted mid-page.", "The body goes on."]
+    assert notes == [[]]
+
+
+# ---- the pdftotext fallback: marker deferral over page-text fixtures ----
+
+
+def test_marker_tail_notes_split_and_policy() -> None:
+    lines = [
+        "Body one.",
+        "Body two.",
+        "",
+        "1 Kant, KrV, B25.",
+        "2 A prose footnote arguing at length across the closing sentences here.",
+    ]
+    bodies, notes = prep.marker_footnote_pages([lines], "classify")
+    assert bodies == [["Body one.", "Body two.", ""]]
+    assert notes == [[["2 A prose footnote arguing at length across the closing sentences here."]]]
+    defer = prep.marker_footnote_pages([lines], "defer")
+    assert defer[1][0][0] == ["1 Kant, KrV, B25."]
+    assert defer[1][0][1] == [
+        "2 A prose footnote arguing at length across the closing sentences here."
+    ]
+    assert prep.marker_footnote_pages([lines], "drop")[1] == [[]]
+
+
+def test_marker_tail_notes_need_the_tail() -> None:
+    # A marker-led line mid-page is body; a year-led tail line is body too.
+    lines = ["1 A first line that opens with a count.", "1994 was the year the reading began."]
+    bodies, notes = prep.marker_footnote_pages([lines], "defer")
+    assert bodies == [lines]
+    assert notes == [[]]
+
+
+def test_prepare_pdf_falls_back_degraded_when_mutool_is_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pages = [
+        [
+            "Sample Journal",
+            "Body one.",
+            "",
+            "1 Kant, KrV, B25.",
+            "2 A prose footnote that argues its case at length across the page.",
+        ]
+        for _ in range(2)
+    ]
+
+    def fake(command: list[str]) -> str:
+        if command[0] == "mutool":
+            raise prep.ToolMissing("mutool not found")
+        return "".join("\n".join(page) + "\f" for page in pages)
+
+    monkeypatch.setattr(prep, "_run", fake)
+    parts = prep.prepare_pdf(Path("x.pdf"), None, "none", True)
+    assert "degraded" in capsys.readouterr().err
+    text = "\n".join(parts)
+    assert "Kant, KrV, B25." not in text
+    assert "2 A prose footnote that argues its case at length across the page." in text
+    assert text.index("prose footnote") > text.index("Body one.")
+
+
+def test_cli_footnotes_flag_and_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    pages = [
+        [
+            "Body one.",
+            "",
+            "1 Kant, KrV, B25.",
+            "2 A prose footnote that argues its case at length across the page.",
+        ]
+    ]
+
+    def fake(command: list[str]) -> str:
+        if command[0] == "mutool":
+            raise prep.ToolMissing("mutool not found")
+        return "".join("\n".join(page) + "\f" for page in pages)
+
+    monkeypatch.setattr(prep, "_run", fake)
+    out = tmp_path / "out.txt"
+    for policy, keeps_citation in (("classify", False), ("defer", True), ("drop", False)):
+        monkeypatch.setattr(
+            sys, "argv", ["prepare_text.py", "x.pdf", "--out", str(out), "--footnotes", policy]
+        )
+        assert prep.main() == 0
+        text = out.read_text(encoding="utf-8")
+        assert ("Kant, KrV, B25." in text) is keeps_citation
+        # The prose footnote stays under classify and defer; under drop it goes.
+        assert ("2 A prose footnote that argues its case at length across the page." in text) is (
+            policy != "drop"
+        )
+    # The default is classify: the citation goes, the prose stays.
+    monkeypatch.setattr(sys, "argv", ["prepare_text.py", "x.pdf", "--out", str(out)])
+    assert prep.main() == 0
+    text = out.read_text(encoding="utf-8")
+    assert "Kant, KrV, B25." not in text
+    assert "2 A prose footnote that argues its case at length across the page." in text
+
+
+def test_ocr_report_fires_on_mangled_text_and_not_on_clean(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    mangled = [
+        ["Tbe mo\u00adde rn scan says 1 994 and 2 001 and 3 30 was \u00b7 tbe year \u00ac of tbe."]
+    ]
+    clean = [["The modern scan says that 1994 was the year of the edition, and it holds."]]
+
+    def fake(pages: list[list[str]]) -> Any:
+        def run(command: list[str]) -> str:
+            if command[0] == "mutool":
+                raise prep.ToolMissing("mutool not found")
+            return "".join("\n".join(page) + "\f" for page in pages)
+
+        return run
+
+    out = tmp_path / "out.txt"
+    for pages, fires in ((mangled, True), (clean, False)):
+        monkeypatch.setattr(prep, "_run", fake(pages))
+        monkeypatch.setattr(
+            sys, "argv", ["prepare_text.py", "x.pdf", "--out", str(out), "--ocr-report"]
+        )
+        assert prep.main() == 0
+        err = capsys.readouterr().err
+        assert ("OCR artefacts likely" in err) is fires
+        if fires:
+            assert "spot-check" in err

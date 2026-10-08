@@ -3,22 +3,48 @@
 
 Output is the format `speakctl render` reads: parts separated by form feeds,
 a part whose first non-blank line is `# <title>` becomes a named chapter.
-Only layout is cleaned (running headers, page numbers, line wrapping,
-references); abbreviations, ranges and ellipses are left to the daemon's
-speech pipeline. Stdlib only, so it runs wherever the agent does; PDF
-extraction shells out to poppler (`pdftotext`) and mupdf (`mutool`).
+Layout is cleaned structurally (two-column reading order, running headers,
+page numbers, footnotes per policy, references); abbreviations, ranges and
+ellipses are left to the daemon's speech pipeline, and anything semantic is
+left to the agent following SKILL.md. Stdlib only, so it runs wherever the
+agent does; PDF extraction shells out to mupdf (`mutool draw -F stext`, for
+geometry and font sizes, falling back to poppler's `pdftotext`, degraded).
 """
 
 import argparse
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ElementTree
 from collections import Counter
+from itertools import pairwise
 from pathlib import Path
+from typing import NamedTuple
 
 CHARS_PER_SECOND = 15
 HEADER_SHARE = 0.4
 HEADER_MIN_PAGES = 5
+# The footnote and OCR taxonomy is mirrored from the Zotero plugin's
+# footnotes.ts and cleanup.ts (docs/design/2026-10-08-pdf-text-cleanup-
+# proposal-glm.md §4.2): shared design and corpus, not shared code.
+FOOTNOTE_POLICIES = ("classify", "drop", "defer")
+SHORT_FOOTNOTE = 48
+LONG_FOOTNOTE = 140
+FOOTNOTE_MARKER = re.compile(r"^(?:[¹²³⁰-⁹]{1,3}|\d{1,2}[.:\s]|n\d{1,2}|\*+|[†‡¶])")
+CITATION_OPENER = re.compile(
+    r"\bIbid\.?\b|\bCf\.?\b|\bop\. cit\.|\bSee\b|\b[A-ZÖÄÜ][^\W\d_]+[,]?\s+\d{4}\b"
+)
+# The provisional bottom band mirrors the plugin's (Stage 0's notes): its
+# final value is conditional on the owner's failing sample. The OCR gate
+# ships conservative for the same reason -- a real scan fixture has not
+# arrived; both are one constant away from tuning.
+BOTTOM_BAND = 0.25
+SMALL_SIZE = 0.85
+PARAGRAPH_GAP = 1.5
+OCR_SUSPICION_GATE = 6.0
+SCAN_JUNK = re.compile("[\ufb00-\ufb04\x00-\x08\x0e-\x1f\x7f\xad\xac\xb7\u200b-\u200d\u2060\ufeff]")
+SPLIT_DIGITS = re.compile(r"(?<=\d)\s+(?=\d)")
+LETTERS = re.compile(r"[^\W\d_]+")
 REFERENCES = re.compile(r"^(References|Bibliography|Works Cited|Literatur(verzeichnis)?)$", re.I)
 # Roman numerals i..lxxxix, covering xl-xlix: front-matter page numbers. A bare character class
 # would also eat body lines such as "mix", "did" or "civil".
@@ -65,6 +91,229 @@ def strip_pages(pages: list[list[str]]) -> list[list[str]]:
         [line for line in page if not is_page_number(line) and _normalise(line) not in running]
         for page in pages
     ]
+
+
+def footnote_kind(text: str) -> str:
+    """One footnote's shape: drop (a bare citation), defer (clear prose), or
+    classify (the in-between, which the policy resolves to kept)."""
+    trimmed = text.strip()
+    dense = "".join(trimmed.split())
+    dominated = bool(dense) and sum(1 for c in dense if not c.isalpha()) / len(dense) >= 0.5
+    if len(trimmed) <= SHORT_FOOTNOTE or CITATION_OPENER.search(trimmed) or dominated:
+        return "drop"
+    sentences = len(re.findall(r"[.!?](?=\s|$)", trimmed))
+    if len(trimmed) >= LONG_FOOTNOTE and sentences >= 2:
+        return "defer"
+    return "classify"
+
+
+def _policy_units(units: list[list[str]], footnotes: str) -> list[list[str]]:
+    """The footnote units the policy keeps, each its own paragraph later.
+
+    `drop` keeps none; `defer` keeps all; `classify` drops the citation-shaped
+    and keeps the rest -- the agent following SKILL.md is the classifier of
+    last resort, so an undecided footnote is kept, never dropped.
+    """
+    if footnotes == "drop":
+        return []
+    return [
+        unit for unit in units if footnotes == "defer" or footnote_kind(" ".join(unit)) != "drop"
+    ]
+
+
+def ocr_suspicion(text: str) -> float:
+    """How much a text looks like a scan's OCR layer (the plugin's cleanup.ts,
+    mirrored): stray marks, digit runs broken by one space, and one- and
+    two-letter tokens. Counts, never rewrites; the gate is provisional."""
+    score = len(SCAN_JUNK.findall(text)) + 2 * len(SPLIT_DIGITS.findall(text))
+    tokens = LETTERS.findall(text)
+    short = sum(1 for token in tokens if len(token) <= 2)
+    return score + (4 * short / len(tokens) if tokens else 0.0)
+
+
+# ---- the stext path: mutool's structured text, geometry and font sizes ----
+
+
+class StextLine(NamedTuple):
+    text: str
+    x0: float
+    x1: float
+    top: float
+    size: float
+
+
+class StextPage(NamedTuple):
+    height: float
+    lines: list[StextLine]
+
+
+def parse_stext(xml: str) -> list[StextPage]:
+    """mutool stext as pages of lines: text, x-range, top, font size.
+
+    stext's y runs top-down (0 at the page top), so the bottom band of a
+    page is *high* y -- the mirror image of the plugin's bottom-up rect y.
+    """
+    pages = []
+    for page in ElementTree.fromstring(xml).iter("page"):
+        height = float(page.get("height") or 0)
+        lines = []
+        for line in page.iter("line"):
+            bbox = (line.get("bbox") or "").split()
+            text = line.get("text") or ""
+            if len(bbox) < 4 or not text.strip():
+                continue
+            font = line.find("font")
+            size = float(font.get("size") or 0) if font is not None else 0.0
+            lines.append(StextLine(text, float(bbox[0]), float(bbox[2]), float(bbox[1]), size))
+        pages.append(StextPage(height, lines))
+    return pages
+
+
+def _order_columns(lines: list[StextLine]) -> list[list[StextLine]]:
+    """The page's lines grouped by x-overlap into columns, left to right, each
+    column read fully top to bottom before the next (proposal §4.3)."""
+    columns: list[list[StextLine]] = []
+    spans: list[list[float]] = []
+    for line in sorted(lines, key=lambda item: (item.x0, item.top)):
+        for column, span in zip(columns, spans, strict=True):
+            if line.x0 < span[1] and line.x1 > span[0]:
+                column.append(line)
+                span[0] = min(span[0], line.x0)
+                span[1] = max(span[1], line.x1)
+                break
+        else:
+            columns.append([line])
+            spans.append([line.x0, line.x1])
+    return [sorted(column, key=lambda item: item.top) for column in columns]
+
+
+def _running_head_texts(pages: list[StextPage]) -> set[str]:
+    """Normalised texts recurring as the first line of a column, or as a page's
+    bottom content line, on enough pages (`running_lines` semantics, counted
+    per column): running heads and footers, dropped wherever they appear. A
+    body line that opens a page once is never a candidate. The grouping runs
+    on the raw lines, so a full-width head merges the columns and is still the
+    first line of the column it swallowed -- found, dropped, and the columns
+    regrouped without it."""
+    if len(pages) < HEADER_MIN_PAGES:
+        return set()
+    counts: Counter[str] = Counter()
+    for page in pages:
+        candidates = {_normalise(column[0].text) for column in _order_columns(page.lines) if column}
+        content = [
+            line for line in page.lines if line.text.strip() and not is_page_number(line.text)
+        ]
+        if content:
+            bottom = max(content, key=lambda line: line.top)
+            candidates.add(_normalise(bottom.text))
+        counts.update(candidates)
+    return {text for text, seen in counts.items() if seen >= HEADER_SHARE * len(pages)}
+
+
+def _split_footnotes(
+    lines: list[StextLine], height: float
+) -> tuple[list[StextLine], list[list[str]]]:
+    """A column's lines split into body and footnote units: a marker-led line
+    in small print or in the page's bottom band opens a footnote, and the
+    wrapped lines after it continue it. The band is the bottom quarter of the
+    page's height; conservative otherwise: a marker-led line of body size
+    mid-page is body still."""
+    if not lines:
+        return [], []
+    if height > 0:
+        band_from = height * (1 - BOTTOM_BAND)
+    else:
+        tops = [line.top for line in lines]
+        band_from = min(tops) + (max(tops) - min(tops)) * (1 - BOTTOM_BAND)
+    sizes: Counter[float] = Counter()
+    for line in lines:
+        if line.size > 0:
+            sizes[line.size] += len(line.text)
+    dominant = max(sizes, key=sizes.get) if sizes else 0.0
+
+    body: list[StextLine] = []
+    units: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines:
+        small = line.size > 0 and line.size < SMALL_SIZE * dominant
+        in_band = line.top >= band_from
+        if FOOTNOTE_MARKER.match(line.text.lstrip()) and (small or in_band):
+            if current is not None:
+                units.append(current)
+            current = [line.text]
+        elif current is not None and (small or in_band):
+            current.append(line.text)
+        else:
+            if current is not None:
+                units.append(current)
+                current = None
+            body.append(line)
+    if current is not None:
+        units.append(current)
+    return body, units
+
+
+def _paragraph_lines(columns: list[list[StextLine]]) -> list[str]:
+    """The columns' lines as paragraph lines: a blank line at every paragraph
+    break -- a gap past one and a half times the column's median line gap, and
+    every column boundary, since a new column is always a new paragraph."""
+    out: list[str] = []
+    for number, column in enumerate(columns):
+        if number > 0 and out and out[-1] != "":
+            out.append("")  # a new column is always a new paragraph
+        gaps = [below.top - above.top for above, below in pairwise(column)]
+        median = sorted(gaps)[len(gaps) // 2] if gaps else 0.0
+        for index, line in enumerate(column):
+            if index > 0 and gaps[index - 1] > max(median * PARAGRAPH_GAP, median + 2):
+                out.append("")
+            out.append(line.text)
+    return out
+
+
+def stext_body_pages(xml: str, footnotes: str) -> tuple[list[list[str]], list[list[list[str]]]]:
+    """stext XML as (body pages of lines, kept footnote units per page), in
+    reading order: columns first, then the recurring top-band heads out, then
+    the footnotes held aside per the policy for their page's end."""
+    pages = parse_stext(xml)
+    heads = _running_head_texts(pages)
+    bodies: list[list[str]] = []
+    notes: list[list[list[str]]] = []
+    for page in pages:
+        # The heads and the bare page numbers go here, in one pass: strip_pages
+        # itself is not run afterwards, because its first-content-line counting
+        # would promote whatever survived to "first" and cascade.
+        kept = [
+            line
+            for line in page.lines
+            if not is_page_number(line.text) and _normalise(line.text) not in heads
+        ]
+        body_columns: list[list[StextLine]] = []
+        units: list[list[str]] = []
+        for column in _order_columns(kept):
+            body, column_units = _split_footnotes(column, page.height)
+            body_columns.append(body)
+            units.extend(column_units)
+        bodies.append(_paragraph_lines(body_columns))
+        notes.append(_policy_units(units, footnotes))
+    return bodies, notes
+
+
+def marker_footnote_pages(
+    pages: list[list[str]], footnotes: str
+) -> tuple[list[list[str]], list[list[list[str]]]]:
+    """The pdftotext fallback: no geometry, so marker-only, and only at a page's
+    tail -- its consecutive marker-led lines are footnote units, each its own;
+    a wrapped continuation without a marker is body, kept rather than guessed."""
+    bodies: list[list[str]] = []
+    notes: list[list[list[str]]] = []
+    for lines in pages:
+        cut = len(lines)
+        while cut > 0 and FOOTNOTE_MARKER.match(lines[cut - 1].lstrip()):
+            cut -= 1
+        tail = [line for line in lines[cut:] if line.strip()]
+        bodies.append(lines[:cut])
+        notes.append(_policy_units([[line] for line in tail], footnotes))
+    return bodies, notes
 
 
 def join_paragraphs(lines: list[str]) -> str:
@@ -156,21 +405,56 @@ def _outline(pdf: Path) -> list[tuple[str, int]]:
         return []  # no outline just means one part
 
 
+def _stext_pages_or_none(
+    pdf: Path, pages: tuple[int, int] | None, footnotes: str
+) -> tuple[list[list[str]], list[list[list[str]]]] | None:
+    """The PDF's pages through mutool's stext, or None when that cannot be had:
+    mutool missing, its call failing, or its answer not XML -- the pdftotext
+    path takes over, degraded, one line saying so (never fatal)."""
+    command = ["mutool", "draw", "-F", "stext", "-o", "-", str(pdf)]
+    if pages:
+        command.append(f"{pages[0]}-{pages[1]}")
+    try:
+        return stext_body_pages(_run(command), footnotes)
+    except (ToolMissing, SystemExit):
+        print(
+            "columns and footnotes degraded: mutool (mupdf) is not installed or failed",
+            file=sys.stderr,
+        )
+    except ElementTree.ParseError:
+        print("columns and footnotes degraded: mutool's stext was not XML", file=sys.stderr)
+    return None
+
+
 def prepare_pdf(
     pdf: Path,
     pages: tuple[int, int] | None,
     chapters: str,
     keep_references: bool,
     keep_front_matter: bool = False,
+    footnotes: str = "classify",
 ) -> list[str]:
-    command = ["pdftotext"]
-    if pages:
-        command += ["-f", str(pages[0]), "-l", str(pages[1])]
-    texts = _run([*command, str(pdf), "-"]).split("\f")
-    if texts and not texts[-1].strip():
-        texts.pop()  # pdftotext ends every page, the last included, with a form feed
+    extracted = _stext_pages_or_none(pdf, pages, footnotes)
+    if extracted is None:
+        command = ["pdftotext"]
+        if pages:
+            command += ["-f", str(pages[0]), "-l", str(pages[1])]
+        texts = _run([*command, str(pdf), "-"]).split("\f")
+        if texts and not texts[-1].strip():
+            texts.pop()  # pdftotext ends every page, the last included, with a form feed
+        split = [text.splitlines() for text in texts]
+        body_pages, note_units = marker_footnote_pages(split, footnotes)
+        # No geometry here, so the existing heuristics keep their work: running
+        # lines and bare page numbers over the body, the footnotes held aside
+        # meanwhile, so a recurring footnote is never mistaken for a footer.
+        body_pages = strip_pages(body_pages)
+    else:
+        body_pages, note_units = extracted
     first = pages[0] if pages else 1
-    cleaned = strip_pages([text.splitlines() for text in texts])
+    page_lines = [
+        body + [line for unit in units for line in ("", *unit)]
+        for body, units in zip(body_pages, note_units, strict=True)
+    ]
 
     # Each group is (title, its pages' lines). Pages before the first outline
     # entry are front matter (title page, contents) and are dropped unless
@@ -179,19 +463,19 @@ def prepare_pdf(
     outline = _outline(pdf) if chapters == "auto" else []
     if outline:
         starts = [page for _, page in outline]
-        last_page = first + len(cleaned) - 1
+        last_page = first + len(page_lines) - 1
         bounds = [*starts[1:], last_page + 1]
         if keep_front_matter and starts[0] > first:
-            groups.append((None, [ln for p in cleaned[: starts[0] - first] for ln in p]))
+            groups.append((None, [ln for p in page_lines[: starts[0] - first] for ln in p]))
         for (title, start), end in zip(outline, bounds, strict=True):
             # A chapter that overlaps the range keeps its in-range pages;
             # only chapters wholly outside it are dropped.
             if start > last_page or end <= first:
                 continue
-            chosen = cleaned[max(start, first) - first : min(end, last_page + 1) - first]
+            chosen = page_lines[max(start, first) - first : min(end, last_page + 1) - first]
             groups.append((title, [line for page in chosen for line in page]))
     else:
-        groups.append((None, [line for page in cleaned for line in page]))
+        groups.append((None, [line for page in page_lines for line in page]))
 
     if not keep_references and groups:
         # A whole trailing chapter called "References" goes; otherwise the
@@ -231,18 +515,45 @@ def main() -> int:
         action="store_true",
         help="keep pages before the first outline entry as an untitled leading part",
     )
+    parser.add_argument(
+        "--footnotes",
+        choices=list(FOOTNOTE_POLICIES),
+        default="classify",
+        help=(
+            "how footnotes are treated: classify drops the citation-shaped and reads"
+            " the rest at their page's end (default), defer keeps all at page end,"
+            " drop removes all"
+        ),
+    )
+    parser.add_argument(
+        "--ocr-report",
+        action="store_true",
+        help="say on stderr when the text looks like an OCR layer worth a spot-check pass",
+    )
     args = parser.parse_args()
 
     if args.source.suffix.lower() == ".pdf":
         pages = parse_pages(args.pages) if args.pages else None
         parts = prepare_pdf(
-            args.source, pages, args.chapters, args.keep_references, args.keep_front_matter
+            args.source,
+            pages,
+            args.chapters,
+            args.keep_references,
+            args.keep_front_matter,
+            args.footnotes,
         )
     else:
         parts = prepare_text_file(args.source, args.keep_references)
     if not parts:
         print("no text found (a scanned PDF needs OCR first)", file=sys.stderr)
         return 1
+    if args.ocr_report:
+        suspicion = ocr_suspicion("\n".join(parts))
+        if suspicion > OCR_SUSPICION_GATE:
+            print(
+                f"OCR artefacts likely (suspicion {suspicion:.1f}); worth a spot-check pass",
+                file=sys.stderr,
+            )
     args.out.write_text("\n\f\n".join(parts) + "\n", encoding="utf-8")
     print(summary(parts), file=sys.stderr)
     return 0
