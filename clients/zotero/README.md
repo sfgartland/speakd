@@ -47,6 +47,41 @@ other channel.
 The bar shows what speakd reports, never a guess: **reading**, **another
 channel is speaking**, **speakd is not running**, or **wrong token**.
 
+## Text cleanup and footnotes
+
+Before a section is spoken (or a part exported), the PDF's captured text is
+cleaned deterministically: recurring running heads are dropped, hyphenation
+and line breaks are joined, ligatures and stray scan marks are fixed, and
+page numbers are removed. Footnotes are detected by geometry — a marker-led
+paragraph that starts in the bottom band of its page, with its wrapped
+continuations — and treated by the **Footnote policy** setting:
+
+- `classify` (default): bare citations (author–year, "Ibid.", "Cf.", "See",
+  mostly digits and punctuation) are dropped; everything a shape rule cannot
+  judge is kept and read at the end of the section that owns its page, never
+  inline mid-flow.
+- `drop_all`: every footnote is dropped.
+- `defer_all`: every footnote is kept, read at its section's end.
+
+The policy is `extensions.speakd-reader.footnote_policy`, set in the plugin's
+preferences pane (**Edit → Settings → speakd reader**). Under `drop_all` and
+`defer_all` no classifier runs at all.
+
+### Optional language model (off by default)
+
+A language model can repair small OCR errors and classify the borderline
+footnotes the shape rules cannot. It is **off until an endpoint and a model
+are configured** in the preferences pane. Section 1 never calls it, so the
+first sound is unaffected, and no live read ever waits on it — footnote
+classification is asked for one section ahead in the background, and a miss
+keeps the footnote immediately. Every repair is diff-verified against a 2 %
+edit budget, so a model that rewrote rather than repaired loses its answer;
+any failure leaves the deterministic text standing. **When enabled, this
+sends the paper's text to that endpoint.**
+
+Settings in the pane: `llm_enabled` (default false), `llm_endpoint`,
+`llm_key` (masked), `llm_model`.
+
 ## Audio export
 
 **On one PDF attachment**, or a regular item (article, book) with exactly one
@@ -85,9 +120,12 @@ rendering.
 - `export_skip_references` — skip the item's references section when exporting
   the whole document (default: true); chapter and page exports read what you chose
 
-There is no export settings pane yet; edit these prefs through Zotero's Config
-Editor (**Tools → Preferences → Advanced → Config Editor**) or by hand in
-`prefs.js` in your Zotero profile directory.
+There is no pane for the *export format/destination* settings yet; edit
+`export_format_*`, `export_destination`, `export_folder` and
+`export_skip_references` through Zotero's Config Editor
+(**Tools → Preferences → Advanced → Config Editor**) or by hand in
+`prefs.js` in your Zotero profile directory. The footnote policy and the
+optional language model are in the plugin's preferences pane.
 
 ## Limits
 
@@ -104,15 +142,29 @@ Editor (**Tools → Preferences → Advanced → Config Editor**) or by hand in
   player loops a 100 Hz tone at about −64 dBFS. It's inaudible, but it isn't
   digital silence.
 - **PDFs only.** EPUB and snapshot reading are not handled yet.
+- **Footnote geometry needs rects.** Footnote detection sits a marker-led
+  paragraph in the bottom band of its page using the segment's first rect. A
+  PDF whose segments carry no rects (or a page with none) falls back to
+  marker-only detection: a run of sequentially numbered marker-led
+  paragraphs at a page tail. That can miss footnotes whose markers are not
+  sequential and can keep a marker-led body line; keeping a wrong footnote
+  is preferred to dropping a right paragraph.
+- **Cleanup never reorders characters.** Dropped and deferred footnotes are
+  whole segments, so highlights stay exact; a deferred footnote still
+  highlights its own place in the PDF.
 
 ## Per-release checklist
 
 Before raising `strict_max_version`, run against the new Zotero:
 
 - a single-column article, a two-column paper, and a footnote-heavy
-  philosophy paper
+  philosophy paper — the two-column paper exercises Zotero's own reading
+  order (the plugin does not reorder) and the footnote-heavy one the
+  footnote policy and the LLM failure paths
 - read selection, read from here, pause/resume, ← and →, speed, stop, closing
   the tab mid-read, and killing speakd mid-read
+- with the LLM off, a run is the deterministic cleanup only; with it on and
+  the endpoint killed mid-read, the read continues deterministically
 
 The internals the plugin depends on, with their locations in 10.0.3's source,
 are in `docs/design/2026-09-24-zotero-10-read-aloud-internals.md`. That doc

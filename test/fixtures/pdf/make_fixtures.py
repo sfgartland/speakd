@@ -91,7 +91,9 @@ def footnotes() -> None:
             for line, text in enumerate(lines_of(page_index * 6 + p, 3)):
                 page.insert_text((72, 70 + p * 20 + line * 14), text, fontsize=11)
         if page_index == 2:
-            page.insert_text((72, 190), "1994 was the year the reading began in earnest.", fontsize=11)
+            page.insert_text(
+                (72, 190), "1994 was the year the reading began in earnest.", fontsize=11
+            )
         source = citations if page_index % 2 == 0 else prose
         for n, text in enumerate(source):
             page.insert_text((72, 700 + n * 14), text, fontsize=8)
@@ -124,7 +126,9 @@ def ocr_sample() -> None:
         running_header(page, "A Scanned Chapter", page_index + 1)
         for line, text in enumerate(lines):
             page.insert_text((72, 90 + line * 20), text, fontsize=11)
-        page.insert_text((72, 700), f"{page_index + 1} A scan footnote, tbe same faults.", fontsize=8)
+        page.insert_text(
+            (72, 700), f"{page_index + 1} A scan footnote, tbe same faults.", fontsize=8
+        )
     doc.save(OUT / "ocr-sample.pdf", garbage=4, deflate=True)
 
 

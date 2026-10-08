@@ -231,6 +231,39 @@ Built in a cloud session, then verified and finished locally the same day.
   - Plus's other voice, `longanlufeng`, sounded too Chinese-accented to the user.
   - Other OpenRouter TTS models (MAI-Voice-2, Grok, Deepgram, MiniMax…) were sampled in `~/Music/speakd-compare-*.wav`.
 
+## Built 2026-10-08: PDF text cleanup (branch `feat/pdf-text-cleanup`, not yet merged)
+
+Spec `docs/design/2026-10-08-pdf-text-cleanup-proposal-glm.md`; plan
+`docs/superpowers/plans/2026-10-08-pdf-text-cleanup.md`; Stage 0 characterisation
+`docs/design/2026-10-08-pdf-text-cleanup-stage0.md`.
+
+- **Zotero plugin, Stage A (deterministic, rules-only):** a segment-level
+  running-head/footer filter, structural footnote detection with a
+  `classify`/`drop_all`/`defer_all` policy (default `classify`), deferred
+  footnotes appended at their section's end with true indices (highlights
+  stay exact), ligature/scan-mark cleanup, and the same filters on the
+  export path. The policy is `extensions.speakd-reader.footnote_policy`.
+- **Zotero plugin, Stage B (optional LLM):** `src/llm.ts` — an
+  OpenAI-compatible chat client for small OCR repair and batched footnote
+  classification, **off until an endpoint and model are configured** (its
+  settings are in the plugin's preferences pane, with the disclosure line
+  that enabled text goes to the endpoint). Section 1 never calls it; no live
+  read waits on it; every repair is diff-verified under a 2 % edit budget.
+- **Skill path:** `prepare_text.py` now extracts through `mutool draw -F
+  stext` (column order, font-size/bottom-band footnotes) with the tolerant
+  `pdftotext` fallback, plus `--footnotes {classify,drop,defer}` and
+  `--ocr-report`.
+- **Corpus and live checks:** the three document classes are checked in
+  (`test/fixtures/pdf/`, harness dumps, stext/pdftotext fixtures). Live in a
+  headless test Zotero: no highlight ever landed on a dropped segment,
+  two-column order correct, time-to-first-audio 246–313 ms, and an enabled
+  but dead LLM endpoint did not stall the read.
+- **Still conditional on the owner's failing sample:** the bottom-band
+  percentile (provisional bottom ~25 %), the OCR suspicion cut-off
+  (provisional 6.0; needs a real scan fixture), and `joinSplitDigits` (cut
+  for want of evidence). Full playback past a deferred footnote and the
+  export text diff remain a longer harness run.
+
 ## Next
 
 ### 1. Phase 3, language in the clients
@@ -250,13 +283,6 @@ Built in a cloud session, then verified and finished locally the same day.
 
 ## Deferred and known gaps
 
-- **PDF text cleanup for narration (requested 2026-10-08, unstarted; architectural —
-  needs a spec and a plan):** remove running headers/footers, handle footnotes
-  gracefully (today read inline) and multi-column text, on both the Zotero
-  plugin path and the `speakd-audiobook` skill. Includes the question of an LLM
-  cleanup stage in the plugin, with the constraints that decide it (never
-  mis-highlight, time-to-first-audio, export vs. live). Brief and open questions:
-  `docs/design/2026-10-08-pdf-text-cleanup-request.md`.
 - **Housekeeping (needs the user's go-ahead):** ~25 merged worktrees under
   `../speakd-worktrees/` hold untracked `.superpowers/` reports. Removing them
   was blocked as destructive; the plan was to copy each `.superpowers/` into

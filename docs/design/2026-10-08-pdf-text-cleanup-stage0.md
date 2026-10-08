@@ -175,12 +175,20 @@ corpus through the captured dumps in `clients/zotero/test/fixtures/`
 and the skill through `tests/fixtures/corpus/` stext XML / pdftotext page
 text (tested by `tests/test_audiobook_corpus.py`).
 
-The corpus test surfaced one honest property of the running-head filter:
-on the synthetic footnote dump, one prose footnote text repeats verbatim
-as the last segment of three pages, so the recurrence filter drops it as a
-running head before the footnote plan sees it. That is the filter behaving
-as designed (recurrence in the same slot, never content); every such drop
-is in the audit list. A real paper's footnotes differ page to page.
+The corpus test surfaced an honest property of the running-head filter,
+twice: on the synthetic footnote dump one prose footnote text repeats
+verbatim as the last segment of three pages, and on the twocolumn dump
+the 12-word generator repeats short body lines that collide under the
+digit-normalisation, so some recur as a page's first or last segment. The
+recurrence filter then drops them before the footnote plan sees them.
+That is the filter behaving as designed (recurrence in the same slot,
+never content); every such drop is in the audit list, and none is a
+planted body sentence (the cross-column sentence and the year-led line
+survive). Real prose does not repeat verbatim page after page; the
+fixtures' tiny vocabulary makes it. The frequency constants and the
+digit-normalisation are the skill's, mirrored rather than invented; a
+future tuning pass should weigh the twocolumn collision if the owner's
+sample shows it on real text.
 
 ## Outcomes and what stays conditional
 
@@ -194,10 +202,29 @@ tolerant `pdftotext` fallback (recorded above).
   is generated, not a real scan, so the final value stays conditional on a
   real OCR-scan fixture.
 - **`joinSplitDigits`:** cut, as recorded above.
-- **Live/harness verification (Task 14):** the rules-only read was checked
-  live above (footnotes.pdf, highlights correct, deferred footnotes
-  highlight their own indices). The full two-column playback, the export
-diff against corpus expectations, time-to-first-audio against the 2–4 s
-target, and the LLM-on failure paths are **pending** — they need a harness
-run with a display and the fake endpoint, which this environment did not
-provide.
+- **Live/harness verification (Task 14):** partially done in this
+  worktree — a headless Zotero 10.0.6 (`MOZ_HEADLESS=1 flatpak run
+  org.zotero.Zotero`, its own profile) with the fake-engine daemon on 8743,
+  over the checked-in corpus items. Recorded:
+  - the footnote-heavy paper read end-to-end (sampled): **no highlight ever
+    landed on a dropped segment** (0 of 24 drops); highlights resolved to
+    their true original indices;
+  - the two-column paper's live capture keeps the planted cross-column
+    sentence at indices 45/46, adjacent, left column before right;
+  - **time-to-first-audio 246–313 ms** from `startRead` to the first
+    highlight on both papers, far inside the 2–4 s target (the fake
+    engine's section 1 is unchanged by construction);
+  - with the LLM enabled but pointed at a dead endpoint, the read still
+    reached section 2 and kept speaking: a model failure costs the model's
+    answer, never the speech;
+  - live footnote policy: `drop_all` → every footnote candidate dropped, no
+    `classify` residue (0 classifier calls); `defer_all` → every candidate
+    deferred, again no residue.
+
+  Still **pending** (needs more harness time or owner input): a full
+  playback past a section boundary to watch a deferred footnote highlight
+  its own rect (the unit tests cover the mapping); a diff of the exported
+  text against corpus expectations (the fake daemon does not expose the
+  render payload in a form this session captured); the visible "one bar
+  mark" (there is no UI to read it from headless); and a real OCR-scan
+  fixture for the provisional suspicion gate.

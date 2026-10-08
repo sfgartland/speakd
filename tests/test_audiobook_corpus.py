@@ -83,7 +83,10 @@ def test_pdftotext_corpus_characterises_poppler_and_strips_heads() -> None:
     footnote_pages = [
         page.splitlines()
         for page in subprocess.run(
-            ["pdftotext", str(PDF / "footnotes.pdf"), "-"], check=True, capture_output=True, text=True
+            ["pdftotext", str(PDF / "footnotes.pdf"), "-"],
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.split("\f")
         if page.strip()
     ]
