@@ -200,3 +200,35 @@ describe("buildParts with the cleanup filters", () => {
     expect(substantive[0]?.text).toContain("holds real prose");
   });
 });
+
+describe("buildParts with label overrides", () => {
+  it("keeps a labelled junk segment out of every part's text", () => {
+    const segments = [seg("Body one.", 0), seg("Junk to drop.", 0), seg("Body two.", 0)];
+    const parts = buildParts(segments, "A Paper", { kind: "whole" }, { overrides: new Map([[1, "junk"]]) });
+    expect(parts[0]?.text).toBe("Body one. Body two.");
+  });
+
+  it("keeps a labelled body segment the heuristics would drop", () => {
+    const segments = [];
+    for (let n = 0; n < 6; n++) {
+      segments.push(seg("Sample Journal", n, "paragraphStart", 770));
+      segments.push(
+        seg(
+          `Body of page ${n} opens with a paragraph long enough that the recurrence filter never mistakes it for a head.`,
+          n,
+          "paragraphStart",
+          740,
+        ),
+      );
+    }
+    const parts = buildParts(segments, "A Paper", { kind: "whole" }, { overrides: new Map([[0, "body"]]) });
+    expect(parts[0]?.text).toContain("Sample Journal");
+  });
+
+  it("is unchanged when no map is given", () => {
+    const segments = [seg("One.", 0), seg("Two.", 0)];
+    expect(buildParts(segments, "A Paper", { kind: "whole" })).toEqual(
+      buildParts(segments, "A Paper", { kind: "whole" }, {}),
+    );
+  });
+});

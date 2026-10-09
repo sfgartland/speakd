@@ -22,6 +22,7 @@ import {
 } from "./jobs";
 import { expectedAudioSeconds, folderOut, renderPayload, stagingOut, type ItemTags } from "./render";
 import { classificationResidue } from "../footnotes";
+import { matchLabels, type LabelCategory, type LabelFile } from "../labelstore";
 import type { FootnoteClassifier, FootnoteKind } from "../llm";
 import type { CallResult, SpeakdEvent } from "../speakd";
 
@@ -44,6 +45,8 @@ export interface ExporterHost {
   /** Imports `file` as the item's "Audio — <title>" attachment. */
   attach(tracked: TrackedJob, file: string): Promise<void>;
   tags(itemID: number): ItemTags;
+  /** The label file for a PDF attachment, or null: the export path's overrides (Task 3). */
+  labelFile?(attachmentID: number): Promise<LabelFile | null>;
   notify(title: string, message: string): void;
   /** Milliseconds, as Date.now(). */
   now(): number;
@@ -120,6 +123,7 @@ export class Exporter {
           : stagingOut(await this.host.stagingDir(), request.itemID, choice.format, this.host.now());
       const payload = renderPayload(request, out, this.host.tags(request.itemID), {
         footnoteKinds: await this.footnoteKinds(request),
+        overrides: await this.overrides(request),
       });
       if (payload === null) {
         this.host.notify(headline(request.title), "The selection has no text.");
@@ -164,6 +168,25 @@ export class Exporter {
     if (residue.length === 0) return undefined;
     try {
       return await classifier.classifyFootnotes(residue);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The labeler's overrides for this export (spec §7.2): the attachment's
+   * label file, matched against the captured segments. Exports are not
+   * TTFA-bound, so this may take its time. A missing, unreadable or
+   * corrupt file -- or one that matches nothing -- is no overrides, never a
+   * lost export.
+   */
+  private async overrides(request: ExportRequest): Promise<ReadonlyMap<number, LabelCategory> | undefined> {
+    if (this.host.labelFile === undefined) return undefined;
+    try {
+      const file = await this.host.labelFile(request.attachmentID);
+      if (file === null) return undefined;
+      const { overrides } = matchLabels(file, request.segments);
+      return overrides.size === 0 ? undefined : overrides;
     } catch {
       return undefined;
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Channel, type Problem } from "../src/channel";
 import { cleanup } from "../src/cleanup";
+import type { LabelCategory } from "../src/labelstore";
 import type { FootnotePolicy } from "../src/footnotes";
 import { cleanWithLlm, LlmClient, type FootnoteClassifier, type FootnoteKind, type FootnoteLabel, type LlmTimers } from "../src/llm";
 import type { CallResult, FetchLike, SpeakdEvent } from "../src/speakd";
@@ -714,5 +715,108 @@ describe("Channel with the Stage B clean", () => {
     expect(configured.requests).toHaveLength(0);
     expect(unconfigured.requests).toHaveLength(0);
     expect(unconfigured.daemon.enqueued()).toEqual(configured.daemon.enqueued());
+  });
+});
+
+// ---- labels (Task 3) ----
+
+function labelChannel(
+  overrides: ((segments: readonly { text: string }[]) => ReadonlyMap<number, LabelCategory> | null) | undefined,
+  footnotes: FootnotePolicy = "classify",
+  size = 1000,
+) {
+  const daemon = new FakeDaemon();
+  const logs: string[] = [];
+  const channel = new Channel({
+    client: daemon.client,
+    sourceId: SOURCE,
+    label: "A Paper",
+    size,
+    footnotes,
+    overrides,
+    log: (message) => logs.push(message),
+  });
+  daemon.channel = channel;
+  return { daemon, channel, logs };
+}
+
+function labelled(text: string, anchor: string, pageIndex: number, firstRectY: number) {
+  return { text, anchor, pageIndex, firstRectY };
+}
+
+describe("Channel with a label override map", () => {
+  it("never enqueues a labelled-away segment, and audits the label once", async () => {
+    const segments = [
+      labelled("Body one is here.", "paragraphStart", 0, 770),
+      labelled("A segment to drop.", "paragraphStart", 0, 740),
+      labelled("Body two follows.", "paragraphStart", 0, 720),
+    ];
+    const { daemon, channel, logs } = labelChannel(() => new Map([[1, "running-head"]]));
+    await channel.start(segments, 0);
+    expect(daemon.enqueued()[0]).toContain("Body one is here.");
+    expect(daemon.enqueued()[0]).not.toContain("A segment to drop.");
+    expect(logs).toContain("label: segment 1 → running-head (dropped)");
+  });
+
+  it("restores a head-filtered false positive with a body label", async () => {
+    const segments = [];
+    for (let n = 0; n < 6; n++) {
+      segments.push(labelled("Sample Journal", "paragraphStart", n, 770));
+      segments.push(
+        labelled(
+          `Body of page ${n} opens with a paragraph long enough that the recurrence filter never mistakes it for a head.`,
+          "paragraphStart",
+          n,
+          740,
+        ),
+      );
+    }
+    const unaided = labelChannel(undefined);
+    await unaided.channel.start(segments, 0);
+    expect(unaided.daemon.enqueued()[0]).not.toContain("Sample Journal");
+    const labelledChannel = labelChannel(() => new Map([[0, "body"]]));
+    await labelledChannel.channel.start(segments, 0);
+    expect(labelledChannel.daemon.enqueued()[0]).toContain("Sample Journal");
+  });
+
+  it("lands a labelled footnote at its section's end under defer_all", async () => {
+    const segments = [
+      labelled("Body one is here.", "paragraphStart", 0, 770),
+      labelled("Target to defer.", "paragraphStart", 0, 740),
+      labelled("Body two follows.", "paragraphStart", 0, 720),
+    ];
+    const { daemon, channel } = labelChannel(() => new Map([[1, "footnote"]]), "defer_all");
+    await channel.start(segments, 0);
+    expect(daemon.enqueued()[0]).toBe("Body one is here. Body two follows. Target to defer.");
+  });
+
+  it("calls the resolver exactly once per start", async () => {
+    let calls = 0;
+    const resolver = () => {
+      calls++;
+      return new Map<number, LabelCategory>();
+    };
+    const { channel } = labelChannel(resolver);
+    await channel.start(SEGMENTS, 0);
+    await channel.start(SEGMENTS, 0);
+    expect(calls).toBe(2);
+  });
+
+  it("reads as unlabelled when the resolver returns null", async () => {
+    const withNull = labelChannel(() => null);
+    const without = labelChannel(undefined);
+    await withNull.channel.start(SEGMENTS, 0);
+    await without.channel.start(SEGMENTS, 0);
+    expect(withNull.daemon.enqueued()).toEqual(without.daemon.enqueued());
+  });
+
+  it("fails open when the resolver throws", async () => {
+    const without = labelChannel(undefined);
+    const throwing = labelChannel(() => {
+      throw new Error("bad file");
+    });
+    await without.channel.start(SEGMENTS, 0);
+    await throwing.channel.start(SEGMENTS, 0);
+    expect(throwing.daemon.enqueued()).toEqual(without.daemon.enqueued());
   });
 });

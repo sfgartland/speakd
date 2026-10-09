@@ -14,6 +14,7 @@
 
 import { cleanup } from "./cleanup";
 import { tagSegments, type FootnotePolicy } from "./footnotes";
+import type { LabelCategory } from "./labelstore";
 import type { FootnoteClassifier, FootnoteLabel } from "./llm";
 import { planHighlights } from "./mapping";
 import { apply, identity, type Stage } from "./offsetmap";
@@ -60,6 +61,12 @@ export interface ChannelOptions {
   footnoteClassifier?: FootnoteClassifier;
   /** Says one line per dropped segment: the filter's audit trail. */
   log?: (message: string) => void;
+  /**
+   * The labeler's per-capture overrides (spec §7.2, §8.2): called once per
+   * start over that start's segments, never awaited by the read path. A
+   * throw or a null is no overrides -- fail-open.
+   */
+  overrides?: (segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null;
 }
 
 /**
@@ -110,6 +117,7 @@ export class Channel {
   private readonly footnotes: FootnotePolicy;
   private readonly footnoteClassifier: FootnoteClassifier | undefined;
   private readonly log: (message: string) => void;
+  private readonly overrides: ((segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null) | undefined;
 
   private _generation = 0;
   private read: Read | null = null;
@@ -146,6 +154,7 @@ export class Channel {
     this.footnotes = options.footnotes ?? "classify";
     this.footnoteClassifier = options.footnoteClassifier;
     this.log = options.log ?? (() => {});
+    this.overrides = options.overrides;
   }
 
   /** Bumped by every start and stop. */
@@ -228,7 +237,10 @@ export class Channel {
         this.fail(NO_TEXT);
         return;
       }
-      const tagged = this.planned(segments);
+      // The override map is resolved once per capture (spec §7.2), from the
+      // file cached at reader adoption; the read path never awaits label I/O.
+      const overrides = this.resolveOverrides(segments);
+      const tagged = this.planned(segments, overrides);
       const sections = buildSections(tagged, startIndex, this.firstSize, this.size);
       // Past the end of a document that has text: nothing left to read.
       if (sections.length === 0) return;
@@ -256,13 +268,29 @@ export class Channel {
    * read as ever; one that was dropped says so, once, in the debug log:
    * silent drops are a filter's worst failure, and this is the trace.
    */
-  private planned(segments: readonly ReadSegment[]): readonly TaggedSegment[] {
+  private planned(segments: readonly ReadSegment[], overrides: ReadonlyMap<number, LabelCategory> | null = null): readonly TaggedSegment[] {
     try {
-      const { tagged, dropped } = tagSegments(segments, this.footnotes);
+      const { tagged, dropped } = tagSegments(segments, this.footnotes, overrides ?? undefined);
       for (const segment of dropped) this.log(`a ${segment.why} was not read: ${brief(segment.text)}`);
+      if (overrides !== null) {
+        for (const [index, category] of overrides) {
+          const fate = tagged[index]?.tag === "drop" ? "dropped" : "spoken";
+          this.log(`label: segment ${index} → ${category} (${fate})`);
+        }
+      }
       return tagged;
     } catch {
       return segments;
+    }
+  }
+
+  /** The label map for this start, or null: a throwing resolver is no labels. */
+  private resolveOverrides(segments: readonly ReadSegment[]): ReadonlyMap<number, LabelCategory> | null {
+    if (this.overrides === undefined) return null;
+    try {
+      return this.overrides(segments);
+    } catch {
+      return null;
     }
   }
 

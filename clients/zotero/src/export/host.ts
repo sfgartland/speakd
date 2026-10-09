@@ -3,6 +3,7 @@
 
 import type { ExporterHost } from "./exporter";
 import { fileStem, type ItemTags } from "./render";
+import { labelsPath, readLabelFile } from "../labelstore";
 import { PREF_PREFIX } from "../prefs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -84,6 +85,12 @@ export function zoteroExporterHost(options: Pick<ExporterHost, "call" | "warn">)
       );
     },
     tags: itemTags,
+    labelFile: async (attachmentID) => {
+      const item: Any = Zotero.Items.get(attachmentID);
+      const key = item?.key;
+      if (typeof key !== "string" || key === "") return null;
+      return readLabelFile(labelsPath(key));
+    },
     notify,
     now: () => Date.now(),
   };

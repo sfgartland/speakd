@@ -8,6 +8,7 @@
 
 import { cleanup } from "../cleanup";
 import { tagSegments, type FootnotePolicy } from "../footnotes";
+import type { LabelCategory } from "../labelstore";
 import type { FootnoteKind } from "../llm";
 import type { TaggedSegment } from "../sections";
 import { findReferencesCut, type ReferencesSegment } from "./references";
@@ -25,6 +26,8 @@ export interface PartsOptions {
   readonly footnotes?: FootnotePolicy;
   /** The Stage B batch's labels, by original captured index (Task 11). */
   readonly footnoteKinds?: ReadonlyMap<number, FootnoteKind>;
+  /** The labeler's whole-segment overrides, by original captured index (spec §8.2). */
+  readonly overrides?: ReadonlyMap<number, LabelCategory>;
 }
 
 export interface ChapterSelection {
@@ -114,7 +117,7 @@ export function buildParts(
     ...segment,
     footnoteKind: options.footnoteKinds?.get(index),
   }));
-  const { tagged: planned } = tagSegments(withKinds, options.footnotes ?? "classify");
+  const { tagged: planned } = tagSegments(withKinds, options.footnotes ?? "classify", options.overrides);
   if (selection.kind === "whole") {
     const cut = selection.skipReferences ? findReferencesCut(planned) : null;
     const included = cut === null ? planned : planned.slice(0, cut);

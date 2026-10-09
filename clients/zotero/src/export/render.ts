@@ -8,6 +8,7 @@
 import type { ExportFormat } from "./dialog";
 import type { ExportRequest } from "./entry";
 import { DEFAULT_CHARS_PER_SECOND } from "./estimate";
+import type { LabelCategory } from "../labelstore";
 import type { FootnoteKind } from "../llm";
 import { buildParts, type Part } from "./parts";
 
@@ -27,9 +28,10 @@ export interface ItemTags {
   readonly date?: string;
 }
 
-/** What the render takes beyond the request: the Stage B batch's labels. */
+/** What the render takes beyond the request: the Stage B batch's labels and the labeler's overrides. */
 export interface RenderOptions {
   readonly footnoteKinds?: ReadonlyMap<number, FootnoteKind>;
+  readonly overrides?: ReadonlyMap<number, LabelCategory>;
 }
 
 /** The render request for an export, or null when its selection has no text to render. */
@@ -42,6 +44,7 @@ export function renderPayload(
   const parts = buildParts(request.segments, request.title, request.choice.selection, {
     footnotes: request.footnotes,
     footnoteKinds: options.footnoteKinds,
+    overrides: options.overrides,
   });
   if (parts.length === 0) return null;
   const metadata: Record<string, string> = { title: request.title, album: request.title };
