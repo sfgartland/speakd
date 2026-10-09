@@ -13,6 +13,15 @@ Geometry convention (Stage 0 notes, "Rect coverage: complete, and y runs
 bottom-up"): rect y is PDF user space, so larger y is higher on the page and
 the bottom band is low y.
 
+## Ground-truth fixtures
+
+`pdf/<slug>/` holds the labeler's exported fixtures (`capture.jsonl`,
+`labels.json`, `expected.json`, `README.md`), consumed by `corpus.test.ts`.
+`labels.json` is the ground truth; `expected.json` is a regression snapshot.
+The source PDF is never checked in; the README carries its sha256 and the
+copyright bound. See `pdf/synthetic/` (generated) and `pdf/kohler/` (the
+first real fixture, pages 34–38).
+
 Reproduce (harness, not in this repo's default test run):
 
 ```bash
