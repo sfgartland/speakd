@@ -1,0 +1,252 @@
+{
+  "schema": 1,
+  "attachmentKey": "SYNTH",
+  "documentSha256": "synthetic-document-hash",
+  "capture": {
+    "zoteroVersion": "10.0.6",
+    "segments": 20,
+    "labelledAt": 1760000000
+  },
+  "labels": [
+    {
+      "locator": {
+        "page": 0,
+        "rectY": 770,
+        "anchor": "paragraphStart",
+        "prefix": "Sample Journal",
+        "textSha256": "5b3e7c4b3e119a44609c34f98a2abccb1dd384aba304ae5ad4b32f8c53138f0b"
+      },
+      "category": "running-head",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 0,
+        "rectY": 740,
+        "anchor": "paragraphStart",
+        "prefix": "Body of page 0 with alpha discussion continuing ",
+        "textSha256": "2c81c27e8a69454e64c8917af76b876bd58792d6c4a97b0b919df8fb36d9e179"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 0,
+        "rectY": 140,
+        "anchor": "paragraphStart",
+        "prefix": "found recently that page 0 quotes a source at le",
+        "textSha256": "a84e1721acabd76864285016f45fc7e612dbd71dbb17cff95f90d612f0914e4c"
+      },
+      "category": "footnote",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 0,
+        "rectY": 700,
+        "anchor": "paragraphStart",
+        "prefix": "A recurring closing clause.",
+        "textSha256": "81066b53b36fcdb9735bcab4e4dc240371ba6813011452488580544fddf54424"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 1,
+        "rectY": 770,
+        "anchor": "paragraphStart",
+        "prefix": "Sample Journal",
+        "textSha256": "5b3e7c4b3e119a44609c34f98a2abccb1dd384aba304ae5ad4b32f8c53138f0b"
+      },
+      "category": "running-head",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 1,
+        "rectY": 740,
+        "anchor": "paragraphStart",
+        "prefix": "Body of page 1 with beta discussion continuing a",
+        "textSha256": "c40d98da153ea149ff98a32d4d19cfd6bdf654aad614f060deaa76f39a4a49ae"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 1,
+        "rectY": 140,
+        "anchor": "paragraphStart",
+        "prefix": "found recently that page 1 quotes a source at le",
+        "textSha256": "b15da71c380d56ed8084233e371b666c6821e81f7d6b192d40f11ef97bf6a445"
+      },
+      "category": "footnote",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 1,
+        "rectY": 700,
+        "anchor": "paragraphStart",
+        "prefix": "A recurring closing clause.",
+        "textSha256": "81066b53b36fcdb9735bcab4e4dc240371ba6813011452488580544fddf54424"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 2,
+        "rectY": 770,
+        "anchor": "paragraphStart",
+        "prefix": "Sample Journal",
+        "textSha256": "5b3e7c4b3e119a44609c34f98a2abccb1dd384aba304ae5ad4b32f8c53138f0b"
+      },
+      "category": "running-head",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 2,
+        "rectY": 740,
+        "anchor": "paragraphStart",
+        "prefix": "Body of page 2 with gamma discussion continuing ",
+        "textSha256": "5496d021029dff8f719cedadf43b13104edd34434d49446ccccbd5e31f3be5d1"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 2,
+        "rectY": 140,
+        "anchor": "paragraphStart",
+        "prefix": "found recently that page 2 quotes a source at le",
+        "textSha256": "5e02f922d04f0de0716506fe61617ae217ff17a68d9afb08bff3307de5c146e9"
+      },
+      "category": "footnote",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 2,
+        "rectY": 700,
+        "anchor": "paragraphStart",
+        "prefix": "A recurring closing clause.",
+        "textSha256": "81066b53b36fcdb9735bcab4e4dc240371ba6813011452488580544fddf54424"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 3,
+        "rectY": 770,
+        "anchor": "paragraphStart",
+        "prefix": "Sample Journal",
+        "textSha256": "5b3e7c4b3e119a44609c34f98a2abccb1dd384aba304ae5ad4b32f8c53138f0b"
+      },
+      "category": "running-head",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 3,
+        "rectY": 740,
+        "anchor": "paragraphStart",
+        "prefix": "Body of page 3 with delta discussion continuing ",
+        "textSha256": "bec21259e3e7109393e88d838109cb023aae11fd68d6d0d0dcd1a202b45a3bea"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 3,
+        "rectY": 140,
+        "anchor": "paragraphStart",
+        "prefix": "found recently that page 3 quotes a source at le",
+        "textSha256": "7c31da31fbf0a278b2ebfbb79bf0a453c2e3db119db8bcd3d1a455003bfa8d37"
+      },
+      "category": "footnote",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 3,
+        "rectY": 700,
+        "anchor": "paragraphStart",
+        "prefix": "A recurring closing clause.",
+        "textSha256": "81066b53b36fcdb9735bcab4e4dc240371ba6813011452488580544fddf54424"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 4,
+        "rectY": 770,
+        "anchor": "paragraphStart",
+        "prefix": "Sample Journal",
+        "textSha256": "5b3e7c4b3e119a44609c34f98a2abccb1dd384aba304ae5ad4b32f8c53138f0b"
+      },
+      "category": "running-head",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 4,
+        "rectY": 740,
+        "anchor": "paragraphStart",
+        "prefix": "Body of page 4 with epsilon discussion continuin",
+        "textSha256": "3146780c3f2e988640d306165814166a0cde2ac20452f600103b3b382df34b56"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 4,
+        "rectY": 140,
+        "anchor": "paragraphStart",
+        "prefix": "found recently that page 4 quotes a source at le",
+        "textSha256": "df0dcc8cbbd5f6e76dc959402a13f1a2fcd636ba19d0f619b1d07ff776bffbcf"
+      },
+      "category": "footnote",
+      "labelledAt": 1760000000,
+      "note": ""
+    },
+    {
+      "locator": {
+        "page": 4,
+        "rectY": 700,
+        "anchor": "paragraphStart",
+        "prefix": "A recurring closing clause.",
+        "textSha256": "81066b53b36fcdb9735bcab4e4dc240371ba6813011452488580544fddf54424"
+      },
+      "category": "body",
+      "labelledAt": 1760000000,
+      "note": ""
+    }
+  ]
+}
