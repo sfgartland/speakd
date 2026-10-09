@@ -14,6 +14,7 @@
 // the page's observed y-range.
 
 import { filterRunningHeads } from "./segmentfilter";
+import type { LabelCategory } from "./labelstore";
 import type { TaggedSegment } from "./sections";
 
 /** How a read's footnotes are treated (proposal §3, the brief's open question 1). */
@@ -137,7 +138,7 @@ function pageGroups(segments: readonly PlanSegment[]): Map<number, number[]> {
 /** Why one segment was dropped, for the log line a caller writes. */
 export interface DroppedSegment {
   readonly text: string;
-  readonly why: "running head" | "footnote";
+  readonly why: "running head" | "footnote" | "label";
 }
 
 /** One borderline footnote the batch classifier is asked about, by its original index. */
@@ -171,6 +172,27 @@ export interface SegmentsPlan<S extends PlanSegment> {
   readonly dropped: readonly DroppedSegment[];
 }
 
+/** The footnote policy's word for a detected candidate, shared by detection and labels. */
+function footnoteTag(text: string, policy: FootnotePolicy): FootnoteTag {
+  if (policy === "drop_all") return "drop";
+  if (policy === "defer_all") return "defer";
+  return classifyShape(text);
+}
+
+/** A whole-segment label's tag: the label feeds detection, the policy decides fate. */
+function overrideTag(category: LabelCategory, text: string, policy: FootnotePolicy): FootnoteTag {
+  switch (category) {
+    case "body":
+    case "heading":
+      return "body";
+    case "footnote":
+      return footnoteTag(text, policy);
+    default:
+      // running-head / footer / page-number / junk: dropped, and audited.
+      return "drop";
+  }
+}
+
 /**
  * The running-head filter and the footnote plan over a whole document's
  * segments (proposal §4.2), in that order: the head filter first, so the
@@ -180,8 +202,21 @@ export interface SegmentsPlan<S extends PlanSegment> {
  * stage resolves it: a wrong kept footnote is preferable to a wrong dropped
  * paragraph. Nothing here drops by content; only recurrence, geometry,
  * markers and the shape rules decide.
+ *
+ * `overrides` is the labeler's per-capture map, keyed by original document
+ * index (spec §8.2). It is applied to the whole list after both filters, so
+ * index-keying survives the head filter's subsetting: a `body` label
+ * restores a segment the head filter dropped, a `footnote` label makes a
+ * segment a candidate and lets the policy decide its fate, and a drop label
+ * removes a segment the heuristics would have kept. A label never touches
+ * characters; the worst it can do is drop or keep whole speech, the same
+ * blast radius the filters already have.
  */
-export function tagSegments<S extends PlanSegment>(segments: readonly S[], policy: FootnotePolicy): SegmentsPlan<S> {
+export function tagSegments<S extends PlanSegment>(
+  segments: readonly S[],
+  policy: FootnotePolicy,
+  overrides?: ReadonlyMap<number, LabelCategory>,
+): SegmentsPlan<S> {
   const kept = filterRunningHeads(segments);
   // The kept list holds the input's own segment objects, so identity tells
   // kept from dropped; each kept one knows its place in the kept list.
@@ -190,17 +225,24 @@ export function tagSegments<S extends PlanSegment>(segments: readonly S[], polic
   const plan = planFootnotes(kept, policy);
   const tagged: (S & Pick<TaggedSegment, "tag">)[] = [];
   const dropped: DroppedSegment[] = [];
-  for (const segment of segments) {
+  segments.forEach((segment, documentIndex) => {
+    const override = overrides?.get(documentIndex);
+    if (override !== undefined) {
+      const tag = overrideTag(override, segment.text, policy);
+      if (tag === "drop") dropped.push({ text: segment.text, why: "label" });
+      tagged.push({ ...segment, tag });
+      return;
+    }
     const index = keptAt.get(segment);
     if (index === undefined) {
       dropped.push({ text: segment.text, why: "running head" });
       tagged.push({ ...segment, tag: "drop" });
-      continue;
+      return;
     }
     const tag = plan.tags[index] ?? "body";
     if (tag === "drop") dropped.push({ text: segment.text, why: "footnote" });
     tagged.push({ ...segment, tag });
-  }
+  });
   return { tagged, dropped };
 }
 
@@ -213,9 +255,7 @@ export function planFootnotes(
   const drops: number[] = [];
   const band = options.bottomBand ?? BOTTOM_BAND;
   const footnote = (index: number): void => {
-    if (policy === "drop_all") tags[index] = "drop";
-    else if (policy === "defer_all") tags[index] = "defer";
-    else tags[index] = classifyShape(segments[index]!.text);
+    tags[index] = footnoteTag(segments[index]!.text, policy);
     if (tags[index] === "drop") drops.push(index);
   };
 

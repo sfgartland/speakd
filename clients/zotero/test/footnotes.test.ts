@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classificationResidue, planFootnotes, type FootnotePolicy } from "../src/footnotes";
+import { classificationResidue, planFootnotes, tagSegments, type FootnotePolicy } from "../src/footnotes";
 
 // Geometry as Stage 0 measured it (docs/design/2026-10-08-pdf-text-cleanup-stage0.md
 // (c)): an 842-pt page, rect y running bottom-up -- body paragraphs high
@@ -198,6 +198,82 @@ describe("planFootnotes", () => {
       "drop_all",
     );
     expect([...plan.tags]).toEqual(["body", "body"]);
+  });
+});
+
+describe("tagSegments overrides", () => {
+  // Five pages, enough for the running-head recurrence rule to fire: each
+  // page opens with the same short paragraph, which the filter drops.
+  function recurring() {
+    const segments = [];
+    for (let n = 0; n < 5; n++) {
+      segments.push(seg("A recurring opening clause.", n, "paragraphStart", 770));
+      segments.push(seg(`The body of page ${n} opens.`, n, "paragraphStart", 740));
+    }
+    return segments;
+  }
+
+  it("restores a head-filter false positive with a body override", () => {
+    const segments = recurring();
+    // Unaided the recurring opening is dropped on every page.
+    expect(tagSegments(segments, "classify").tagged[0]?.tag).toBe("drop");
+    const { tagged } = tagSegments(segments, "classify", new Map([[0, "body"]]));
+    expect(tagged[0]?.tag).toBe("body");
+    // The unlabelled occurrences are unchanged.
+    expect(tagged[2]?.tag).toBe("drop");
+  });
+
+  it("makes the OCR'd footnote a candidate under each policy", () => {
+    const segments = [
+      seg("The body paragraph opens the page.", 0, "paragraphStart", 760),
+      seg("il found recently that these words aie quoted from A. N. Whitehead, who does not of course share the opinion which they express.", 0, "paragraphStart", 140),
+    ];
+    const overrides = new Map([[1, "footnote"]] as const);
+    expect(tagSegments(segments, "classify", overrides).tagged[1]?.tag).toBe("classify");
+    expect(tagSegments(segments, "drop_all", overrides).tagged[1]?.tag).toBe("drop");
+    expect(tagSegments(segments, "defer_all", overrides).tagged[1]?.tag).toBe("defer");
+  });
+
+  it("makes a markerless bottom-band paragraph a candidate the heuristics leave as body", () => {
+    const segments = [
+      seg("The body paragraph opens the page.", 0, "paragraphStart", 760),
+      seg("found recently that these words are quoted from a source, and the sentence runs on.", 0, "paragraphStart", 140),
+    ];
+    expect(tagSegments(segments, "classify").tagged[1]?.tag).toBe("body");
+    const overrides = new Map([[1, "footnote"]] as const);
+    expect(tagSegments(segments, "classify", overrides).tagged[1]?.tag).toBe("classify");
+  });
+
+  it("drops a running-head override on a three-page input the unaided filter never fires on", () => {
+    const segments = [
+      seg("The body of page 0.", 0, "paragraphStart", 740),
+      seg("i6  THE PLACE OF VALUE IN A WORLD OF FACTS", 1, "paragraphStart", 770),
+      seg("The body of page 1.", 1, "paragraphStart", 740),
+      seg("The body of page 2.", 2, "paragraphStart", 740),
+    ];
+    expect(tagSegments(segments, "classify").tagged[1]?.tag).toBe("body");
+    const { tagged, dropped } = tagSegments(segments, "classify", new Map([[1, "running-head"]]));
+    expect(tagged[1]?.tag).toBe("drop");
+    expect(dropped).toContainEqual({ text: "i6  THE PLACE OF VALUE IN A WORLD OF FACTS", why: "label" });
+  });
+
+  it("drops and audits a junk override with why label", () => {
+    const segments = [seg("Body text.", 0, "paragraphStart", 740), seg("Some junk.", 0, "paragraphStart", 720)];
+    const { tagged, dropped } = tagSegments(segments, "classify", new Map([[1, "junk"]]));
+    expect(tagged[1]?.tag).toBe("drop");
+    expect(dropped).toContainEqual({ text: "Some junk.", why: "label" });
+  });
+
+  it("treats a heading override as spoken body", () => {
+    const segments = [seg("1. Introduction", 0, "paragraphStart", 770), seg("Body.", 0, "paragraphStart", 740)];
+    const { tagged } = tagSegments(segments, "classify", new Map([[0, "heading"]]));
+    expect(tagged[0]?.tag).toBe("body");
+  });
+
+  it("leaves an unlabelled list byte-identical to the heuristics alone", () => {
+    const segments = [...recurring(), ...citedPage(5)];
+    expect(tagSegments(segments, "classify", new Map())).toEqual(tagSegments(segments, "classify"));
+    expect(tagSegments(segments, "classify", undefined)).toEqual(tagSegments(segments, "classify"));
   });
 });
 
