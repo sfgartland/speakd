@@ -8,8 +8,6 @@
 // seen alike under the flatpak sandbox and out, and survives a Zotero
 // restart. Writes are whole-file and atomic.
 
-import type { CapturedSegment } from "./session";
-
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const IOUtils: any;
 declare const PathUtils: any;
@@ -20,7 +18,7 @@ export type LabelCategory = "body" | "footnote" | "heading" | "running-head" | "
 /** Where a segment was when it was labelled: content and place, not an index. */
 export interface LabelLocator {
   /** `pageIndex`, predecessor-inherited as the capture places it. */
-  readonly page: number;
+  readonly page: number | null;
   /** `firstRectY`, or null when the segment carried no rects. */
   readonly rectY: number | null;
   /** The paragraph anchor, or null. */
@@ -55,6 +53,17 @@ export interface LabelFile {
 }
 
 export type ParsedLabelFile = { readonly ok: true; readonly file: LabelFile } | { readonly ok: false; readonly why: string };
+
+/** A label file with no labels: what a fresh label-mode session starts from. */
+export function emptyLabelFile(attachmentKey: string, segments: number, zoteroVersion: string, labelledAt: number, documentSha256 = ""): LabelFile {
+  return {
+    schema: 1,
+    attachmentKey,
+    documentSha256,
+    capture: { zoteroVersion, segments, labelledAt },
+    labels: [],
+  };
+}
 
 /** Whitespace collapsed to single spaces, ends trimmed: what locators key on. */
 export function collapseText(text: string): string {
@@ -146,13 +155,21 @@ export function sha256Hex(text: string): string {
   return [...hash].map((word) => word.toString(16).padStart(8, "0")).join("");
 }
 
+/** The shape matching needs of a segment: what a locator keys on. */
+export interface LabelableSegment {
+  readonly text: string;
+  readonly pageIndex?: number | null;
+  readonly anchor?: string | null;
+  readonly firstRectY?: number | null;
+}
+
 /** The locator for a captured segment (spec §7.1). */
-export function locatorFor(segment: CapturedSegment): LabelLocator {
+export function locatorFor(segment: LabelableSegment): LabelLocator {
   const collapsed = collapseText(segment.text);
   return {
-    page: segment.pageIndex,
-    rectY: segment.firstRectY,
-    anchor: segment.anchor,
+    page: segment.pageIndex ?? null,
+    rectY: segment.firstRectY ?? null,
+    anchor: segment.anchor ?? null,
     prefix: collapsed.slice(0, PREFIX_LENGTH),
     textSha256: sha256Hex(collapsed),
   };
@@ -173,7 +190,7 @@ export interface MatchResult {
  * exact prefix: a wrong hit would silently drop body speech, the one failure
  * worse than a stale label. A segment already matched is not re-matched.
  */
-export function matchLabels(file: LabelFile, segments: readonly CapturedSegment[]): MatchResult {
+export function matchLabels(file: LabelFile, segments: readonly LabelableSegment[]): MatchResult {
   const collapsed = segments.map((segment) => collapseText(segment.text));
   const hashes = collapsed.map(sha256Hex);
   const prefixes = collapsed.map((text) => text.slice(0, PREFIX_LENGTH));

@@ -141,6 +141,26 @@ export class Controls {
     root.appendChild(speed);
     const faster = button("+", "Faster", () => this.speed(handle, 1));
     const stop = button("■", "Stop", () => handle.stop());
+    let labeling = false;
+    let labelError: string | null = null;
+    // A toggle without a fifth entry point: the pane's presence in the reader
+    // document says whether label mode is already on.
+    const label = button("L", "Label this document (Esc to exit)", () => {
+      if (labeling) return;
+      if (doc.querySelector(".speakd-label-pane") !== null) {
+        handle.exitLabelMode();
+        safeRender();
+        return;
+      }
+      labeling = true;
+      labelError = null;
+      safeRender();
+      void handle.enterLabelMode().then((result) => {
+        labeling = false;
+        labelError = result.ok ? null : result.error;
+        safeRender();
+      });
+    });
     const status = doc.createElement("span");
     status.className = "speakd-status";
     status.setAttribute("aria-live", "polite");
@@ -173,9 +193,12 @@ export class Controls {
       slower.disabled = !view.slower.enabled;
       faster.disabled = !view.faster.enabled;
       stop.disabled = !view.stop.enabled;
+      label.disabled = labeling;
+      label.title = labelError ?? (labeling ? "Preparing the document…" : "Label this document (Esc to exit)");
+      label.setAttribute("aria-label", label.title);
       speed.textContent = view.speed;
-      status.textContent = view.status;
-      status.title = view.status;
+      status.textContent = labelError ?? view.status;
+      status.title = status.textContent;
     };
     const safeRender = () => {
       try {
