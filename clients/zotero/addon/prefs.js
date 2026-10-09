@@ -13,6 +13,13 @@ pref("extensions.speakd-reader.llm_enabled", false);
 pref("extensions.speakd-reader.llm_endpoint", "");
 pref("extensions.speakd-reader.llm_key", "");
 pref("extensions.speakd-reader.llm_model", "");
+// The chosen provider preset. Empty on purpose: the stored endpoint decides
+// the request flavour until the user picks one, so an install from before
+// providers existed is not switched onto the opencode shape.
+pref("extensions.speakd-reader.llm_provider", "");
+// The request flags used when the provider is "custom".
+pref("extensions.speakd-reader.llm_custom_session", false);
+pref("extensions.speakd-reader.llm_custom_thinking", false);
 // The audiobook export dialog's starting points (src/export/dialog.ts).
 // Formats are mp3, opus or m4b; the destination is attach or folder; an
 // empty folder means ask.

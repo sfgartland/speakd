@@ -12,6 +12,7 @@
 
 import { cleanup, ocrSuspicion } from "./cleanup";
 import { apply, compose, stageFromDiff, type Stage } from "./offsetmap";
+import { GENERIC_PROFILE, type RequestProfile } from "./presets";
 import type { FetchLike } from "./speakd";
 
 /** The two repair prompts: a suspected scan's OCR noise, or the residual noise of a clean PDF. */
@@ -44,6 +45,9 @@ export interface LlmConfig {
   readonly endpoint: string;
   readonly apiKey: string;
   readonly model: string;
+  /** Which opencode-only additions to send. Absent means the plain OpenAI
+   * shape, so pre-preset callers and generic endpoints are unchanged. */
+  readonly profile?: RequestProfile;
 }
 
 /**
@@ -71,9 +75,51 @@ export interface LlmOptions {
   readonly log?: (message: string) => void;
   /** The one bar mark a failed call leaves, called once however many fail. */
   readonly onFailure?: () => void;
+  /** The opencode routing hint, one id per client; a random one by default. */
+  readonly sessionId?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 8000;
+
+/** The opencode routing hint. One id per client run is enough (gloss does the
+ * same per plugin run); a random one keeps two clients apart. */
+function defaultSessionId(): string {
+  const crypto = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return crypto?.randomUUID?.() ?? `speakd-${Date.now()}`;
+}
+
+/** A read that gives up after `timeoutMs`, resolving `null` instead. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timers: LlmTimers): Promise<T | null> {
+  let handle: unknown;
+  const timeout = new Promise<null>((resolve) => {
+    handle = timers.setTimeout(() => resolve(null), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => timers.clearTimeout(handle));
+}
+
+/** The request this module would send. Pure, so the tests and the Test button
+ * can read it, and the opencode additions are decided in one place. */
+export function buildRequest(
+  config: LlmConfig,
+  sessionId: string,
+  messages: { role: string; content: string }[],
+): { url: string; headers: Record<string, string>; body: Record<string, unknown> } {
+  const url = `${config.endpoint.replace(/\/+$/, "")}/chat/completions`;
+  const profile = config.profile ?? GENERIC_PROFILE;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.apiKey}`,
+    "Content-Type": "application/json",
+  };
+  // Both are opencode-only: OpenAI rejects unknown body fields with a 400.
+  if (profile.sessionHeader) headers["x-opencode-session"] = sessionId;
+  const body: Record<string, unknown> = {
+    model: config.model,
+    messages,
+    temperature: 0,
+  };
+  if (profile.thinking) body["thinking"] = { type: "disabled" };
+  return { url, headers, body };
+}
 
 /**
  * The plugin's chat client (proposal §4.2, §5.3): OpenAI-compatible
@@ -88,6 +134,7 @@ export class LlmClient {
   private readonly timers: LlmTimers;
   private readonly log: (message: string) => void;
   private readonly onFailure: () => void;
+  private readonly sessionId: string;
   /** Footnote text to its kind, for the session: a re-read never re-asks. */
   private readonly cache = new Map<string, FootnoteKind>();
   private failed = false;
@@ -103,6 +150,7 @@ export class LlmClient {
     };
     this.log = options.log ?? (() => {});
     this.onFailure = options.onFailure ?? (() => {});
+    this.sessionId = options.sessionId ?? defaultSessionId();
   }
 
   /** Whether the endpoint is configured at all: off until it is. */
@@ -168,19 +216,11 @@ export class LlmClient {
 
   /** One chat request, or null on any failure. Never rejects, never hangs past the timeout. */
   private async chat(prompt: string): Promise<string | null> {
-    const url = `${this.config.endpoint.replace(/\/+$/, "")}/chat/completions`;
+    const { url, headers, body } = buildRequest(this.config, this.sessionId, [{ role: "user", content: prompt }]);
     let response;
     try {
       response = await this.withTimeout(
-        this.fetch(url, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${this.config.apiKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: this.config.model,
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0,
-          }),
-        }),
+        this.fetch(url, { method: "POST", headers, body: JSON.stringify(body) }),
       );
       if (response === null) return this.give_up("the request timed out");
       if (response.status !== 200) return this.give_up(`HTTP ${response.status}`);
@@ -206,11 +246,72 @@ export class LlmClient {
   }
 
   private withTimeout<T>(promise: Promise<T>): Promise<T | null> {
-    let handle: unknown;
-    const timeout = new Promise<null>((resolve) => {
-      handle = this.timers.setTimeout(() => resolve(null), this.timeoutMs);
-    });
-    return Promise.race([promise, timeout]).finally(() => this.timers.clearTimeout(handle));
+    return withTimeout(promise, this.timeoutMs, this.timers);
+  }
+}
+
+/** The Test button's verdict: a provider error, or how long the ping took. */
+export interface TestResult {
+  ok: boolean;
+  ms: number;
+  message: string;
+}
+
+export interface TestConnectionOptions {
+  readonly config: LlmConfig;
+  readonly fetch: FetchLike;
+  readonly sessionId?: string;
+  /** How long the ping may take before it is called off. */
+  readonly timeoutMs?: number;
+  readonly timers?: LlmTimers;
+  /** Injectable clock, so the tests can read a deterministic time. */
+  readonly now?: () => number;
+}
+
+const DEFAULT_TEST_TIMEOUT_MS = 15000;
+
+/**
+ * One minimal chat request, to tell whether the endpoint, key and model work
+ * together. Never throws: every failure is a result, because the caller is a
+ * preference pane's status line.
+ */
+export async function testConnection(options: TestConnectionOptions): Promise<TestResult> {
+  const now = options.now ?? ((): number => Date.now());
+  const started = now();
+  const elapsed = (): number => Math.max(0, now() - started);
+  const fail = (message: string): TestResult => ({ ok: false, ms: elapsed(), message });
+  const pass = (): TestResult => ({ ok: true, ms: elapsed(), message: `connected in ${elapsed()} ms` });
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
+  const timers: LlmTimers = options.timers ?? {
+    setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+    clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
+  };
+  const sessionId = options.sessionId ?? defaultSessionId();
+  try {
+    const { url, headers, body } = buildRequest(options.config, sessionId, [{ role: "user", content: "ping" }]);
+    body["max_tokens"] = 1;
+    const response = await withTimeout(
+      options.fetch(url, { method: "POST", headers, body: JSON.stringify(body) }),
+      timeoutMs,
+      timers,
+    );
+    if (response === null) return fail("the request timed out");
+    if (response.status < 200 || response.status >= 300) {
+      let detail = "";
+      try {
+        detail = await response.text();
+      } catch {
+        // The status alone is enough.
+      }
+      const trimmed = detail.trim().slice(0, 200);
+      return fail(`${response.status}${trimmed ? `: ${trimmed}` : ""}`);
+    }
+    const text = await withTimeout(response.text(), timeoutMs, timers);
+    if (text === null) return fail("the answer timed out");
+    if (parseContent(text) === null) return fail("the endpoint did not answer a chat completion");
+    return pass();
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
   }
 }
 

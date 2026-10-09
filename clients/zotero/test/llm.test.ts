@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { cleanup, ocrSuspicion } from "../src/cleanup";
 import { verify } from "../src/offsetmap";
+import { GENERIC_PROFILE, OPENCODE_PROFILE } from "../src/presets";
 import type { FetchLike } from "../src/speakd";
-import { LlmClient, type LlmConfig, type LlmTimers } from "../src/llm";
+import { LlmClient, testConnection, type LlmConfig, type LlmTimers } from "../src/llm";
 
 const CONFIG: LlmConfig = { enabled: true, endpoint: "https://example.test/v1", apiKey: "sk-x", model: "test-model" };
 
@@ -59,7 +60,12 @@ const instantTimers = {
 function llm(
   answers: (string | Error | Response | "hang")[],
   overrides: Partial<LlmConfig> = {},
-  options: { timers?: LlmTimers; onFailure?: () => void; log?: (message: string) => void } = {},
+  options: {
+    timers?: LlmTimers;
+    onFailure?: () => void;
+    log?: (message: string) => void;
+    sessionId?: string;
+  } = {},
 ) {
   const { fetch, requests } = stubFetch(answers);
   const client = new LlmClient({
@@ -69,9 +75,13 @@ function llm(
     timers: options.timers ?? neverTimers,
     log: options.log ?? (() => {}),
     onFailure: options.onFailure,
+    sessionId: options.sessionId,
   });
   return { client, requests };
 }
+
+const bodyOf = (request: Request | undefined): Record<string, unknown> =>
+  JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
 
 const lastPrompt = (request: Request | undefined): string => {
   const body = JSON.parse(request?.body ?? "{}") as { messages?: { content?: string }[] };
@@ -162,6 +172,66 @@ describe("LlmClient.repairSection", () => {
     expect(lastPrompt(requests[0])).not.toContain("scanned document");
     await client.repairSection(mangled, client.modeFor(mangled), 1);
     expect(lastPrompt(requests[1])).toContain("scanned document");
+  });
+});
+
+describe("the request's opencode flavour", () => {
+  it("sends neither the session header nor thinking for a generic profile", async () => {
+    const { client, requests } = llm(["The modern reader."], { profile: GENERIC_PROFILE });
+    await client.repairSection("The tbe modem.", "ordinary", 1);
+    expect(requests[0]!.headers["x-opencode-session"]).toBeUndefined();
+    expect(bodyOf(requests[0])["thinking"]).toBeUndefined();
+  });
+
+  it("sends both when the opencode profile asks for them", async () => {
+    const { client, requests } = llm(["The modern reader."], { profile: OPENCODE_PROFILE }, { sessionId: "s7" });
+    await client.repairSection("The tbe modem.", "ordinary", 1);
+    expect(requests[0]!.headers["x-opencode-session"]).toBe("s7");
+    expect(bodyOf(requests[0])["thinking"]).toEqual({ type: "disabled" });
+  });
+
+  it("sends neither when no profile is set, so pre-preset callers are unchanged", async () => {
+    const { client, requests } = llm(["The modern reader."]);
+    await client.repairSection("The tbe modem.", "ordinary", 1);
+    expect(requests[0]!.headers["x-opencode-session"]).toBeUndefined();
+    expect(bodyOf(requests[0])["thinking"]).toBeUndefined();
+  });
+});
+
+describe("testConnection", () => {
+  it("reports a successful chat completion", async () => {
+    const { fetch } = stubFetch([JSON.stringify({ choices: [{ message: { content: "pong" } }] })]);
+    const result = await testConnection({ config: { ...CONFIG, profile: GENERIC_PROFILE }, fetch, sessionId: "s1" });
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/connected/);
+  });
+
+  it("reports an HTTP error without throwing", async () => {
+    const { fetch } = stubFetch([new Response("nope", { status: 401 })]);
+    const result = await testConnection({ config: CONFIG, fetch, sessionId: "s1" });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("401");
+  });
+
+  it("reports a rejected request without throwing", async () => {
+    const { fetch } = stubFetch([new Error("network down")]);
+    const result = await testConnection({ config: CONFIG, fetch, sessionId: "s1" });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("network down");
+  });
+
+  it("sends the opencode flavour the profile asks for", async () => {
+    const { fetch, requests } = stubFetch([JSON.stringify({ choices: [{ message: { content: "pong" } }] })]);
+    await testConnection({ config: { ...CONFIG, profile: OPENCODE_PROFILE }, fetch, sessionId: "s9" });
+    expect(requests[0]!.headers["x-opencode-session"]).toBe("s9");
+    expect(bodyOf(requests[0])["thinking"]).toEqual({ type: "disabled" });
+  });
+
+  it("sends neither for a generic profile", async () => {
+    const { fetch, requests } = stubFetch([JSON.stringify({ choices: [{ message: { content: "pong" } }] })]);
+    await testConnection({ config: { ...CONFIG, profile: GENERIC_PROFILE }, fetch, sessionId: "s9" });
+    expect(requests[0]!.headers["x-opencode-session"]).toBeUndefined();
+    expect(bodyOf(requests[0])["thinking"]).toBeUndefined();
   });
 });
 

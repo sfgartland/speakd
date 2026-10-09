@@ -9,6 +9,7 @@ import { parseSettings, type ExportSettings } from "./export/dialog";
 import { type FootnotePolicy } from "./footnotes";
 import { type LlmConfig } from "./llm";
 import type { LinkConfig } from "./link";
+import { resolveProfile, type RequestProfile } from "./presets";
 
 export const PREF_PREFIX = "extensions.speakd-reader.";
 export const PORT_PREF = `${PREF_PREFIX}port`;
@@ -18,6 +19,13 @@ export const LLM_ENABLED_PREF = `${PREF_PREFIX}llm_enabled`;
 export const LLM_ENDPOINT_PREF = `${PREF_PREFIX}llm_endpoint`;
 export const LLM_KEY_PREF = `${PREF_PREFIX}llm_key`;
 export const LLM_MODEL_PREF = `${PREF_PREFIX}llm_model`;
+/** The chosen provider preset. Empty on purpose: the stored endpoint decides
+ * the request flavour until the user picks one, so an install from before
+ * providers existed is not switched onto the opencode shape. */
+export const LLM_PROVIDER_PREF = `${PREF_PREFIX}llm_provider`;
+/** The request flags used when the provider is "custom". */
+export const LLM_CUSTOM_SESSION_PREF = `${PREF_PREFIX}llm_custom_session`;
+export const LLM_CUSTOM_THINKING_PREF = `${PREF_PREFIX}llm_custom_thinking`;
 export const DEFAULT_PORT = 8642;
 /** How a read treats footnotes (proposal §3, the brief's open question 1): drop the bare citations, read the rest at their section's end. */
 export const DEFAULT_FOOTNOTE_POLICY: FootnotePolicy = "classify";
@@ -67,14 +75,23 @@ export function parseLlmConfig(values: {
   endpoint?: unknown;
   key?: unknown;
   model?: unknown;
+  provider?: unknown;
+  customSessionHeader?: unknown;
+  customThinking?: unknown;
 }): LlmConfig {
   const endpoint = typeof values.endpoint === "string" ? values.endpoint.trim() : "";
   const model = typeof values.model === "string" ? values.model.trim() : "";
+  const provider = typeof values.provider === "string" ? values.provider.trim() : "";
+  const custom: RequestProfile = {
+    sessionHeader: values.customSessionHeader === true,
+    thinking: values.customThinking === true,
+  };
   return {
     enabled: values.enabled === true && endpoint !== "" && model !== "",
     endpoint,
     apiKey: typeof values.key === "string" ? values.key.trim() : "",
     model,
+    profile: resolveProfile(provider, endpoint, custom),
   };
 }
 
@@ -86,6 +103,9 @@ export function readLlmConfig(): LlmConfig {
     endpoint: get(LLM_ENDPOINT_PREF),
     key: get(LLM_KEY_PREF),
     model: get(LLM_MODEL_PREF),
+    provider: get(LLM_PROVIDER_PREF),
+    customSessionHeader: get(LLM_CUSTOM_SESSION_PREF),
+    customThinking: get(LLM_CUSTOM_THINKING_PREF),
   });
 }
 
