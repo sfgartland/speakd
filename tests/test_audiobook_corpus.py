@@ -28,6 +28,13 @@ HEADER = "A Tale of Two Columns"
 CROSS_FIRST = "The cross column sentence begins"
 CROSS_SECOND = "and ends in the rightmost column."
 
+# The real failing document (Köhler 1939, PDF pages 35-39 = printed pp. 15-19),
+# mutool stext with the `<char>` quads stripped: word-level `<line>` elements
+# with noisy baselines, an OCR'd 'i6' running head, an 'il' footnote marker,
+# and a sentence split across the PDF p.35/36 break.
+KOHLER = CORPUS / "stext" / "kohler-p36.xml"
+KOHLER_EXPECTED = CORPUS / "kohler-p36.expected.txt"
+
 
 def _stext(pdf: Path, page: int | None = None) -> str:
     command = ["mutool", "draw", "-F", "stext", "-o", "-", str(pdf)]
@@ -92,3 +99,33 @@ def test_pdftotext_corpus_characterises_poppler_and_strips_heads() -> None:
     ]
     stripped = prep.strip_pages(footnote_pages)
     assert all("Footnotes and the Reader" not in line for page in stripped for line in page)
+
+
+def test_kohler_page_16_regression(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real failing scan, end to end through the stext extractor: the
+    running head drops, the sentence split across the p.35/36 break rejoins,
+    a paragraph break lands before the indented '"It almost…', and the OCR'd
+    footnote moves out of the body to the part's end with its text intact."""
+    xml = KOHLER.read_text(encoding="utf-8")
+    monkeypatch.setattr(prep, "_outline", lambda pdf: [])
+    monkeypatch.setattr(
+        prep,
+        "_stext_pages_or_none",
+        lambda pdf, pages, footnotes: prep.stext_body_pages(xml, footnotes),
+    )
+    text = "\n".join(prep.prepare_pdf(Path("kohler.pdf"), None, "auto", True))
+
+    # The running heads recur across the five pages and are dropped.
+    assert "THE PLACE OF VALUE IN A WORLD OF FACTS" not in text
+    assert "THE CASE AGAINST SCIENCE" not in text
+    # The sentence split across the page break is rejoined.
+    assert "we cannot transfer the rules of spatial and of temporal experience." in text
+    # The indented line opens a paragraph where the vertical gap does not.
+    assert '\n\n"It almost goes without saying' in text
+    # The OCR'd footnote is out of the body, at the part's end, its text
+    # preserved ('il' and 'aie' need not be repaired).
+    assert "il found recently that these words aie quoted from A. N. Whitehead" in text
+    assert text.index("A. N. Whitehead") > text.index("this curious")
+    assert text.index("A. N. Whitehead") > text.index("of spatial and of temporal experience.")
+
+    assert text + "\n" == KOHLER_EXPECTED.read_text(encoding="utf-8")

@@ -30,7 +30,12 @@ HEADER_MIN_PAGES = 5
 FOOTNOTE_POLICIES = ("classify", "drop", "defer")
 SHORT_FOOTNOTE = 48
 LONG_FOOTNOTE = 140
-FOOTNOTE_MARKER = re.compile(r"^(?:[¹²³⁰-⁹]{1,3}|\d{1,2}[.:\s]|n\d{1,2}|\*+|[†‡¶])")
+FOOTNOTE_MARKER = re.compile(
+    r"^(?:[¹²³⁰-⁹]{1,3}"  # superscripts
+    r"|[0-9OolIil]{0,1}\d[0-9OolIil]{0,1}[.:\s]"  # 1-2 digits, OCR-confused or not
+    r"|[OolIil]{2,3}[.:\s]"  # two-plus OCR confusables, e.g. 'il' for '1 I'
+    r"|n\d{1,2}|\*+|[†‡¶])"
+)
 CITATION_OPENER = re.compile(
     r"\bIbid\.?\b|\bCf\.?\b|\bop\. cit\.|\bSee\b|\b[A-ZÖÄÜ][^\W\d_]+[,]?\s+\d{4}\b"
 )
@@ -41,6 +46,10 @@ CITATION_OPENER = re.compile(
 BOTTOM_BAND = 0.25
 SMALL_SIZE = 0.85
 PARAGRAPH_GAP = 1.5
+# Visual-line grouping (mutool emits word-sized `<line>` elements): a band is a
+# share of the line's font size, the horizontal guard a multiple of it.
+VISUAL_BAND = 0.6
+VISUAL_GAP = 2.0
 OCR_SUSPICION_GATE = 6.0
 SCAN_JUNK = re.compile("[\ufb00-\ufb04\x00-\x08\x0e-\x1f\x7f\xad\xac\xb7\u200b-\u200d\u2060\ufeff]")
 SPLIT_DIGITS = re.compile(r"(?<=\d)\s+(?=\d)")
@@ -68,8 +77,23 @@ def is_page_number(line: str) -> bool:
     return bool(ARABIC_OR_ROMAN.match(line.strip()))
 
 
+# A page number as OCR leaves it: digits and the confusions of 1/0, at least
+# one real digit so body words are untouched.
+_PAGE_TOKEN = re.compile(r"^(?=[0-9OolIil]*\d)[0-9OolIil]+$")
+
+
 def _normalise(line: str) -> str:
-    return re.sub(r"\d", "#", " ".join(line.split()))
+    """Whitespace collapsed, digits `#` -- and a page-number-like token (digits
+    plus the OCR confusions of 1/0, `i l I o O`) wholly `#`, so a mangled
+    running head ('i6') and its clean twin ('16') normalise equal."""
+    tokens = []
+    for token in line.split():
+        bare = re.sub(r"[.,;:!?()\[\]{}'\"]", "", token)
+        if _PAGE_TOKEN.match(bare):
+            tokens.append(re.sub(r"[0-9OolIil]", "#", bare))
+        else:
+            tokens.append(re.sub(r"\d", "#", token))
+    return " ".join(tokens)
 
 
 def running_lines(pages: list[list[str]]) -> set[str]:
@@ -139,6 +163,7 @@ class StextLine(NamedTuple):
     x0: float
     x1: float
     top: float
+    bottom: float
     size: float
 
 
@@ -148,7 +173,7 @@ class StextPage(NamedTuple):
 
 
 def parse_stext(xml: str) -> list[StextPage]:
-    """mutool stext as pages of lines: text, x-range, top, font size.
+    """mutool stext as pages of lines: text, x-range, top, bottom, font size.
 
     stext's y runs top-down (0 at the page top), so the bottom band of a
     page is *high* y -- the mirror image of the plugin's bottom-up rect y.
@@ -164,9 +189,72 @@ def parse_stext(xml: str) -> list[StextPage]:
                 continue
             font = line.find("font")
             size = float(font.get("size") or 0) if font is not None else 0.0
-            lines.append(StextLine(text, float(bbox[0]), float(bbox[2]), float(bbox[1]), size))
+            lines.append(
+                StextLine(
+                    text,
+                    float(bbox[0]),
+                    float(bbox[2]),
+                    float(bbox[1]),
+                    float(bbox[3]),
+                    size,
+                )
+            )
         pages.append(StextPage(height, lines))
     return pages
+
+
+def _merge_visual_line(run: list[StextLine]) -> StextLine:
+    """One visual line from the word-sized `<line>` elements it holds: their
+    texts in x order, the union of their boxes, the largest font size."""
+    ordered = sorted(run, key=lambda line: line.x0)
+    return StextLine(
+        " ".join(line.text for line in ordered),
+        min(line.x0 for line in ordered),
+        max(line.x1 for line in ordered),
+        min(line.top for line in ordered),
+        max(line.bottom for line in ordered),
+        max(line.size for line in ordered),
+    )
+
+
+def _visual_lines(lines: list[StextLine]) -> list[StextLine]:
+    """mutool emits each word as its own `<line>` with a noisy top; lines whose
+    vertical centres share a band (a share of the font size) are one visual
+    line, read left to right -- the fix for the Köhler word-order regression.
+    A horizontal guard (a few ems) keeps two columns' words on the same
+    baseline apart, so column detection still sees two columns."""
+    if not lines:
+        return []
+    heights = sorted(line.bottom - line.top for line in lines if line.bottom > line.top)
+    median_height = heights[len(heights) // 2] if heights else 0.0
+    bands: list[list[StextLine]] = []
+    for line in sorted(lines, key=lambda item: ((item.top + item.bottom) / 2, item.x0)):
+        centre = (line.top + line.bottom) / 2
+        for band in bands:
+            first = band[0]
+            size = max(line.size, first.size)
+            tolerance = VISUAL_BAND * (size if size > 0 else median_height)
+            # Compared with the band's first centre, so the band stays bounded
+            # and cannot chain one visual line into the next.
+            if centre - (first.top + first.bottom) / 2 <= tolerance:
+                band.append(line)
+                break
+        else:
+            bands.append([line])
+    visual: list[StextLine] = []
+    for band in bands:
+        ordered = sorted(band, key=lambda item: item.x0)
+        run = [ordered[0]]
+        for line in ordered[1:]:
+            gap = line.x0 - max(item.x1 for item in run)
+            size = max(line.size, max(item.size for item in run))
+            if gap > VISUAL_GAP * size:
+                visual.append(_merge_visual_line(run))
+                run = [line]
+            else:
+                run.append(line)
+        visual.append(_merge_visual_line(run))
+    return sorted(visual, key=lambda line: line.top)
 
 
 def _order_columns(lines: list[StextLine]) -> list[list[StextLine]]:
@@ -191,10 +279,10 @@ def _running_head_texts(pages: list[StextPage]) -> set[str]:
     """Normalised texts recurring as the first line of a column, or as a page's
     bottom content line, on enough pages (`running_lines` semantics, counted
     per column): running heads and footers, dropped wherever they appear. A
-    body line that opens a page once is never a candidate. The grouping runs
-    on the raw lines, so a full-width head merges the columns and is still the
-    first line of the column it swallowed -- found, dropped, and the columns
-    regrouped without it."""
+    body line that opens a page once is never a candidate. The pages hold
+    visual lines, so a full-width head is one line and still the first of the
+    column it swallowed -- found, dropped, and the columns regrouped without
+    it."""
     if len(pages) < HEADER_MIN_PAGES:
         return set()
     counts: Counter[str] = Counter()
@@ -255,26 +343,37 @@ def _split_footnotes(
 
 def _paragraph_lines(columns: list[list[StextLine]]) -> list[str]:
     """The columns' lines as paragraph lines: a blank line at every paragraph
-    break -- a gap past one and a half times the column's median line gap, and
-    every column boundary, since a new column is always a new paragraph."""
+    break -- a gap past one and a half times the column's median line gap, an
+    indented first line, and every column boundary, since a new column is
+    always a new paragraph. The indent matters on scans where the paragraph
+    break is not wider than the line spacing (the Köhler page 16 case)."""
     out: list[str] = []
     for number, column in enumerate(columns):
         if number > 0 and out and out[-1] != "":
             out.append("")  # a new column is always a new paragraph
+        if not column:
+            continue
         gaps = [below.top - above.top for above, below in pairwise(column)]
-        median = sorted(gaps)[len(gaps) // 2] if gaps else 0.0
+        sorted_gaps = sorted(gaps)
+        median = sorted_gaps[len(sorted_gaps) // 2] if sorted_gaps else 0.0
+        sizes = sorted(line.size for line in column if line.size > 0)
+        indent = 0.6 * (sizes[len(sizes) // 2] if sizes else 0.0)
+        margin = min(line.x0 for line in column)
         for index, line in enumerate(column):
-            if index > 0 and gaps[index - 1] > max(median * PARAGRAPH_GAP, median + 2):
-                out.append("")
+            if index > 0:
+                gap = gaps[index - 1]
+                if gap > max(median * PARAGRAPH_GAP, median + 2) or line.x0 - margin > indent:
+                    out.append("")
             out.append(line.text)
     return out
 
 
 def stext_body_pages(xml: str, footnotes: str) -> tuple[list[list[str]], list[list[list[str]]]]:
     """stext XML as (body pages of lines, kept footnote units per page), in
-    reading order: columns first, then the recurring top-band heads out, then
+    reading order: the word-sized `<line>` elements are first merged into
+    visual lines, then columns, then the recurring top-band heads out, then
     the footnotes held aside per the policy for their page's end."""
-    pages = parse_stext(xml)
+    pages = [StextPage(page.height, _visual_lines(page.lines)) for page in parse_stext(xml)]
     heads = _running_head_texts(pages)
     bodies: list[list[str]] = []
     notes: list[list[list[str]]] = []
@@ -451,10 +550,15 @@ def prepare_pdf(
     else:
         body_pages, note_units = extracted
     first = pages[0] if pages else 1
-    page_lines = [
-        body + [line for unit in units for line in ("", *unit)]
-        for body, units in zip(body_pages, note_units, strict=True)
-    ]
+    last_page = first + len(body_pages) - 1
+
+    def group_lines(low: int, high: int) -> list[str]:
+        """A page range's body lines, then its deferred footnotes at the end:
+        a footnote wedged between two pages would split a sentence that runs
+        across the page break (the Köhler p.35/36 case)."""
+        body = [line for page in body_pages[low:high] for line in page]
+        notes = [unit for units in note_units[low:high] for unit in units]
+        return body + [line for unit in notes for line in ("", *unit)]
 
     # Each group is (title, its pages' lines). Pages before the first outline
     # entry are front matter (title page, contents) and are dropped unless
@@ -463,19 +567,19 @@ def prepare_pdf(
     outline = _outline(pdf) if chapters == "auto" else []
     if outline:
         starts = [page for _, page in outline]
-        last_page = first + len(page_lines) - 1
         bounds = [*starts[1:], last_page + 1]
         if keep_front_matter and starts[0] > first:
-            groups.append((None, [ln for p in page_lines[: starts[0] - first] for ln in p]))
+            groups.append((None, group_lines(0, starts[0] - first)))
         for (title, start), end in zip(outline, bounds, strict=True):
             # A chapter that overlaps the range keeps its in-range pages;
             # only chapters wholly outside it are dropped.
             if start > last_page or end <= first:
                 continue
-            chosen = page_lines[max(start, first) - first : min(end, last_page + 1) - first]
-            groups.append((title, [line for page in chosen for line in page]))
+            groups.append(
+                (title, group_lines(max(start, first) - first, min(end, last_page + 1) - first))
+            )
     else:
-        groups.append((None, [line for page in page_lines for line in page]))
+        groups.append((None, group_lines(0, len(body_pages))))
 
     if not keep_references and groups:
         # A whole trailing chapter called "References" goes; otherwise the

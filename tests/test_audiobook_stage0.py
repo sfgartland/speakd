@@ -174,8 +174,8 @@ def stext_doc(pages: list[str]) -> str:
     return '<?xml version="1.0"?><document>' + "".join(pages) + "</document>"
 
 
-def stext_page(lines: list[str]) -> str:
-    return '<page width="595" height="842">' + "".join(lines) + "</page>"
+def stext_page(lines: list[str], height: int = 842) -> str:
+    return f'<page width="595" height="{height}">' + "".join(lines) + "</page>"
 
 
 def paper_pages() -> list[str]:
@@ -407,3 +407,174 @@ def test_ocr_report_fires_on_mangled_text_and_not_on_clean(
         assert ("OCR artefacts likely" in err) is fires
         if fires:
             assert "spot-check" in err
+
+
+# ---- the real failing document: word-level lines, OCR markers, indents ----
+
+
+def test_stext_groups_word_level_lines_into_one_visual_line() -> None:
+    """mutool emits each word as its own `<line>` with a noisy top; those are
+    one visual line, read left to right, not a stack sorted by noisy baseline
+    (the Köhler word-order regression)."""
+    page = stext_page(
+        [
+            stext_line("qualia", 38, 75.4, 76, 8.0),
+            stext_line("such", 76, 72.7, 106, 8.4),
+            stext_line("experience", 106, 75.4, 166, 8.4),
+            stext_line("is", 166, 74.0, 183, 5.9),
+            stext_line("nothing", 183, 75.0, 229, 8.9),
+            stext_line("but", 229, 72.5, 254, 9.0),
+            stext_line("a", 254, 74.7, 269, 7.8),
+            stext_line("subjective", 269, 75.8, 310, 7.7),
+        ]
+    )
+    bodies, _ = prep.stext_body_pages(stext_doc([page]), "classify")
+    assert bodies == [["qualia such experience is nothing but a subjective"]]
+
+
+def test_running_head_recurrence_normalises_ocr_page_numbers() -> None:
+    """'i6' and '16' are the same running head: the leading confusable
+    normalises with the digit it OCR'd, so a mangled head still recurs across
+    the pages and drops."""
+    pages = []
+    for number in range(5):
+        if number % 2 == 0:
+            head = "THE CASE AGAINST SCIENCE"
+        elif number == 1:
+            head = "i6 THE PLACE OF VALUE IN A WORLD OF FACTS"
+        else:
+            head = "18 THE PLACE OF VALUE IN A WORLD OF FACTS"
+        pages.append([head, f"body of page {number}"])
+    running = prep.running_lines(pages)
+    assert "## THE PLACE OF VALUE IN A WORLD OF FACTS" in running
+    assert "THE CASE AGAINST SCIENCE" in running
+
+
+def test_stext_reads_an_ocr_mangled_footnote_marker() -> None:
+    """The footnote marker OCR'd as 'il' (for '1 I') still opens a footnote:
+    the geometry (bottom band, small print) is the guard, never the marker
+    alone."""
+    page = stext_page(
+        [
+            stext_line("The body of the page.", 72, 62, 400, 11),
+            stext_line(
+                "il found recently that these words aie quoted from A. N. Whitehead,",
+                44,
+                480,
+                330,
+                6.8,
+            ),
+            stext_line(
+                "who does not of course share the opinion which they express.",
+                36,
+                490,
+                320,
+                8.4,
+            ),
+        ],
+        height=533,
+    )
+    bodies, notes = prep.stext_body_pages(stext_doc([page]), "defer")
+    assert bodies == [["The body of the page."]]
+    assert notes == [
+        [
+            [
+                "il found recently that these words aie quoted from A. N. Whitehead,",
+                "who does not of course share the opinion which they express.",
+            ]
+        ]
+    ]
+
+
+def test_stext_keeps_a_small_body_line_opening_with_a_roman_i() -> None:
+    """A body paragraph opening 'I ' is small print but not a marker: a lone
+    confusable is not a footnote number, so geometry must not move it."""
+    page = stext_page(
+        [
+            stext_line("The body of the page.", 72, 62, 400, 11),
+            stext_line("I looked at the man speechless.", 48, 259, 400, 6.0),
+            stext_line("who does not of course share the opinion.", 36, 490, 320, 8.4),
+        ]
+    )
+    bodies, notes = prep.stext_body_pages(stext_doc([page]), "defer")
+    assert notes == [[]]
+    assert "I looked at the man speechless." in bodies[0]
+
+
+def test_stext_starts_a_paragraph_at_an_indented_line() -> None:
+    """An indented line opens a paragraph even where the vertical gap is no
+    wider than the line spacing, as on the Köhler scan."""
+    page = stext_page(
+        [
+            stext_line("the end of one paragraph.", 37, 60, 300, 11),
+            stext_line("A new paragraph begins indented.", 49, 76, 300, 11),
+            stext_line("and it continues unindented here.", 37, 92, 300, 11),
+        ]
+    )
+    bodies, _ = prep.stext_body_pages(stext_doc([page]), "classify")
+    assert bodies == [
+        [
+            "the end of one paragraph.",
+            "",
+            "A new paragraph begins indented.",
+            "and it continues unindented here.",
+        ]
+    ]
+
+
+def test_prepare_pdf_rejoins_across_pages_and_defers_footnotes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sentence split by a page break is rejoined because the previous
+    page's footnote is deferred to the group's end, not wedged between the
+    pages."""
+    xml = stext_doc(
+        [
+            stext_page(
+                [
+                    stext_line(
+                        "enigmatic scheme to which we cannot transfer the rules",
+                        37,
+                        460,
+                        340,
+                        8.5,
+                    ),
+                    stext_line(
+                        "il found recently that these words aie quoted from A. N. Whitehead,",
+                        44,
+                        480,
+                        330,
+                        6.8,
+                    ),
+                    stext_line(
+                        "who does not of course share the opinion which they express.",
+                        36,
+                        490,
+                        320,
+                        8.4,
+                    ),
+                ],
+                height=533,
+            ),
+            stext_page(
+                [
+                    stext_line(
+                        "of spatial and of temporal experience. Like the sensory",
+                        37,
+                        58,
+                        320,
+                        8.5,
+                    )
+                ]
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        prep,
+        "_stext_pages_or_none",
+        lambda pdf, pages, footnotes: prep.stext_body_pages(xml, footnotes),
+    )
+    monkeypatch.setattr(prep, "_outline", lambda pdf: [])
+    text = "\n".join(prep.prepare_pdf(Path("x.pdf"), None, "auto", True))
+    assert "we cannot transfer the rules of spatial and of temporal experience." in text
+    assert text.index("A. N. Whitehead") > text.index("of spatial and of temporal experience.")

@@ -172,6 +172,33 @@ describe("planFootnotes", () => {
     // for: kept, never dropped on a guess.
     expect([...plan.tags]).toEqual(["drop", "body", "drop"]);
   });
+
+  it("recognises an OCR-mangled footnote marker in the bottom band", () => {
+    // The marker OCR'd as 'il' (for '1 I') still opens a footnote: the bottom
+    // band is the guard, not the marker's exact shape.
+    const plan = planFootnotes(
+      [
+        seg("The body paragraph.", 0, "paragraphStart", 760),
+        seg("il found recently that these words aie quoted from A. N. Whitehead,", 0, "paragraphStart", 140),
+        seg("who does not of course share the opinion which they express.", 0, null, 130),
+      ],
+      "defer_all",
+    );
+    expect([...plan.tags]).toEqual(["body", "defer", "defer"]);
+  });
+
+  it("keeps a body paragraph in the band that opens with a lone 'I '", () => {
+    // A lone confusable is not a footnote marker: even drop_all leaves it
+    // alone, so a body paragraph is never dropped on geometry alone.
+    const plan = planFootnotes(
+      [
+        seg("The body opens the page.", 0, "paragraphStart", 760),
+        seg("I looked at the man speechless.", 0, "paragraphStart", 140),
+      ],
+      "drop_all",
+    );
+    expect([...plan.tags]).toEqual(["body", "body"]);
+  });
 });
 
 describe("classificationResidue", () => {

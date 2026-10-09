@@ -78,13 +78,16 @@ index 46 ("and ends in the rightmost column.", firstRectY 780, top of the
 right). The plugin needs **no reading-order work** (proposal non-goal),
 only the filters.
 
-### Still open (blocked on the owner's failing sample)
+### The owner's failing sample (arrived after the corpus)
 
-The same four questions on a real failing document — a scan, a PDF whose
-headers survive Zotero's exclusion, a paper whose footnotes sit outside
-the bottom quartile, a document whose segments lack rects. Nothing in
-Tasks 3–6 assumes a definitive answer: every threshold is provisional
-where the plan says so.
+The four questions were answered on the generated fixtures. The owner's
+real failing scan (a skill-path document — see "The real failing
+document" below) arrived later and confirmed the skill failures it
+exposed. The same questions for the **Zotero** path on a real document —
+a PDF whose headers survive Zotero's exclusion, footnotes outside the
+bottom quartile, segments without rects — still have no captured segment
+dump. Nothing in Tasks 3–6 assumes a definitive answer: every threshold
+is provisional where the plan says so.
 
 ## Live check — the rules-only read (Task 7)
 
@@ -153,6 +156,58 @@ provisional and conservative, conditional on a real scan fixture; the
 bottom band (25% of the page height, from stext's own geometry) mirrors
 the plugin's provisional constant.
 
+## The real failing document (owner's sample arrived)
+
+The owner's failing scan arrived after the fixtures were built: Köhler,
+*The Place of Value in a World of Facts* (1939), a scanned OCR PDF; PDF page
+36 = printed p. 16. It is read-only and is **not** checked in; only the
+extracted text is (`tests/fixtures/corpus/stext/kohler-p36.xml`, the mutool
+stext of PDF pages 35–39 with the `<char>` quads stripped, ~75 KB, plus
+`kohler-p36.expected.txt`). Three real failures showed up, all now
+regression-tested:
+
+1. **Word-order scramble (skill stext path).** mutool emits each word as its
+   own `<line>` element with a noisy `y`; `parse_stext` treated each as a
+   line and `_order_columns` sorted them by noisy `top`, interleaving adjacent
+   visual lines. The fix groups word-level `<line>` elements into visual
+   lines first (a band tied to the line's font size, plus a horizontal guard
+   so two columns on one baseline stay apart), orders within a line by `x0`,
+   and only then runs column detection. On the real page the scrambled
+   "but such is a nothing experience qualia subjective" is now the true
+   "qualia such experience is nothing but a subjective". **`stext` remains
+   the default**; the `pdftotext` fallback still inherits poppler's
+   interleaved order where mutool is absent, and the previous two-column
+   fixture still passes.
+2. **Running head not dropped.** The head OCR'd as `i6 THE PLACE OF VALUE IN
+   A WORLD OF FACTS` (and `THE CASE AGAINST SCIENCE` on the facing pages)
+   recurs on enough of the five pages only once the page-number-like token
+   `i6` normalises with its clean twin `18` — digits *and* the OCR confusions
+   of 1/0 (`i l I o O`) → `#`, with at least one real digit so body words are
+   untouched. Mirrored in the plugin's `segmentfilter.ts`.
+3. **Footnote marker missed, and a body-line risk.** The footnote `il found
+   recently…` (marker OCR'd from `1 I`) was read inline because the marker
+   regex only accepted digits. The marker set now accepts a 1–2 character run
+   that is a digit with an optional confusable on either side, or two-plus
+   confusable letters (`il`), and never a lone `I `/`l ` — a body paragraph
+   opening "I looked…" stays body even under `drop_all`. Mirrored in the
+   plugin's `footnotes.ts`.
+
+The owner's expected output is met: the running heads drop, the sentence
+split across the p.35/36 break reads `…we cannot transfer the rules of
+spatial and of temporal experience.`, a paragraph break lands before the
+indented `"It almost goes without saying`, and the OCR'd footnote moves out
+of the body to the part's end with its text preserved (`aie` not repaired).
+That last point needed one more fix: deferred footnotes are appended at the
+**group's** end, not their own page's, so a footnote on p.35 no longer wedges
+itself between the two halves of a sentence that runs over the page break.
+
+The provisional constants stay provisional: the sample is a single book, and
+the bottom band (25%) and OCR gate (6.0) were not re-tuned from it. On this
+sample `--ocr-report` scores 0.96, below the gate — the scan's OCR errors are
+mostly word substitutions (`aie`, `lor`, `Irom`), which the provisional
+heuristic does not count, which is exactly why the agent's spot-check pass
+(SKILL.md step 4) remains the semantic stage here.
+
 ## Thresholds after Stage 0
 
 | Threshold | Value | Status |
@@ -160,7 +215,7 @@ the plugin's provisional constant.
 | Running-head recurrence (both surfaces) | 40% of ≥ 5 pages | established (`prepare_text.py:20-21`), mirrored |
 | Bottom-band percentile (plugin) | bottom ~25% of the page's observed y-range | **provisional** — holds on the fixtures; final value conditional on the owner's sample |
 | OCR suspicion cut-off | conservative/high | **provisional** — conditional on a real OCR-scan fixture |
-| `joinSplitDigits` | — | **cut** (Task 6): Stage 0's dumps show no split-digit artefacts — the fixtures are born-digital, and the owner's sample has not arrived. Re-open only with real scan evidence. `ocrSuspicion` still counts split-digit hits as a signal. |
+| `joinSplitDigits` | — | **cut** (Task 6): Stage 0's dumps show no split-digit artefacts — the fixtures are born-digital. Re-open only with real scan evidence. `ocrSuspicion` still counts split-digit hits as a signal. |
 | Skill-path extractor | `mutool stext` + tolerant fallback | decided here: poppler default fails the fixture |
 
 ## Shared fixture corpus (Task 13)
@@ -195,12 +250,14 @@ sample shows it on real text.
 - **Task 8 branch:** `stext` — the `mutool stext` extractor with the
 tolerant `pdftotext` fallback (recorded above).
 - **Bottom-band percentile:** still the provisional bottom ~25% of the
-  page's observed y-range; holds on the fixtures, final value conditional
-  on the owner's failing sample.
+  page's observed y-range; holds on the fixtures. The owner's sample is a
+  skill-path document, so it did not re-tune the plugin's band, whose final
+  value stays conditional.
 - **OCR suspicion cut-off:** still the provisional conservative 6.0 (plugin
-  default gate and skill `--ocr-report` gate); the scan-like corpus fixture
-  is generated, not a real scan, so the final value stays conditional on a
-  real OCR-scan fixture.
+  default gate and skill `--ocr-report` gate). The owner's sample arrived
+  later and scores 0.96, below the gate: its errors are word substitutions
+  the heuristic does not count, so the final value stays conditional on a
+  scan that exercises it.
 - **`joinSplitDigits`:** cut, as recorded above.
 - **Live/harness verification (Task 14):** partially done in this
   worktree — a headless Zotero 10.0.6 (`MOZ_HEADLESS=1 flatpak run

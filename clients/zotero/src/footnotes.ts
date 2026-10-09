@@ -60,8 +60,11 @@ export const BOTTOM_BAND = 0.25;
 const SHORT_FOOTNOTE = 48;
 const LONG_FOOTNOTE = 140;
 
-/** Every footnote marker the taxonomy names: superscripts, digits, n-digits, symbols. */
-const MARKER = /^(?:[¹²³⁰-⁹]{1,3}|\d{1,2}[.:\s]|n\d{1,2}|\*+|[†‡¶])/u;
+/** Every footnote marker the taxonomy names: superscripts, digits (OCR-confused
+ * or not), n-digits, symbols. A lone confusable letter ('I ', 'l ') is not a
+ * marker -- otherwise body paragraphs would be candidates on geometry alone. */
+const MARKER =
+  /^(?:[¹²³⁰-⁹]{1,3}|[0-9OolIil]{0,1}\d[0-9OolIil]{0,1}[.:\s]|[OolIil]{2,3}[.:\s]|n\d{1,2}|\*+|[†‡¶])/u;
 const SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 
 /** The number a marker opens with, for sequential runs; null when it has none. */
@@ -76,7 +79,8 @@ function markerNumber(text: string): number | null {
     }
     return value;
   }
-  const plain = /^(?:\d{1,2}|n(\d{1,2}))/.exec(text);
+  const canonical = text.slice(0, 3).replace(/[Oo]/gu, "0").replace(/[Ili]/gu, "1");
+  const plain = /^(?:\d{1,2}|n(\d{1,2}))/.exec(canonical);
   if (plain === null) return null;
   return Number(plain[1] ?? plain[0]);
 }

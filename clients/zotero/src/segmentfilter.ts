@@ -28,9 +28,19 @@ export interface FilterSegment {
   readonly pageIndex?: number | null;
 }
 
+// A page-number-like token: digits plus the OCR confusions of 1/0 (i l I o O),
+// with at least one real digit -- so 'i6' and '16' become the same '##' and a
+// mangled running head still recurs, while body words are left alone.
+const PAGE_TOKEN = /^[0-9OolIil]+$/;
+
 /** Whitespace collapsed, every digit `#`: what makes "Chapter 3" and "Chapter 4" one head. */
 function normalise(text: string): string {
-  return text.replace(/\d/g, "#").replace(/\s+/g, " ").trim();
+  const tokens = text.split(/\s+/).map((token) => {
+    const bare = token.replace(/[^0-9A-Za-z]/g, "");
+    const pageLike = PAGE_TOKEN.test(bare) && /\d/.test(bare);
+    return pageLike ? token.replace(/[0-9OolIil]/g, "#") : token.replace(/\d/g, "#");
+  });
+  return tokens.join(" ").replace(/\s+/g, " ").trim();
 }
 
 /** Whether a paragraph is short enough to be a running head at all. */

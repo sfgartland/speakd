@@ -98,4 +98,22 @@ describe("filterRunningHeads", () => {
     }
     expect(filterRunningHeads(segments)).toHaveLength(segments.length);
   });
+
+  it("normalises OCR confusions of a page number so a mangled head still recurs", () => {
+    // The head alternates with the case title, and its page number is OCR'd
+    // as 'i6' on one page. Un-normalised that mangled head recurs on one page
+    // of five and survives; with the leading confusable folded in, it recurs
+    // on two and drops with its clean twin.
+    const segments: { text: string; pageIndex: number | null }[] = [];
+    for (let page = 0; page < 5; page++) {
+      if (page % 2 === 0) segments.push(seg("THE CASE AGAINST SCIENCE", page));
+      else if (page === 1) segments.push(seg("i6 THE PLACE OF VALUE IN A WORLD OF FACTS", page));
+      else segments.push(seg("18 THE PLACE OF VALUE IN A WORLD OF FACTS", page));
+      segments.push(seg(`Body paragraph letter ${"abcde"[page]}.`, page));
+    }
+    const out = filterRunningHeads(segments);
+    expect(out.map((s) => s.text)).not.toContain("i6 THE PLACE OF VALUE IN A WORLD OF FACTS");
+    expect(out.map((s) => s.text)).not.toContain("18 THE PLACE OF VALUE IN A WORLD OF FACTS");
+    expect(out).toHaveLength(5);
+  });
 });
