@@ -252,7 +252,28 @@ export function parseLabelFile(json: string): ParsedLabelFile {
   const candidate = value as Record<string, unknown>;
   if (candidate.schema !== 1) return { ok: false, why: `unknown label schema: ${String(candidate.schema)}` };
   if (!Array.isArray(candidate.labels)) return { ok: false, why: "the label file has no labels list" };
+  if (!candidate.labels.every(isLabelRecord)) return { ok: false, why: "the label file has a malformed label record" };
   return { ok: true, file: value as LabelFile };
+}
+
+/** A locator with the fields matching reads: anything else fails the file open. */
+function isLocator(value: unknown): value is LabelLocator {
+  if (typeof value !== "object" || value === null) return false;
+  const locator = value as Record<string, unknown>;
+  return (
+    (typeof locator.page === "number" || locator.page === null) &&
+    typeof locator.prefix === "string" &&
+    typeof locator.textSha256 === "string" &&
+    (locator.anchor === undefined || locator.anchor === null || typeof locator.anchor === "string") &&
+    (locator.rectY === undefined || locator.rectY === null || typeof locator.rectY === "number")
+  );
+}
+
+/** A label record with a known category and a locator. */
+function isLabelRecord(value: unknown): value is LabelRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.category === "string" && isLocator(record.locator);
 }
 
 /** Where an attachment's label file lives (spec §7.3, the `stagingPath` pattern). */

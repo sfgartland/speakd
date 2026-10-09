@@ -136,4 +136,9 @@ describe("parseLabelFile", () => {
     const parsed = parseLabelFile(JSON.stringify({ ...file([]), labels: undefined }));
     expect(parsed.ok).toBe(false);
   });
+
+  it("refuses a schema-1 file with a malformed label record", () => {
+    const parsed = parseLabelFile(JSON.stringify({ ...file([]), labels: [{ category: "body" }] }));
+    expect(parsed).toEqual({ ok: false, why: "the label file has a malformed label record" });
+  });
 });
