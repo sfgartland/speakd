@@ -25,12 +25,30 @@ describe("pageGaps", () => {
   it("ignores a blank raw line", () => {
     expect(pageGaps(["", "   ", "Real line."], ["Real line."])).toEqual([]);
   });
+
+  it("covers a line that straddles two captured segments", () => {
+    expect(pageGaps(["First half second half."], ["First half", "second half."])).toEqual([]);
+  });
 });
 
 describe("readRawPageLines", () => {
   it("reads a page's text items through the pdf.js reach and groups them into lines", async () => {
     const lines = await readRawPageLines(fakeReader(), 2);
     expect(lines).toEqual(["Top line", "Bottom line"]);
+  });
+
+  it("honours pdf.js's own end-of-line marks when they are present", async () => {
+    const reader = fakeReader();
+    reader._internalReader._primaryView._iframeWindow.PDFViewerApplication.pdfDocument.getPage = async () => ({
+      getTextContent: async () => ({
+        items: [
+          { str: "THE PLACE OF", hasEOL: false },
+          { str: "VALUE", hasEOL: true },
+          { str: "i6", hasEOL: true },
+        ],
+      }),
+    });
+    expect(await readRawPageLines(reader, 2)).toEqual(["THE PLACE OF VALUE", "i6"]);
   });
 
   it("fails when the reader has no pdf.js reach", async () => {

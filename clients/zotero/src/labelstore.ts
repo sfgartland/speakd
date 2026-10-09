@@ -95,7 +95,11 @@ const rotr = (value: number, bits: number): number => (value >>> bits) | (value 
 
 /** sha256 of `text`'s UTF-8 bytes, as lowercase hex. */
 export function sha256Hex(text: string): string {
-  const data = new TextEncoder().encode(text);
+  return sha256Bytes(new TextEncoder().encode(text));
+}
+
+/** sha256 of a byte array, as lowercase hex. */
+export function sha256Bytes(data: Uint8Array): string {
   const length = data.length;
   const padded = (((length + 9) >> 6) + 1) << 6;
   const bytes = new Uint8Array(padded);

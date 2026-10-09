@@ -35,6 +35,7 @@ import {
   labelsPath,
   matchLabels,
   readLabelFile,
+  sha256Bytes,
   writeLabelFile,
   type LabelCategory,
   type LabelFile,
@@ -59,6 +60,7 @@ import { SPEAKD_VOICE_ID, mergeVoices, silentWav } from "./voices";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const Components: any;
+declare const IOUtils: any;
 type Any = any;
 
 const Cu = (): Any => Components.utils;
@@ -790,7 +792,7 @@ class Adopted implements ReaderHandle {
       await this.requestLabelFile();
       const file =
         this.labelFile ??
-        emptyLabelFile(this.attachmentKey(), result.segments.length, this.zoteroVersion(), Math.floor(Date.now() / 1000));
+        emptyLabelFile(this.attachmentKey(), result.segments.length, this.zoteroVersion(), Math.floor(Date.now() / 1000), (await this.pdfSha256()) ?? "");
       const match = matchLabels(file, result.segments);
       const labeler = new Labeler({
         document: win.document,
@@ -899,6 +901,17 @@ class Adopted implements ReaderHandle {
       const item = this.reader._item;
       const path = typeof item?.getFilePath === "function" ? item.getFilePath() : null;
       return typeof path === "string" && path !== "" ? path : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The PDF's sha256, a hint recorded in the label file and the fixture README. */
+  private async pdfSha256(): Promise<string | null> {
+    const path = this.pdfPath();
+    if (path === null) return null;
+    try {
+      return sha256Bytes(new Uint8Array(await IOUtils.read(path)));
     } catch {
       return null;
     }

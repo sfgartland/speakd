@@ -3,6 +3,9 @@ import { tagSegments } from "../src/footnotes";
 import { matchLabels, parseLabelFile } from "../src/labelstore";
 import { scoreFixture } from "../src/scoring";
 import footnotesDump from "./fixtures/footnotes.jsonl?raw";
+import { buildParts } from "../src/export/parts";
+import kohlerCapture from "./fixtures/pdf/kohler/capture.jsonl?raw";
+import kohlerLabels from "./fixtures/pdf/kohler/labels.json?raw";
 import syntheticCapture from "./fixtures/pdf/synthetic/capture.jsonl?raw";
 import syntheticLabels from "./fixtures/pdf/synthetic/labels.json?raw";
 import twocolumnDump from "./fixtures/twocolumn.jsonl?raw";
@@ -104,5 +107,45 @@ describe("the synthetic label fixture", () => {
         expect(withLabels[index]?.tag).toBe("body");
       }
     }
+  });
+});
+
+// The real Köhler fixture (spec §8.5): pages 34-38, derived artifacts only,
+// the PDF never checked in. Its one labelable failure is the OCR'd inline
+// footnote; the running heads and page numbers were dropped before the
+// capture, so they are named in the README's gap report and cannot be
+// labelled. The unaided rules already detect the footnote, so the score is
+// clean: the real debt is the pre-capture gap.
+describe("the Köhler fixture", () => {
+  const segments = parse(kohlerCapture);
+  const parsed = parseLabelFile(kohlerLabels);
+
+  it("matches its one label, the inline footnote, and detects it unaided", () => {
+    if (!parsed.ok) throw new Error("the fixture's labels are unparsable");
+    const { overrides, unmatched } = matchLabels(parsed.file, segments);
+    expect(overrides.size).toBe(1);
+    expect([...overrides.values()]).toEqual(["footnote"]);
+    expect(unmatched).toEqual([]);
+    const labels = [...overrides].map(([index, category]) => ({ index, category }));
+    const score = scoreFixture(segments, labels, tagSegments(segments, "classify").tagged);
+    expect(score.footnoteDetected).toBe(1);
+    expect(score.footnoteTotal).toBe(1);
+    expect(score.misses).toEqual([]);
+    expect(score.overDrops).toEqual([]);
+    expect(score.precision).toBe(1);
+    expect(score.recall).toBe(1);
+  });
+
+  it("keeps the labelled footnote out of the body flow, at the part's end", () => {
+    if (!parsed.ok) throw new Error("the fixture's labels are unparsable");
+    const { overrides } = matchLabels(parsed.file, segments);
+    const parts = buildParts(
+      segments.map((segment) => ({ ...segment, pageIndex: segment.pageIndex ?? 0 })),
+      "Köhler",
+      { kind: "pages", ranges: [{ startPage: 34, endPage: 38 }] },
+      { footnotes: "classify", overrides },
+    );
+    expect(parts).toHaveLength(1);
+    expect(parts[0]?.text.trimEnd().endsWith("which they express.")).toBe(true);
   });
 });
