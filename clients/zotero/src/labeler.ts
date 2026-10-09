@@ -86,6 +86,8 @@ export interface LabelerOptions {
   onSelect(index: number): void;
   /** `Esc`: leave label mode. */
   onExit(): void;
+  /** The "Export fixture…" button: write the labelled fixture somewhere local. */
+  onExport?(): void;
   warn(message: string, error?: unknown): void;
 }
 
@@ -120,6 +122,14 @@ export class Labeler {
     const title = options.document.createElement("div");
     title.className = "speakd-label-title";
     title.textContent = "Label this document";
+    if (options.onExport !== undefined) {
+      const exportButton = options.document.createElement("button");
+      exportButton.className = "speakd-label-export";
+      exportButton.textContent = "Export fixture…";
+      exportButton.title = "Write this document's ground-truth fixture";
+      exportButton.addEventListener("click", () => options.onExport?.());
+      title.appendChild(exportButton);
+    }
     const close = options.document.createElement("button");
     close.className = "speakd-label-close";
     close.textContent = "×";

@@ -27,6 +27,8 @@ import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import { adoptionProblem } from "./export/capture";
 import { dumpToFile, type DumpResult } from "./export/debugdump";
+import { defaultFixtureDir, fixtureContent, writeFixture } from "./export/fixture";
+import { checkPageGaps } from "./export/gaps";
 import { Labeler, mountCapturePane, type CapturePane } from "./labeler";
 import {
   emptyLabelFile,
@@ -801,6 +803,11 @@ class Adopted implements ReaderHandle {
         now: () => Math.floor(Date.now() / 1000),
         onSelect: (index) => this.highlightSegment(index),
         onExit: () => this.exitLabelMode(),
+        onExport: () => {
+          void this.exportFixture(defaultFixtureDir(this.attachmentKey())).then((result) => {
+            if (!result.ok) this.labeler?.note(result.error);
+          });
+        },
         warn: (message, error) => this.log.warn(message, error),
       });
       this.guard("mounting the label pane", () => labeler.mount());
@@ -843,11 +850,58 @@ class Adopted implements ReaderHandle {
     }
   }
 
-  /** The fixture export (Task 5). */
+  /** The fixture export (spec §8.3): the captured segments, their labels, and the snapshot. */
   async exportFixture(path: string, range?: { readonly first: number; readonly last: number }): Promise<FixtureResult> {
-    void path;
-    void range;
-    return { ok: false, error: "the fixture export is not available yet" };
+    try {
+      if (this.labeler === null) {
+        const entered = await this.enterLabelMode();
+        if (!entered.ok) return { ok: false, error: entered.error };
+      }
+      const all = this.labelSegments;
+      const segments =
+        range === undefined ? all : all.filter((segment) => segment.pageIndex >= range.first && segment.pageIndex <= range.last);
+      const file =
+        this.labelFile ?? emptyLabelFile(this.attachmentKey(), all.length, this.zoteroVersion(), Math.floor(Date.now() / 1000));
+      const { overrides } = matchLabels(file, segments);
+      const gaps = await this.collectGaps(segments);
+      const content = fixtureContent({
+        segments,
+        labels: file,
+        policy: readFootnotePolicy(),
+        overrides,
+        pdfPath: this.pdfPath(),
+        gaps,
+        command: `Zotero.SpeakdReader.handles().find(...).exportFixture(${JSON.stringify(path)}${range === undefined ? "" : `, { first: ${range.first}, last: ${range.last} }`})`,
+      });
+      return await writeFixture(path, content);
+    } catch (error) {
+      this.log.warn("exporting the fixture failed", error);
+      return { ok: false, error: `exporting the fixture failed: ${String(error)}` };
+    }
+  }
+
+  /** The range's dropped-before-capture lines, or null when the pdf.js reach fails. */
+  private async collectGaps(segments: readonly CapturedSegment[]): Promise<string[] | null> {
+    const pages = [...new Set(segments.map((segment) => segment.pageIndex))].sort((a, b) => a - b);
+    const gaps: string[] = [];
+    for (const page of pages) {
+      const captured = segments.filter((segment) => segment.pageIndex === page).map((segment) => segment.text);
+      const result = await checkPageGaps(this.reader, page, captured);
+      if (!result.ok) return null;
+      gaps.push(...result.gaps);
+    }
+    return gaps;
+  }
+
+  /** The attachment's file on disk, best-effort; never the file in the fixture. */
+  private pdfPath(): string | null {
+    try {
+      const item = this.reader._item;
+      const path = typeof item?.getFilePath === "function" ? item.getFilePath() : null;
+      return typeof path === "string" && path !== "" ? path : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Capture with a "capturing…" pane when the manager holds nothing already. */
