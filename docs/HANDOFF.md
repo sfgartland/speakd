@@ -18,6 +18,7 @@ verified against the real API and live in the daemon, two review waves fixed.
 | Codex | Hooks in `~/.codex/hooks.json` + `speakd` MCP server in `~/.codex/config.toml`, via `clients/codex/install.sh` (installed 2026-10-01). Tested by unit tests only, **not yet against a live Codex session** | `speakctl mode full --source codex:<id>` |
 | Claude Code | Installed as a plugin (`speakd@speakd`, user scope): hooks (prompt, Notification, Stop) plus the `speakd-mcp` server | New sessions start **brief and muted**; unmute one in the window. `SPEAKD_HOME` is exported in `~/.zshenv` |
 | OpenCode | Plugin in `~/.config/opencode/plugins/` + MCP entry in `opencode.json`, via `clients/opencode/install.sh`. Sessions start brief and muted like Claude Code. **Verified live end to end** (speech, briefings, mode switching, channel resolution) | `speakctl mode full --source opencode:<id>` |
+| Pi | Extension at `~/.pi/agent/extensions/speakd.ts` (a port of the OpenCode plugin; not in this repo yet) + the shared `speakd-mcp` in `~/.pi/agent/mcp.json`. Sessions start brief and muted, and are named from the Pi session name or the first prompt. Parity with Claude Code: prompt hush, responses, end-of-turn "finished", labels (re-announced after a daemon restart), and a confirmation attention | `speakctl mode full --source pi:<id>` |
 | Briefings | Agents call `brief` over MCP; sessions switch between brief and full per channel | `speakctl mode full --source claude-code:<id>`; the guide is `~/.config/speakd/briefing.md` |
 | Zotero reader | Built, reviewed, verified live in a test Zotero; **not installed in your Zotero yet** | See "Install the Zotero plugin" below |
 | Audio export (Zotero menu) | Built: menu, dialog, render, progress, attach/folder storage | Right-click item → **Export audiobook…**; settings in Config Editor (`extensions.speakd-reader.export_*`) |
@@ -250,12 +251,17 @@ Built in a cloud session, then verified and finished locally the same day.
 
 ## Deferred and known gaps
 
-- **Housekeeping (needs the user's go-ahead):** ~25 merged worktrees under
-  `../speakd-worktrees/` hold untracked `.superpowers/` reports. Removing them
-  was blocked as destructive; the plan was to copy each `.superpowers/` into
-  `.superpowers/archive/<name>/` first, then `git worktree remove --force` and
-  `git branch -d`. Also removable now: `onnx-hybrid` and `pdf-pronounce`
-  (merged), and `feat/onnx-engine` (superseded by the ONNX hybrid; never merged).
+- **PDF text cleanup for narration (requested 2026-10-08; built on an unmerged
+  branch):** remove running headers/footers, handle footnotes gracefully (today
+  read inline) and multi-column text, on both the Zotero plugin path and the
+  `speakd-audiobook` skill, with an optional LLM cleanup stage. 24 commits on
+  `feat/pdf-text-cleanup` (worktree `../speakd-worktrees/pdf-text-cleanup`,
+  2026-10-08/09): filters, footnote policy, Stage B LLM, a component labeler and
+  ground-truth fixtures. Not yet reviewed or merged. Brief, design and plan live
+  on that branch under `docs/design/` and `docs/superpowers/plans/`.
+- **Housekeeping done 2026-10-28:** the merged worktrees and `feat/onnx-engine`
+  (superseded by the ONNX hybrid) were removed; their `.superpowers/` reports and
+  the onnx-engine benchmarks are in `.superpowers/archive/`.
 - **OpenRouter follow-ups** (none blocking):
   - A hush stops audio at once, but the next utterance waits for an in-flight
     OpenRouter request (usually about 1 s, at most the 20 s timeout).
