@@ -328,17 +328,17 @@ def test_stext_detects_footnotes_by_size_or_band() -> None:
     bodies, notes = prep.stext_body_pages(stext_doc([mid_small]), "defer")
     assert bodies[0] == ["The body opens.", "The body goes on early."]
     assert notes[0] == [["1 A small-print note set mid-page."]]
-    # A body-size marker-led line in the bottom band is a footnote without the size.
+    # A small marker-led line in the bottom band is a footnote.
     band = stext_page(
         [
             stext_line("The body opens.", 72, 62, 400, 11),
             stext_line("More body sits here.", 72, 96, 400, 11),
-            stext_line("1 A note in the bottom band, body size.", 72, 700, 400, 11),
+            stext_line("1 A note in the bottom band, small print.", 72, 700, 400, 8),
         ]
     )
     bodies, notes = prep.stext_body_pages(stext_doc([band]), "defer")
     assert bodies[0] == ["The body opens.", "More body sits here."]
-    assert notes[0] == [["1 A note in the bottom band, body size."]]
+    assert notes[0] == [["1 A note in the bottom band, small print."]]
     # A marker-led body line mid-page, body size, is body still.
     body = stext_page(
         [
@@ -349,6 +349,42 @@ def test_stext_detects_footnotes_by_size_or_band() -> None:
     bodies, notes = prep.stext_body_pages(stext_doc([body]), "defer")
     assert bodies[0] == ["12 of them were counted mid-page.", "The body goes on."]
     assert notes == [[]]
+
+
+def test_stext_body_lines_in_the_bottom_band_are_not_footnotes() -> None:
+    """A body-size line in the band that opens with a count ('12 philosophers')
+    or letters that look like a marker ('Oil prices') is body: the band alone
+    is no signal, and the lines after it stay body too."""
+    for opener in ("12 philosophers agreed on little, and the rest followed.", "Oil prices rose."):
+        page = stext_page(
+            [
+                stext_line("The body opens.", 72, 62, 400, 11),
+                stext_line("More body sits here.", 72, 96, 400, 11),
+                stext_line(opener, 72, 700, 400, 11),
+                stext_line("And the body runs on to the page end.", 72, 715, 400, 11),
+            ]
+        )
+        for policy in ("drop", "defer"):
+            bodies, notes = prep.stext_body_pages(stext_doc([page]), policy)
+            assert [line for line in bodies[0] if line][2:] == [
+                opener,
+                "And the body runs on to the page end.",
+            ]
+            assert notes == [[]]
+
+
+def test_stext_footnote_ends_where_body_size_resumes() -> None:
+    page = stext_page(
+        [
+            stext_line("The body opens.", 72, 62, 400, 11),
+            stext_line("1 A small note that wraps", 72, 700, 400, 8),
+            stext_line("onto a second small line.", 72, 710, 400, 8),
+            stext_line("Body text back at full size.", 72, 722, 400, 11),
+        ]
+    )
+    bodies, notes = prep.stext_body_pages(stext_doc([page]), "defer")
+    assert bodies[0] == ["The body opens.", "Body text back at full size."]
+    assert notes[0] == [["1 A small note that wraps", "onto a second small line."]]
 
 
 # ---- the pdftotext fallback: marker deferral over page-text fixtures ----

@@ -36,6 +36,7 @@ FOOTNOTE_MARKER = re.compile(
     r"|[OolIil]{2,3}[.:\s]"  # two-plus OCR confusables, e.g. 'il' for '1 I'
     r"|n\d{1,2}|\*+|[†‡¶])"
 )
+UNAMBIGUOUS_MARKER = re.compile(r"^(?:[¹²³⁰-⁹]{1,3}|\*+|[†‡¶])")
 CITATION_OPENER = re.compile(
     r"\bIbid\.?\b|\bCf\.?\b|\bop\. cit\.|\bSee\b|\b[A-ZÖÄÜ][^\W\d_]+[,]?\s+\d{4}\b"
 )
@@ -58,6 +59,8 @@ GUTTER_SIDE = 0.2
 # A line wider than this share of the text width is a full-width block.
 WIDE_LINE = 0.6
 COLUMN_SHARE = 0.25
+# The share of a page's characters one font size must hold for sizes to count.
+SIZE_TRUST = 0.5
 OCR_SUSPICION_GATE = 6.0
 SCAN_JUNK = re.compile("[\ufb00-\ufb04\x00-\x08\x0e-\x1f\x7f\xad\xac\xb7\u200b-\u200d\u2060\ufeff]")
 SPLIT_DIGITS = re.compile(r"(?<=\d)\s+(?=\d)")
@@ -407,26 +410,57 @@ def _running_head_texts(pages: list[StextPage]) -> set[str]:
     return {text for text, seen in counts.items() if seen >= HEADER_SHARE * len(pages)}
 
 
-def _split_footnotes(
-    lines: list[StextLine], height: float
-) -> tuple[list[StextLine], list[list[str]]]:
-    """A column's lines split into body and footnote units: a marker-led line
-    in small print or in the page's bottom band opens a footnote, and the
-    wrapped lines after it continue it. The band is the bottom quarter of the
-    page's height; conservative otherwise: a marker-led line of body size
-    mid-page is body still."""
-    if not lines:
-        return [], []
-    if height > 0:
-        band_from = height * (1 - BOTTOM_BAND)
-    else:
-        tops = [line.top for line in lines]
-        band_from = min(tops) + (max(tops) - min(tops)) * (1 - BOTTOM_BAND)
+def _body_size(lines: list[StextLine], height: float) -> float:
+    """The page's body font size: the size carrying most characters outside
+    the bottom band, where the footnotes sit (all lines if none lie outside).
+    0.0 when sizes are not to be trusted -- a scan's per-word sizes are noise,
+    with no size holding half the characters -- so the caller falls back to
+    the band alone."""
+    band_from = _band_from(lines, height)
+    pool = [line for line in lines if line.top < band_from] or lines
     sizes: Counter[float] = Counter()
-    for line in lines:
+    for line in pool:
         if line.size > 0:
             sizes[line.size] += len(line.text)
-    dominant = max(sizes, key=sizes.get) if sizes else 0.0
+    if not sizes:
+        return 0.0
+    dominant = max(sizes, key=lambda size: sizes[size])
+    near = sum(count for size, count in sizes.items() if abs(size - dominant) <= 0.05 * dominant)
+    return dominant if near >= SIZE_TRUST * sum(sizes.values()) else 0.0
+
+
+def _band_from(lines: list[StextLine], height: float) -> float:
+    if height > 0:
+        return height * (1 - BOTTOM_BAND)
+    tops = [line.top for line in lines]
+    return min(tops) + (max(tops) - min(tops)) * (1 - BOTTOM_BAND)
+
+
+def _split_footnotes(
+    lines: list[StextLine], height: float, body_size: float | None = None
+) -> tuple[list[StextLine], list[list[str]]]:
+    """A column's lines split into body and footnote units: a marker-led line
+    in small print opens a footnote, and the wrapped lines after it continue
+    it for as long as the print stays small. Small is under SMALL_SIZE of the
+    page's body size; where sizes are noise (a scan) the bottom band stands in
+    for the size signal, as it always did. Digits and letters that look like a marker ('12
+    philosophers', 'Oil prices') open one only in small print; an unambiguous
+    mark (superscript, asterisk, dagger) also does in the bottom band, the
+    bottom quarter of the page's height. Conservative otherwise: a marker-led
+    line of body size is body still, and ends any footnote it follows."""
+    if not lines:
+        return [], []
+    band_from = _band_from(lines, height)
+    if body_size is None:
+        body_size = _body_size(lines, height)
+    if body_size > 0:
+        dominant = body_size
+    else:  # sizes untrusted: the column's own dominant size, the band as signal
+        sizes: Counter[float] = Counter()
+        for line in lines:
+            if line.size > 0:
+                sizes[line.size] += len(line.text)
+        dominant = max(sizes, key=lambda size: sizes[size]) if sizes else 0.0
 
     body: list[StextLine] = []
     units: list[list[str]] = []
@@ -434,11 +468,17 @@ def _split_footnotes(
     for line in lines:
         small = line.size > 0 and line.size < SMALL_SIZE * dominant
         in_band = line.top >= band_from
-        if FOOTNOTE_MARKER.match(line.text.lstrip()) and (small or in_band):
+        text = line.text.lstrip()
+        if body_size > 0:
+            opens = small or (in_band and bool(UNAMBIGUOUS_MARKER.match(text)))
+            goes_on = small
+        else:
+            opens = goes_on = small or in_band
+        if FOOTNOTE_MARKER.match(text) and opens:
             if current is not None:
                 units.append(current)
             current = [line.text]
-        elif current is not None and (small or in_band):
+        elif current is not None and goes_on:
             current.append(line.text)
         else:
             if current is not None:
@@ -497,8 +537,9 @@ def stext_body_pages(xml: str, footnotes: str) -> tuple[list[list[str]], list[li
         ]
         body_columns: list[list[StextLine]] = []
         units: list[list[str]] = []
+        body_size = _body_size(kept, page.height) if kept else 0.0
         for column in _order_columns(kept):
-            body, column_units = _split_footnotes(column, page.height)
+            body, column_units = _split_footnotes(column, page.height, body_size)
             body_columns.append(body)
             units.extend(column_units)
         bodies.append(_paragraph_lines(body_columns))
