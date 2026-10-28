@@ -13,7 +13,7 @@
 // by the one thing that tells sections apart: their text.
 
 import { cleanup } from "./cleanup";
-import { tagSegments, type FootnotePolicy } from "./footnotes";
+import { tagSegments, type FootnotePlacement, type FootnotePolicy } from "./footnotes";
 import type { LabelCategory } from "./labelstore";
 import type { FootnoteClassifier, FootnoteLabel } from "./llm";
 import { planHighlights } from "./mapping";
@@ -58,6 +58,16 @@ export interface ChannelOptions {
    * next read.
    */
   footnotes?: FootnotePolicy | (() => FootnotePolicy);
+  /**
+   * Where kept footnotes are read (prefs.ts `footnote_placement`); a function
+   * is asked at each read start. A live read supports `inline` (no deferral)
+   * and `page-end` (a footnote rides at the end of the section that owns its
+   * page). `after-paragraph` and `chapter-end` map to `page-end` here: live
+   * sections are page-sized, and the highlight plan needs each segment's true
+   * index, so a footnote is never moved into the middle of another section's
+   * text.
+   */
+  placement?: FootnotePlacement | (() => FootnotePlacement);
   /**
    * The Stage B classifier (Task 11): consulted cache-first for a section's
    * `classify` residue, never awaited. Absent means rules-only.
@@ -121,6 +131,7 @@ export class Channel {
   private readonly firstSize: number | undefined;
   private readonly size: number | undefined;
   private readonly footnotes: FootnotePolicy | (() => FootnotePolicy);
+  private readonly placement: FootnotePlacement | (() => FootnotePlacement);
   private readonly footnoteClassifier: FootnoteClassifier | undefined;
   private readonly log: (message: string) => void;
   private readonly overrides: ((segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null) | undefined;
@@ -159,6 +170,7 @@ export class Channel {
     this.firstSize = options.firstSize;
     this.size = options.size;
     this.footnotes = options.footnotes ?? "classify";
+    this.placement = options.placement ?? "page-end";
     this.footnoteClassifier = options.footnoteClassifier;
     this.log = options.log ?? (() => {});
     this.overrides = options.overrides;
@@ -249,7 +261,8 @@ export class Channel {
       // file cached at reader adoption; the read path never awaits label I/O.
       const overrides = this.resolveOverrides(segments);
       const tagged = this.planned(segments, overrides);
-      const sections = buildSections(tagged, startIndex, this.firstSize, this.size);
+      const inline = (typeof this.placement === "function" ? this.placement() : this.placement) === "inline";
+      const sections = buildSections(tagged, startIndex, this.firstSize, this.size, inline);
       // Past the end of a document that has text: nothing left to read.
       if (sections.length === 0) return;
       // On every start, not once: the daemon forgets a channel idle for

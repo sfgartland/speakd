@@ -138,6 +138,40 @@ describe("Channel's footnote policy", () => {
   });
 });
 
+describe("Channel's footnote placement", () => {
+  const page = [
+    { text: "The body opens the page.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 760 },
+    { text: "More body follows it.", anchor: null, pageIndex: 0, firstRectY: 740 },
+    { text: "1 Kant, KrV, B25.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 140 },
+    { text: "The next page begins.", anchor: "paragraphStart", pageIndex: 1, firstRectY: 760 },
+  ];
+  const run = async (placement: "inline" | "page-end" | "after-paragraph" | "chapter-end") => {
+    const daemon = new FakeDaemon();
+    const channel = new Channel({
+      client: daemon.client,
+      sourceId: SOURCE,
+      label: "A Paper",
+      size: 400,
+      firstSize: 10,
+      footnotes: "keep_all",
+      placement: () => placement,
+    });
+    daemon.channel = channel;
+    await channel.start(page, 0);
+    return daemon.enqueued()[0]!;
+  };
+
+  it("reads a kept footnote where it sits when inline", async () => {
+    expect(await run("inline")).toContain("More body follows it. Kant, KrV, B25. The next page");
+  });
+
+  it("reads it at the end of its page's section for page-end, and for the placements live maps to it", async () => {
+    for (const placement of ["page-end", "after-paragraph", "chapter-end"] as const) {
+      expect(await run(placement)).toBe("The body opens the page. More body follows it. The next page begins. Kant, KrV, B25.");
+    }
+  });
+});
+
 describe("Channel", () => {
   it("labels the channel and enqueues the first section with the pdf profile", async () => {
     const { daemon, channel } = setup();

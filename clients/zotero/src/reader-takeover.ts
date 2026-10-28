@@ -41,7 +41,7 @@ import {
   type LabelFile,
 } from "./labelstore";
 import { cleanWithLlm, liveLlm, LlmClient, type FootnoteClassifier } from "./llm";
-import { readFootnotePolicy, readLlmConfig } from "./prefs";
+import { readFootnotePlacement, readFootnotePolicy, readLlmConfig } from "./prefs";
 import type { FetchLike } from "./speakd";
 import type { Link } from "./link";
 import {
@@ -401,6 +401,7 @@ class Adopted implements ReaderHandle {
         // The footnote policy as the preferences stand at each read start:
         // the filters' word for what a read skips and what it keeps.
         footnotes: readFootnotePolicy,
+        placement: readFootnotePlacement,
         // Stage B: the deterministic cleanup always, the model on top of it
         // after the first section, and cache-first footnote classification.
         clean: (text, ordinal, signal) => cleanWithLlm(llmNow())(text, ordinal, signal),
