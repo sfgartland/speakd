@@ -234,6 +234,30 @@ describe("planFootnotes false positives", () => {
     }
   });
 
+  it("takes a lone 'il' marker when the body breaks off above it and carries on next page", () => {
+    const plan = planFootnotes(
+      [
+        seg("The body paragraph runs down the page and then", 0, "paragraphStart", 760),
+        seg("il found recently that these words are quoted from A. N. Whitehead.", 0, "paragraphStart", 60),
+        seg("goes on over the page, in lower case.", 1, "paragraphStart", 760),
+      ],
+      "defer_all",
+    );
+    expect([...plan.tags]).toEqual(["body", "defer", "body"]);
+  });
+
+  it("keeps a bottom-band line when the sentence above it ended and nothing carries on", () => {
+    const plan = planFootnotes(
+      [
+        seg("The body paragraph ends here.", 0, "paragraphStart", 760),
+        seg("Oil prices rose.", 0, "paragraphStart", 60),
+        seg("goes on, in lower case.", 1, "paragraphStart", 760),
+      ],
+      "drop_all",
+    );
+    expect([...plan.tags]).toEqual(["body", "body", "body"]);
+  });
+
   it("takes a lone digit marker when the body cites the same number above", () => {
     const plan = planFootnotes(
       [

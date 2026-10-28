@@ -114,14 +114,13 @@ describe("the synthetic label fixture", () => {
 // the PDF never checked in. Its one labelable failure is the OCR'd inline
 // footnote; the running heads and page numbers were dropped before the
 // capture, so they are named in the README's gap report and cannot be
-// labelled. The unaided rules no longer detect the footnote (a lone
-// letter-lookalike marker needs a second signal), so the label is what
-// restores it; the real debt is also the pre-capture gap.
+// labelled. The unaided rules already detect the footnote, so the score is
+// clean: the real debt is the pre-capture gap.
 describe("the Köhler fixture", () => {
   const segments = parse(kohlerCapture);
   const parsed = parseLabelFile(kohlerLabels);
 
-  it("matches its one label, the inline footnote, which the unaided rules leave as body", () => {
+  it("matches its one label, the inline footnote, and detects it unaided", () => {
     if (!parsed.ok) throw new Error("the fixture's labels are unparsable");
     const { overrides, unmatched } = matchLabels(parsed.file, segments);
     expect(overrides.size).toBe(1);
@@ -129,15 +128,12 @@ describe("the Köhler fixture", () => {
     expect(unmatched).toEqual([]);
     const labels = [...overrides].map(([index, category]) => ({ index, category }));
     const score = scoreFixture(segments, labels, tagSegments(segments, "classify").tagged);
-    // Its marker is OCR'd to 'il' with nothing else on the page to agree
-    // (no cited number, no neighbouring note): a letter-lookalike marker
-    // alone is body, kept and read inline, until the label restores it.
-    expect(score.footnoteDetected).toBe(0);
+    expect(score.footnoteDetected).toBe(1);
     expect(score.footnoteTotal).toBe(1);
-    expect(score.misses).toEqual([13]);
+    expect(score.misses).toEqual([]);
     expect(score.overDrops).toEqual([]);
     expect(score.precision).toBe(1);
-    expect(score.recall).toBe(0);
+    expect(score.recall).toBe(1);
   });
 
   it("keeps the labelled footnote out of the body flow, at the part's end", () => {

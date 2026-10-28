@@ -334,7 +334,7 @@ export function planFootnotes(
       // the body above cites the same number as a reference marker, or a
       // neighbouring note in the band numbers one off it, or the text has a
       // citation's own shape. A marker OCR'd from letters ('Oil', 'Ill')
-      // needs one of the first two; a list-style "N." marker, one of the
+      // needs one of the first two (or the page's body running on past it); a list-style "N." marker, one of the
       // first and the last. No signal, no footnote: kept as body.
       const bodyRefs = referenceMarkers(
         indices
@@ -349,9 +349,27 @@ export function planFootnotes(
           if (number !== null) bandNumbers.add(number);
         }
       }
-      const corroborated = (text: string): boolean => {
+      // The page's body runs on past the note: the segment above it stops
+      // mid-sentence and the next page opens in lower case, carrying on.
+      // Body does not break off to let a paragraph in at the bottom of the
+      // page, but a footnote does -- a signal of any marker's shape.
+      const lastOfPage = indices[indices.length - 1]!;
+      const following = segments[lastOfPage + 1];
+      const carriesOn =
+        following !== undefined &&
+        following.pageIndex !== null &&
+        following.pageIndex !== undefined &&
+        /^\p{Ll}/u.test(following.text.trimStart());
+      const interrupts = (index: number): boolean => {
+        if (!carriesOn) return false;
+        const above = segments[index - 1];
+        return above !== undefined && indices.includes(index - 1) && !/[.!?:;"”’')\]]\s*$/u.test(above.text);
+      };
+      const corroborated = (index: number): boolean => {
+        const text = segments[index]!.text;
         const marker = markerInfo(text);
         if (marker.symbol) return true;
+        if (interrupts(index)) return true;
         const number = marker.number;
         if (number === null) return false;
         if (bodyRefs.has(number)) return true;
@@ -363,7 +381,7 @@ export function planFootnotes(
       for (const index of indices) {
         const segment = segments[index]!;
         if (segment.anchor === "paragraphStart") {
-          if (inBand(index) && hasMarker(segment.text) && corroborated(segment.text)) {
+          if (inBand(index) && hasMarker(segment.text) && corroborated(index)) {
             run = true;
             footnote(index);
           } else {
