@@ -127,7 +127,9 @@ def test_prepare_pdf_fallback_inherits_popplers_interleaved_order(
     halves separated by most of the paper, its second half read before its
     first. A characterisation, not an endorsement: it records which order
     poppler's default mode produces, and the degraded fallback inherits it."""
-    monkeypatch.setattr(prep, "_stext_pages_or_none", lambda pdf, pages, footnotes: None)
+    monkeypatch.setattr(
+        prep, "_stext_pages_or_none", lambda pdf, pages, footnotes, inline=False: None
+    )
     parts = prep.prepare_pdf(two_column_pdf, None, "none", True)
     text = "\n".join(parts)
     assert HEADER not in text
@@ -219,6 +221,77 @@ def test_stext_orders_columns_before_rows() -> None:
     assert notes == [[]]
 
 
+def test_stext_keeps_columns_apart_across_a_ten_point_gutter() -> None:
+    """A normal LaTeX gutter (10pt at a 10pt font) is wider than a word space:
+    same-baseline fragments across it are two columns, not one visual line."""
+    doc = stext_doc(
+        [
+            stext_page(
+                [
+                    stext_line("Left one.", 54, 60, 250, 10),
+                    stext_line("Right one.", 260, 60, 456, 10),
+                    stext_line("Left two.", 54, 72, 250, 10),
+                    stext_line("Right two.", 260, 72, 456, 10),
+                ]
+            )
+        ]
+    )
+    bodies, _ = prep.stext_body_pages(doc, "classify")
+    assert bodies == [["Left one.", "Left two.", "", "Right one.", "Right two."]]
+
+
+def test_stext_full_width_blocks_do_not_merge_the_columns() -> None:
+    """A centred title and a full-width abstract above two columns read first,
+    in place; the columns below read left in full, then right."""
+    lines = [
+        stext_line("A Centred Title", 200, 40, 400, 14),
+        stext_line("The abstract runs the full width of the page,", 54, 70, 507, 10),
+        stext_line("and it takes a second line to finish.", 54, 82, 507, 10),
+    ]
+    for row in range(5):
+        top = 110 + 12 * row
+        lines.append(stext_line(f"Left {row}.", 54, top, 250, 10))
+        lines.append(stext_line(f"Right {row}.", 311, top, 507, 10))
+    bodies, _ = prep.stext_body_pages(stext_doc([stext_page(lines)]), "classify")
+    assert [line for line in bodies[0] if line] == [
+        "A Centred Title",
+        "The abstract runs the full width of the page,",
+        "and it takes a second line to finish.",
+        *(f"Left {row}." for row in range(5)),
+        *(f"Right {row}." for row in range(5)),
+    ]
+
+
+def test_stext_columns_between_full_width_blocks_read_left_then_right() -> None:
+    lines = [
+        stext_line("Left above.", 54, 40, 250, 10),
+        stext_line("Right above.", 311, 40, 507, 10),
+        stext_line("Left above two.", 54, 52, 250, 10),
+        stext_line("Right above two.", 311, 52, 507, 10),
+        stext_line("A wide caption set across both columns of the page.", 54, 90, 507, 9),
+        stext_line("Left below.", 54, 120, 250, 10),
+        stext_line("Right below.", 311, 120, 507, 10),
+        stext_line("Left below two.", 54, 132, 250, 10),
+        stext_line("Right below two.", 311, 132, 507, 10),
+        stext_line("Left below three.", 54, 144, 250, 10),
+        stext_line("Right below three.", 311, 144, 507, 10),
+    ]
+    bodies, _ = prep.stext_body_pages(stext_doc([stext_page(lines)]), "classify")
+    assert [line for line in bodies[0] if line] == [
+        "Left above.",
+        "Left above two.",
+        "Right above.",
+        "Right above two.",
+        "A wide caption set across both columns of the page.",
+        "Left below.",
+        "Left below two.",
+        "Left below three.",
+        "Right below.",
+        "Right below two.",
+        "Right below three.",
+    ]
+
+
 def test_stext_drops_recurring_top_band_heads() -> None:
     bodies, _ = prep.stext_body_pages(stext_doc(paper_pages()), "classify")
     assert all("Sample Journal" not in lines for lines in bodies)
@@ -257,17 +330,17 @@ def test_stext_detects_footnotes_by_size_or_band() -> None:
     bodies, notes = prep.stext_body_pages(stext_doc([mid_small]), "defer")
     assert bodies[0] == ["The body opens.", "The body goes on early."]
     assert notes[0] == [["1 A small-print note set mid-page."]]
-    # A body-size marker-led line in the bottom band is a footnote without the size.
+    # A small marker-led line in the bottom band is a footnote.
     band = stext_page(
         [
             stext_line("The body opens.", 72, 62, 400, 11),
             stext_line("More body sits here.", 72, 96, 400, 11),
-            stext_line("1 A note in the bottom band, body size.", 72, 700, 400, 11),
+            stext_line("1 A note in the bottom band, small print.", 72, 700, 400, 8),
         ]
     )
     bodies, notes = prep.stext_body_pages(stext_doc([band]), "defer")
     assert bodies[0] == ["The body opens.", "More body sits here."]
-    assert notes[0] == [["1 A note in the bottom band, body size."]]
+    assert notes[0] == [["1 A note in the bottom band, small print."]]
     # A marker-led body line mid-page, body size, is body still.
     body = stext_page(
         [
@@ -278,6 +351,42 @@ def test_stext_detects_footnotes_by_size_or_band() -> None:
     bodies, notes = prep.stext_body_pages(stext_doc([body]), "defer")
     assert bodies[0] == ["12 of them were counted mid-page.", "The body goes on."]
     assert notes == [[]]
+
+
+def test_stext_body_lines_in_the_bottom_band_are_not_footnotes() -> None:
+    """A body-size line in the band that opens with a count ('12 philosophers')
+    or letters that look like a marker ('Oil prices') is body: the band alone
+    is no signal, and the lines after it stay body too."""
+    for opener in ("12 philosophers agreed on little, and the rest followed.", "Oil prices rose."):
+        page = stext_page(
+            [
+                stext_line("The body opens.", 72, 62, 400, 11),
+                stext_line("More body sits here.", 72, 96, 400, 11),
+                stext_line(opener, 72, 700, 400, 11),
+                stext_line("And the body runs on to the page end.", 72, 715, 400, 11),
+            ]
+        )
+        for policy in ("drop", "defer"):
+            bodies, notes = prep.stext_body_pages(stext_doc([page]), policy)
+            assert [line for line in bodies[0] if line][2:] == [
+                opener,
+                "And the body runs on to the page end.",
+            ]
+            assert notes == [[]]
+
+
+def test_stext_footnote_ends_where_body_size_resumes() -> None:
+    page = stext_page(
+        [
+            stext_line("The body opens.", 72, 62, 400, 11),
+            stext_line("1 A small note that wraps", 72, 700, 400, 8),
+            stext_line("onto a second small line.", 72, 710, 400, 8),
+            stext_line("Body text back at full size.", 72, 722, 400, 11),
+        ]
+    )
+    bodies, notes = prep.stext_body_pages(stext_doc([page]), "defer")
+    assert bodies[0] == ["The body opens.", "Body text back at full size."]
+    assert notes[0] == [["1 A small note that wraps", "onto a second small line."]]
 
 
 # ---- the pdftotext fallback: marker deferral over page-text fixtures ----
@@ -300,6 +409,25 @@ def test_marker_tail_notes_split_and_policy() -> None:
         "2 A prose footnote arguing at length across the closing sentences here."
     ]
     assert prep.marker_footnote_pages([lines], "drop")[1] == [[]]
+
+
+def test_marker_tail_notes_sit_before_a_trailing_page_number() -> None:
+    lines = [
+        "Body one.",
+        "",
+        "1 Kant, KrV, B25.",
+        "2 A prose footnote arguing at length across the closing sentences here.",
+        "",
+        "17",
+    ]
+    bodies, notes = prep.marker_footnote_pages([lines], "defer")
+    assert bodies == [["Body one.", "", "", "17"]]
+    assert notes == [
+        [
+            ["1 Kant, KrV, B25."],
+            ["2 A prose footnote arguing at length across the closing sentences here."],
+        ]
+    ]
 
 
 def test_marker_tail_notes_need_the_tail() -> None:
@@ -376,6 +504,16 @@ def test_cli_footnotes_flag_and_default(
     text = out.read_text(encoding="utf-8")
     assert "Kant, KrV, B25." not in text
     assert "2 A prose footnote that argues its case at length across the page." in text
+
+
+def test_ocr_suspicion_is_per_thousand_words() -> None:
+    """A long clean book with a few stray artefacts is not a scan: the count
+    is normalised by length, so only the density of artefacts raises it."""
+    clean = "The reading goes on at some length through the argument. " * 1000
+    stray = "A stray \ufb01 mark and 1 994 split. " * 10
+    assert prep.ocr_suspicion(clean + stray) < prep.OCR_SUSPICION_GATE
+    dense = "Tbe mo\u00adde rn scan says 1 994 and \u00b7 tbe year. " * 100
+    assert prep.ocr_suspicion(dense) > prep.OCR_SUSPICION_GATE
 
 
 def test_ocr_report_fires_on_mangled_text_and_not_on_clean(
@@ -572,9 +710,164 @@ def test_prepare_pdf_rejoins_across_pages_and_defers_footnotes(
     monkeypatch.setattr(
         prep,
         "_stext_pages_or_none",
-        lambda pdf, pages, footnotes: prep.stext_body_pages(xml, footnotes),
+        lambda pdf, pages, footnotes, inline=False: prep.stext_body_pages(xml, footnotes, inline),
     )
     monkeypatch.setattr(prep, "_outline", lambda pdf: [])
     text = "\n".join(prep.prepare_pdf(Path("x.pdf"), None, "auto", True))
     assert "we cannot transfer the rules of spatial and of temporal experience." in text
     assert text.index("A. N. Whitehead") > text.index("of spatial and of temporal experience.")
+
+
+# ---- footnote placement: which footnotes are read vs where kept ones are read ----
+
+
+def _straddling_doc(first_end: str = "the page break and") -> str:
+    """Two pages: a paragraph running over the page break, then a second one;
+    a small-print footnote on the first page."""
+    return stext_doc(
+        [
+            stext_page(
+                [
+                    stext_line("A paragraph that runs over", 72, 62, 400, 11),
+                    stext_line(first_end, 72, 76, 400, 11),
+                    stext_line("1 A note on the first page.", 72, 700, 400, 8),
+                ]
+            ),
+            stext_page(
+                [
+                    stext_line("finishes here, on page two.", 72, 62, 400, 11),
+                    stext_line("Then a second line.", 72, 76, 400, 11),
+                    stext_line("Second paragraph begins.", 72, 120, 400, 11),
+                    stext_line("And ends.", 72, 134, 400, 11),
+                ]
+            ),
+        ]
+    )
+
+
+def _placed(
+    monkeypatch: pytest.MonkeyPatch, xml: str, placement: str, footnotes: str = "keep"
+) -> list[str]:
+    monkeypatch.setattr(
+        prep,
+        "_stext_pages_or_none",
+        lambda pdf, pages, footnotes, inline=False: prep.stext_body_pages(xml, footnotes, inline),
+    )
+    monkeypatch.setattr(prep, "_outline", lambda pdf: [])
+    parts = prep.prepare_pdf(
+        Path("x.pdf"), None, "auto", True, footnotes=footnotes, placement=placement
+    )
+    assert len(parts) == 1
+    return parts[0].split("\n\n")
+
+
+RUN_OVER = "A paragraph that runs over the page break and"
+FINISH = "finishes here, on page two. Then a second line."
+NOTE = "1 A note on the first page."
+SECOND = "Second paragraph begins. And ends."
+
+
+def test_placement_after_paragraph_finishes_the_straddling_paragraph_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _placed(monkeypatch, _straddling_doc(), "after-paragraph") == [
+        f"{RUN_OVER} {FINISH}",
+        NOTE,
+        SECOND,
+    ]
+
+
+def test_placement_after_paragraph_at_a_page_that_ends_a_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    got = _placed(monkeypatch, _straddling_doc("the page break."), "after-paragraph")
+    assert got == ["A paragraph that runs over the page break.", NOTE, f"{FINISH}", SECOND]
+
+
+def test_placement_after_paragraph_at_the_end_when_no_break_follows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    xml = stext_doc(
+        [
+            stext_page(
+                [
+                    stext_line("Only paragraph", 72, 62, 400, 11),
+                    stext_line("1 A late note.", 72, 700, 400, 8),
+                ]
+            ),
+            stext_page([stext_line("runs on.", 72, 62, 400, 11)]),
+        ]
+    )
+    assert _placed(monkeypatch, xml, "after-paragraph") == [
+        "Only paragraph runs on.",
+        "1 A late note.",
+    ]
+
+
+def test_placement_page_end_is_mid_paragraph(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _placed(monkeypatch, _straddling_doc(), "page-end") == [
+        RUN_OVER,
+        NOTE,
+        FINISH,
+        SECOND,
+    ]
+
+
+def test_placement_chapter_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _placed(monkeypatch, _straddling_doc(), "chapter-end") == [
+        f"{RUN_OVER} {FINISH}",
+        SECOND,
+        NOTE,
+    ]
+
+
+def test_placement_inline_leaves_the_note_where_it_sits(monkeypatch: pytest.MonkeyPatch) -> None:
+    xml = stext_doc(
+        [
+            stext_page(
+                [
+                    stext_line("Body before the note.", 72, 62, 400, 11),
+                    stext_line("1 A small-print note mid-page.", 72, 300, 400, 8),
+                    stext_line("Body after the note.", 72, 330, 400, 11),
+                ]
+            )
+        ]
+    )
+    assert _placed(monkeypatch, xml, "inline") == [
+        "Body before the note.",
+        "1 A small-print note mid-page.",
+        "Body after the note.",
+    ]
+    assert _placed(monkeypatch, xml, "page-end") == [
+        "Body before the note. Body after the note.",
+        "1 A small-print note mid-page.",
+    ]
+    # The policy still applies inline: drop removes the note from the flow.
+    assert _placed(monkeypatch, xml, "inline", "drop") == [
+        "Body before the note. Body after the note."
+    ]
+
+
+def test_cli_footnote_placement_and_the_defer_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        prep,
+        "_stext_pages_or_none",
+        lambda pdf, pages, footnotes, inline=False: prep.stext_body_pages(
+            _straddling_doc(), footnotes, inline
+        ),
+    )
+    monkeypatch.setattr(prep, "_outline", lambda pdf: [])
+    out = tmp_path / "out.txt"
+    texts = {}
+    for flags in (
+        ["--footnotes", "keep"],
+        ["--footnote-placement", "chapter-end", "--footnotes", "defer"],
+    ):
+        monkeypatch.setattr(sys, "argv", ["prepare_text.py", "x.pdf", "--out", str(out), *flags])
+        assert prep.main() == 0
+        texts[len(flags)] = out.read_text(encoding="utf-8")
+    assert texts[2].split("\n\n")[1] == NOTE  # the default: after the paragraph
+    assert texts[4].split("\n\n")[-1].strip() == NOTE
+    assert "keep" in prep.FOOTNOTE_POLICIES and "defer" not in prep.FOOTNOTE_POLICIES
