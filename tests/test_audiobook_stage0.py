@@ -409,6 +409,25 @@ def test_marker_tail_notes_split_and_policy() -> None:
     assert prep.marker_footnote_pages([lines], "drop")[1] == [[]]
 
 
+def test_marker_tail_notes_sit_before_a_trailing_page_number() -> None:
+    lines = [
+        "Body one.",
+        "",
+        "1 Kant, KrV, B25.",
+        "2 A prose footnote arguing at length across the closing sentences here.",
+        "",
+        "17",
+    ]
+    bodies, notes = prep.marker_footnote_pages([lines], "defer")
+    assert bodies == [["Body one.", "", "", "17"]]
+    assert notes == [
+        [
+            ["1 Kant, KrV, B25."],
+            ["2 A prose footnote arguing at length across the closing sentences here."],
+        ]
+    ]
+
+
 def test_marker_tail_notes_need_the_tail() -> None:
     # A marker-led line mid-page is body; a year-led tail line is body too.
     lines = ["1 A first line that opens with a count.", "1994 was the year the reading began."]

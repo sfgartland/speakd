@@ -553,16 +553,22 @@ def marker_footnote_pages(
     pages: list[list[str]], footnotes: str
 ) -> tuple[list[list[str]], list[list[list[str]]]]:
     """The pdftotext fallback: no geometry, so marker-only, and only at a page's
-    tail -- its consecutive marker-led lines are footnote units, each its own;
-    a wrapped continuation without a marker is body, kept rather than guessed."""
+    tail (before a bare page number, if any) -- its consecutive marker-led
+    lines are footnote units, each its own; a wrapped continuation without a
+    marker is body, kept rather than guessed."""
     bodies: list[list[str]] = []
     notes: list[list[list[str]]] = []
     for lines in pages:
-        cut = len(lines)
+        # A page number (and blanks) after the notes is not part of the tail:
+        # step over it to find the block, and leave it with the body.
+        end = len(lines)
+        while end > 0 and (not lines[end - 1].strip() or is_page_number(lines[end - 1])):
+            end -= 1
+        cut = end
         while cut > 0 and FOOTNOTE_MARKER.match(lines[cut - 1].lstrip()):
             cut -= 1
-        tail = [line for line in lines[cut:] if line.strip()]
-        bodies.append(lines[:cut])
+        tail = [line for line in lines[cut:end] if line.strip()]
+        bodies.append([*lines[:cut], *lines[end:]])
         notes.append(_policy_units([[line] for line in tail], footnotes))
     return bodies, notes
 
