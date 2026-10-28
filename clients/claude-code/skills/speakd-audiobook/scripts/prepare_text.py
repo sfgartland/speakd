@@ -27,7 +27,9 @@ HEADER_MIN_PAGES = 5
 # The footnote and OCR taxonomy is mirrored from the Zotero plugin's
 # footnotes.ts and cleanup.ts (docs/design/2026-10-08-pdf-text-cleanup-
 # proposal-glm.md §4.2): shared design and corpus, not shared code.
-FOOTNOTE_POLICIES = ("classify", "drop", "defer")
+FOOTNOTE_POLICIES = ("classify", "drop", "keep")
+FOOTNOTE_POLICY_ALIASES = {"defer": "keep"}  # the policy's old name, still accepted
+FOOTNOTE_PLACEMENTS = ("after-paragraph", "inline", "page-end", "chapter-end")
 SHORT_FOOTNOTE = 48
 LONG_FOOTNOTE = 140
 FOOTNOTE_MARKER = re.compile(
@@ -142,18 +144,21 @@ def footnote_kind(text: str) -> str:
     return "classify"
 
 
+def _keeps(unit: list[str], footnotes: str) -> bool:
+    return footnotes in ("keep", "defer") or (
+        footnotes != "drop" and footnote_kind(" ".join(unit)) != "drop"
+    )
+
+
 def _policy_units(units: list[list[str]], footnotes: str) -> list[list[str]]:
     """The footnote units the policy keeps, each its own paragraph later.
 
-    `drop` keeps none; `defer` keeps all; `classify` drops the citation-shaped
-    and keeps the rest -- the agent following SKILL.md is the classifier of
-    last resort, so an undecided footnote is kept, never dropped.
+    `drop` keeps none; `keep` (once `defer`) keeps all; `classify` drops the
+    citation-shaped and keeps the rest -- the agent following SKILL.md is the
+    classifier of last resort, so an undecided footnote is kept, never dropped.
+    Where a kept footnote is read is the placement's business, not the policy's.
     """
-    if footnotes == "drop":
-        return []
-    return [
-        unit for unit in units if footnotes == "defer" or footnote_kind(" ".join(unit)) != "drop"
-    ]
+    return [unit for unit in units if _keeps(unit, footnotes)]
 
 
 def ocr_suspicion(text: str) -> float:
@@ -441,6 +446,15 @@ def _band_from(lines: list[StextLine], height: float) -> float:
 def _split_footnotes(
     lines: list[StextLine], height: float, body_size: float | None = None
 ) -> tuple[list[StextLine], list[list[str]]]:
+    """A column's lines as (body lines, footnote units' texts); see
+    `_split_footnote_lines`."""
+    body, raw = _split_footnote_lines(lines, height, body_size)
+    return body, [[line.text for line in unit] for _, unit in raw]
+
+
+def _split_footnote_lines(
+    lines: list[StextLine], height: float, body_size: float | None = None
+) -> tuple[list[StextLine], list[tuple[int, list[StextLine]]]]:
     """A column's lines split into body and footnote units: a marker-led line
     in small print opens a footnote, and the wrapped lines after it continue
     it for as long as the print stays small. Small is under SMALL_SIZE of the
@@ -449,7 +463,8 @@ def _split_footnotes(
     philosophers', 'Oil prices') open one only in small print; an unambiguous
     mark (superscript, asterisk, dagger) also does in the bottom band, the
     bottom quarter of the page's height. Conservative otherwise: a marker-led
-    line of body size is body still, and ends any footnote it follows."""
+    line of body size is body still, and ends any footnote it follows. Each
+    unit comes with the count of body lines before it, its place in the flow."""
     if not lines:
         return [], []
     band_from = _band_from(lines, height)
@@ -465,8 +480,8 @@ def _split_footnotes(
         dominant = max(sizes, key=lambda size: sizes[size]) if sizes else 0.0
 
     body: list[StextLine] = []
-    units: list[list[str]] = []
-    current: list[str] | None = None
+    units: list[tuple[int, list[StextLine]]] = []
+    current: list[StextLine] | None = None
     for line in lines:
         small = line.size > 0 and line.size < SMALL_SIZE * dominant
         in_band = line.top >= band_from
@@ -478,26 +493,31 @@ def _split_footnotes(
             opens = goes_on = small or in_band
         if FOOTNOTE_MARKER.match(text) and opens:
             if current is not None:
-                units.append(current)
-            current = [line.text]
+                units.append((len(body), current))
+            current = [line]
         elif current is not None and goes_on:
-            current.append(line.text)
+            current.append(line)
         else:
             if current is not None:
-                units.append(current)
+                units.append((len(body), current))
                 current = None
             body.append(line)
     if current is not None:
-        units.append(current)
+        units.append((len(body), current))
     return body, units
 
 
-def _paragraph_lines(columns: list[list[StextLine]]) -> list[str]:
+def _paragraph_lines(
+    columns: list[list[StextLine]], notes: tuple[set[int], set[int]] = (set(), set())
+) -> list[str]:
     """The columns' lines as paragraph lines: a blank line at every paragraph
     break -- a gap past one and a half times the column's median line gap, an
     indented first line, and every column boundary, since a new column is
     always a new paragraph. The indent matters on scans where the paragraph
-    break is not wider than the line spacing (the Köhler page 16 case)."""
+    break is not wider than the line spacing (the Köhler page 16 case).
+    `notes` holds the ids of the footnote lines left in the flow and of those
+    opening a footnote: each footnote is a paragraph of its own."""
+    note_lines, note_starts = notes
     out: list[str] = []
     for number, column in enumerate(columns):
         if number > 0 and out and out[-1] != "":
@@ -513,17 +533,27 @@ def _paragraph_lines(columns: list[list[StextLine]]) -> list[str]:
         for index, line in enumerate(column):
             if index > 0:
                 gap = gaps[index - 1]
-                if gap > max(median * PARAGRAPH_GAP, median + 2) or line.x0 - margin > indent:
+                after_note = id(column[index - 1]) in note_lines and id(line) not in note_lines
+                if (
+                    gap > max(median * PARAGRAPH_GAP, median + 2)
+                    or line.x0 - margin > indent
+                    or id(line) in note_starts
+                    or after_note
+                ):
                     out.append("")
             out.append(line.text)
     return out
 
 
-def stext_body_pages(xml: str, footnotes: str) -> tuple[list[list[str]], list[list[list[str]]]]:
+def stext_body_pages(
+    xml: str, footnotes: str, inline: bool = False
+) -> tuple[list[list[str]], list[list[list[str]]]]:
     """stext XML as (body pages of lines, kept footnote units per page), in
     reading order: the word-sized `<line>` elements are first merged into
     visual lines, then columns, then the recurring top-band heads out, then
-    the footnotes held aside per the policy for their page's end."""
+    the footnotes held aside per the policy. With `inline` the kept ones are
+    not held aside but left in the body where they sit, each its own
+    paragraph, and the units returned are empty."""
     pages = [StextPage(page.height, _visual_lines(page.lines)) for page in parse_stext(xml)]
     heads = _running_head_texts(pages)
     bodies: list[list[str]] = []
@@ -539,12 +569,23 @@ def stext_body_pages(xml: str, footnotes: str) -> tuple[list[list[str]], list[li
         ]
         body_columns: list[list[StextLine]] = []
         units: list[list[str]] = []
+        note_lines: set[int] = set()
+        note_starts: set[int] = set()
         body_size = _body_size(kept, page.height) if kept else 0.0
         for column in _order_columns(kept):
-            body, column_units = _split_footnotes(column, page.height, body_size)
-            body_columns.append(body)
-            units.extend(column_units)
-        bodies.append(_paragraph_lines(body_columns))
+            body, raw = _split_footnote_lines(column, page.height, body_size)
+            if inline:
+                flow = list(body)
+                for at, unit in reversed(raw):
+                    if _keeps([line.text for line in unit], footnotes):
+                        flow[at:at] = unit
+                        note_lines.update(id(line) for line in unit)
+                        note_starts.add(id(unit[0]))
+                body_columns.append(flow)
+            else:
+                body_columns.append(body)
+                units.extend([line.text for line in unit] for _, unit in raw)
+        bodies.append(_paragraph_lines(body_columns, (note_lines, note_starts)))
         notes.append(_policy_units(units, footnotes))
     return bodies, notes
 
@@ -571,6 +612,48 @@ def marker_footnote_pages(
         bodies.append([*lines[:cut], *lines[end:]])
         notes.append(_policy_units([[line] for line in tail], footnotes))
     return bodies, notes
+
+
+def _ends_sentence(lines: list[str]) -> bool:
+    last = next((line.strip() for line in reversed(lines) if line.strip()), "")
+    return bool(last) and last[-1] in ".!?:;\"'”’)]"
+
+
+def place_footnotes(
+    bodies: list[list[str]], notes: list[list[list[str]]], placement: str
+) -> list[str]:
+    """The pages' body lines with their kept footnote units placed, each unit
+    its own paragraph. `chapter-end`: after the last page. `page-end`: after
+    its own page, even mid-paragraph. `after-paragraph`: at the first
+    paragraph break at or after the end of its page, so a paragraph running
+    over the page break is finished first; the page break itself is no
+    paragraph break unless the page ends a sentence (the flow has no other
+    sign of one there). `inline`: the units are already in the body."""
+    out: list[str] = []
+    pending: list[list[str]] = []
+
+    def emit(units: list[list[str]]) -> None:
+        for unit in units:
+            out.extend(("", *unit))
+        if units:
+            out.append("")
+
+    for body, units in zip(bodies, notes, strict=True):
+        if placement == "after-paragraph" and pending and body and _ends_sentence(out):
+            emit(pending)
+            pending = []
+        for line in body:
+            if placement == "after-paragraph" and pending and not line.strip():
+                emit(pending)
+                pending = []
+            else:
+                out.append(line)
+        if placement == "page-end":
+            emit(units)
+        else:
+            pending.extend(units)
+    emit(pending)
+    return out
 
 
 def join_paragraphs(lines: list[str]) -> str:
@@ -663,7 +746,7 @@ def _outline(pdf: Path) -> list[tuple[str, int]]:
 
 
 def _stext_pages_or_none(
-    pdf: Path, pages: tuple[int, int] | None, footnotes: str
+    pdf: Path, pages: tuple[int, int] | None, footnotes: str, inline: bool = False
 ) -> tuple[list[list[str]], list[list[list[str]]]] | None:
     """The PDF's pages through mutool's stext, or None when that cannot be had:
     mutool missing, its call failing, or its answer not XML -- the pdftotext
@@ -672,7 +755,7 @@ def _stext_pages_or_none(
     if pages:
         command.append(f"{pages[0]}-{pages[1]}")
     try:
-        return stext_body_pages(_run(command), footnotes)
+        return stext_body_pages(_run(command), footnotes, inline)
     except (ToolMissing, SystemExit):
         print(
             "columns and footnotes degraded: mutool (mupdf) is not installed or failed",
@@ -690,8 +773,10 @@ def prepare_pdf(
     keep_references: bool,
     keep_front_matter: bool = False,
     footnotes: str = "classify",
+    placement: str = "after-paragraph",
 ) -> list[str]:
-    extracted = _stext_pages_or_none(pdf, pages, footnotes)
+    inline = placement == "inline"
+    extracted = _stext_pages_or_none(pdf, pages, footnotes, inline)
     if extracted is None:
         command = ["pdftotext"]
         if pages:
@@ -705,18 +790,24 @@ def prepare_pdf(
         # lines and bare page numbers over the body, the footnotes held aside
         # meanwhile, so a recurring footnote is never mistaken for a footer.
         body_pages = strip_pages(body_pages)
+        if inline:  # not moved: they stay at the page tail where pdftotext put them
+            body_pages = [
+                [*body, *(line for unit in units for line in ("", *unit))]
+                for body, units in zip(body_pages, note_units, strict=True)
+            ]
+            note_units = [[] for _ in body_pages]
     else:
         body_pages, note_units = extracted
     first = pages[0] if pages else 1
     last_page = first + len(body_pages) - 1
 
     def group_lines(low: int, high: int) -> list[str]:
-        """A page range's body lines, then its deferred footnotes at the end:
-        a footnote wedged between two pages would split a sentence that runs
-        across the page break (the Köhler p.35/36 case)."""
-        body = [line for page in body_pages[low:high] for line in page]
-        notes = [unit for units in note_units[low:high] for unit in units]
-        return body + [line for unit in notes for line in ("", *unit)]
+        """A page range's lines with its kept footnotes placed: at the end of
+        the range (`chapter-end`, which also keeps a sentence running across a
+        page break whole -- the Köhler p.35/36 case), at the end of their page
+        (`page-end`), at the first paragraph break from their page's end
+        (`after-paragraph`), or already in the body (`inline`)."""
+        return place_footnotes(body_pages[low:high], note_units[low:high], placement)
 
     # Each group is (title, its pages' lines). Pages before the first outline
     # entry are front matter (title page, contents) and are dropped unless
@@ -780,11 +871,24 @@ def main() -> int:
     parser.add_argument(
         "--footnotes",
         choices=list(FOOTNOTE_POLICIES),
+        type=lambda name: FOOTNOTE_POLICY_ALIASES.get(name, name),
         default="classify",
         help=(
-            "how footnotes are treated: classify drops the citation-shaped and reads"
-            " the rest at their page's end (default), defer keeps all at page end,"
-            " drop removes all"
+            "which footnotes are read: classify drops the citation-shaped and keeps"
+            " the rest (default), keep keeps all (defer is the old name), drop removes"
+            " all; where kept ones are read is --footnote-placement"
+        ),
+    )
+    parser.add_argument(
+        "--footnote-placement",
+        choices=list(FOOTNOTE_PLACEMENTS),
+        default="after-paragraph",
+        help=(
+            "where kept footnotes are read: after-paragraph at the first paragraph"
+            " break at or after the end of their page (default; PDF page breaks only"
+            " count as one where the page ends a sentence), inline where they sit in"
+            " the extracted text, page-end at their page's end even mid-paragraph,"
+            " chapter-end at the end of the chapter (part)"
         ),
     )
     parser.add_argument(
@@ -803,6 +907,7 @@ def main() -> int:
             args.keep_references,
             args.keep_front_matter,
             args.footnotes,
+            args.footnote_placement,
         )
     else:
         parts = prepare_text_file(args.source, args.keep_references)

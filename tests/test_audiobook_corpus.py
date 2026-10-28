@@ -111,9 +111,11 @@ def test_kohler_page_16_regression(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         prep,
         "_stext_pages_or_none",
-        lambda pdf, pages, footnotes: prep.stext_body_pages(xml, footnotes),
+        lambda pdf, pages, footnotes, inline=False: prep.stext_body_pages(xml, footnotes, inline),
     )
-    text = "\n".join(prep.prepare_pdf(Path("kohler.pdf"), None, "auto", True))
+    text = "\n".join(
+        prep.prepare_pdf(Path("kohler.pdf"), None, "auto", True, placement="chapter-end")
+    )
 
     # The running heads recur across the five pages and are dropped.
     assert "THE PLACE OF VALUE IN A WORLD OF FACTS" not in text
