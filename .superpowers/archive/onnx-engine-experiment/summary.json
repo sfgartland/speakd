@@ -1,0 +1,86 @@
+{
+  "01-ordinary": {
+    "text": "The pipeline speaks each segment as soon as it is ready.",
+    "torch": {
+      "samples": 82200,
+      "seconds": 3.425,
+      "peak": 0.46874502301216125,
+      "rms": 0.04870643332274703,
+      "lead_silence_s": 0.28025,
+      "trail_silence_s": 0.4860833333333333,
+      "voiced_s": 2.6586666666666665
+    },
+    "onnx": {
+      "samples": 75264,
+      "seconds": 3.136,
+      "peak": 0.672469973564148,
+      "rms": 0.07687966971122856,
+      "lead_silence_s": 0.025708333333333333,
+      "trail_silence_s": 0.09925,
+      "voiced_s": 3.011041666666667
+    }
+  },
+  "02-abbreviations-symbols": {
+    "text": "See \u00a712, e.g. pp. 34-38, ca. 1787.",
+    "torch": {
+      "samples": 130800,
+      "seconds": 5.45,
+      "peak": 0.3392515778541565,
+      "rms": 0.049241385733203635,
+      "lead_silence_s": 0.288125,
+      "trail_silence_s": 0.46308333333333335,
+      "voiced_s": 4.698791666666667
+    },
+    "onnx": {
+      "samples": 144896,
+      "seconds": 6.037333333333334,
+      "peak": 0.5048340559005737,
+      "rms": 0.07581288607695265,
+      "lead_silence_s": 0.030875,
+      "trail_silence_s": 0.08116666666666666,
+      "voiced_s": 5.925291666666666
+    }
+  },
+  "03-proper-nouns": {
+    "text": "Kant's transcendental deduction, in the B edition, differs from Husserl's.",
+    "torch": {
+      "samples": 108600,
+      "seconds": 4.525,
+      "peak": 0.428297758102417,
+      "rms": 0.04785553759002553,
+      "lead_silence_s": 0.2840416666666667,
+      "trail_silence_s": 0.44595833333333335,
+      "voiced_s": 3.795
+    },
+    "onnx": {
+      "samples": 94720,
+      "seconds": 3.9466666666666668,
+      "peak": 0.528641939163208,
+      "rms": 0.07440575821898755,
+      "lead_silence_s": 0.028041666666666666,
+      "trail_silence_s": 0.071375,
+      "voiced_s": 3.84725
+    }
+  },
+  "04-citation-key": {
+    "text": "Stiegler 1994, Technics and Time, volume 1.",
+    "torch": {
+      "samples": 97200,
+      "seconds": 4.05,
+      "peak": 0.38497194647789,
+      "rms": 0.04746708423659571,
+      "lead_silence_s": 0.264625,
+      "trail_silence_s": 0.4979166666666667,
+      "voiced_s": 3.2874583333333334
+    },
+    "onnx": {
+      "samples": 90624,
+      "seconds": 3.776,
+      "peak": 0.5923509001731873,
+      "rms": 0.0755418563169467,
+      "lead_silence_s": 0.04570833333333333,
+      "trail_silence_s": 0.10229166666666667,
+      "voiced_s": 3.628
+    }
+  }
+}

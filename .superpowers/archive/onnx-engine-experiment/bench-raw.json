@@ -1,0 +1,403 @@
+{
+  "isolated": {
+    "torch": {
+      "engine": "torch",
+      "name": "kokoro",
+      "sample_rate": 24000,
+      "load_s": 6.159680904995184,
+      "first_synth_s": 1.4008836660068482,
+      "cold_start_to_first_audio_s": 7.560564571002033,
+      "rss_start_bytes": 35368960,
+      "rss_after_load_bytes": 1145143296,
+      "rss_after_synth_bytes": 1474002944,
+      "rtf": {
+        "len4": {
+          "chars": 4,
+          "synth_s": 0.5450621049967594,
+          "audio_s": 1.25,
+          "samples": 30000,
+          "rtf": 0.43604968399740757
+        },
+        "len19": {
+          "chars": 19,
+          "synth_s": 0.7120469680230599,
+          "audio_s": 1.675,
+          "samples": 40200,
+          "rtf": 0.42510266747645364
+        },
+        "len77": {
+          "chars": 77,
+          "synth_s": 1.8978960269887466,
+          "audio_s": 4.7,
+          "samples": 112800,
+          "rtf": 0.4038076653167546
+        },
+        "len146": {
+          "chars": 146,
+          "synth_s": 3.6538957460143138,
+          "audio_s": 8.8,
+          "samples": 211200,
+          "rtf": 0.4152154256834447
+        },
+        "len213": {
+          "chars": 213,
+          "synth_s": 5.345016391016543,
+          "audio_s": 12.9,
+          "samples": 309600,
+          "rtf": 0.41434235589275525
+        }
+      }
+    },
+    "onnx": {
+      "engine": "onnx",
+      "name": "kokoro-onnx",
+      "sample_rate": 24000,
+      "load_s": 0.9597859159985092,
+      "first_synth_s": 1.3104117889888585,
+      "cold_start_to_first_audio_s": 2.2701977049873676,
+      "rss_start_bytes": 35446784,
+      "rss_after_load_bytes": 479420416,
+      "rss_after_synth_bytes": 725446656,
+      "rtf": {
+        "len4": {
+          "chars": 4,
+          "synth_s": 0.4778633830137551,
+          "audio_s": 0.6613333333333333,
+          "samples": 15872,
+          "rtf": 0.7225756799603151
+        },
+        "len19": {
+          "chars": 19,
+          "synth_s": 0.6532761609996669,
+          "audio_s": 1.1093333333333333,
+          "samples": 26624,
+          "rtf": 0.5888907701319113
+        },
+        "len77": {
+          "chars": 77,
+          "synth_s": 1.903557482000906,
+          "audio_s": 4.117333333333334,
+          "samples": 98816,
+          "rtf": 0.46232775631498685
+        },
+        "len146": {
+          "chars": 146,
+          "synth_s": 3.5977696829941124,
+          "audio_s": 8.085333333333333,
+          "samples": 194048,
+          "rtf": 0.4449748123755911
+        },
+        "len213": {
+          "chars": 213,
+          "synth_s": 5.449494826985756,
+          "audio_s": 12.352,
+          "samples": 296448,
+          "rtf": 0.441183195189909
+        }
+      }
+    }
+  },
+  "paired": {
+    "rounds": [
+      {
+        "torch": {
+          "len4": {
+            "chars": 4,
+            "synth_s": 0.5641700309934095,
+            "audio_s": 1.25,
+            "samples": 30000,
+            "rtf": 0.45133602479472756
+          },
+          "len19": {
+            "chars": 19,
+            "synth_s": 0.7217501499981154,
+            "audio_s": 1.675,
+            "samples": 40200,
+            "rtf": 0.43089561193917336
+          },
+          "len77": {
+            "chars": 77,
+            "synth_s": 1.890614819014445,
+            "audio_s": 4.7,
+            "samples": 112800,
+            "rtf": 0.40225847213073296
+          },
+          "len146": {
+            "chars": 146,
+            "synth_s": 3.7491433680115733,
+            "audio_s": 8.8,
+            "samples": 211200,
+            "rtf": 0.4260390190922242
+          },
+          "len213": {
+            "chars": 213,
+            "synth_s": 5.522245475003729,
+            "audio_s": 12.9,
+            "samples": 309600,
+            "rtf": 0.4280810445739324
+          }
+        },
+        "onnx": {
+          "len4": {
+            "chars": 4,
+            "synth_s": 0.5175412500102539,
+            "audio_s": 0.6613333333333333,
+            "samples": 15872,
+            "rtf": 0.7825724546526016
+          },
+          "len19": {
+            "chars": 19,
+            "synth_s": 0.6490815370052587,
+            "audio_s": 1.1093333333333333,
+            "samples": 26624,
+            "rtf": 0.5851095585984905
+          },
+          "len77": {
+            "chars": 77,
+            "synth_s": 1.960301665996667,
+            "audio_s": 4.117333333333334,
+            "samples": 98816,
+            "rtf": 0.4761095367543718
+          },
+          "len146": {
+            "chars": 146,
+            "synth_s": 3.628537138021784,
+            "audio_s": 8.085333333333333,
+            "samples": 194048,
+            "rtf": 0.4487801539439872
+          },
+          "len213": {
+            "chars": 213,
+            "synth_s": 5.4411722810182255,
+            "audio_s": 12.352,
+            "samples": 296448,
+            "rtf": 0.4405094139425377
+          }
+        }
+      },
+      {
+        "torch": {
+          "len4": {
+            "chars": 4,
+            "synth_s": 0.5519060950027779,
+            "audio_s": 1.25,
+            "samples": 30000,
+            "rtf": 0.4415248760022223
+          },
+          "len19": {
+            "chars": 19,
+            "synth_s": 0.7588331669976469,
+            "audio_s": 1.675,
+            "samples": 40200,
+            "rtf": 0.4530347265657593
+          },
+          "len77": {
+            "chars": 77,
+            "synth_s": 1.9581451569974888,
+            "audio_s": 4.7,
+            "samples": 112800,
+            "rtf": 0.4166266291484019
+          },
+          "len146": {
+            "chars": 146,
+            "synth_s": 3.783993388991803,
+            "audio_s": 8.8,
+            "samples": 211200,
+            "rtf": 0.4299992487490685
+          },
+          "len213": {
+            "chars": 213,
+            "synth_s": 5.898570531018777,
+            "audio_s": 12.9,
+            "samples": 309600,
+            "rtf": 0.4572535295363393
+          }
+        },
+        "onnx": {
+          "len4": {
+            "chars": 4,
+            "synth_s": 0.5207037410000339,
+            "audio_s": 0.6613333333333333,
+            "samples": 15872,
+            "rtf": 0.7873544470766642
+          },
+          "len19": {
+            "chars": 19,
+            "synth_s": 0.7256871059944388,
+            "audio_s": 1.1093333333333333,
+            "samples": 26624,
+            "rtf": 0.6541650594901792
+          },
+          "len77": {
+            "chars": 77,
+            "synth_s": 2.1019204820040613,
+            "audio_s": 4.117333333333334,
+            "samples": 98816,
+            "rtf": 0.5105052984141988
+          },
+          "len146": {
+            "chars": 146,
+            "synth_s": 3.954199456027709,
+            "audio_s": 8.085333333333333,
+            "samples": 194048,
+            "rtf": 0.4890583100298123
+          },
+          "len213": {
+            "chars": 213,
+            "synth_s": 6.0657911770103965,
+            "audio_s": 12.352,
+            "samples": 296448,
+            "rtf": 0.49107765357920957
+          }
+        }
+      },
+      {
+        "torch": {
+          "len4": {
+            "chars": 4,
+            "synth_s": 0.5581761799985543,
+            "audio_s": 1.25,
+            "samples": 30000,
+            "rtf": 0.4465409439988434
+          },
+          "len19": {
+            "chars": 19,
+            "synth_s": 0.7324913589982316,
+            "audio_s": 1.675,
+            "samples": 40200,
+            "rtf": 0.43730827402879496
+          },
+          "len77": {
+            "chars": 77,
+            "synth_s": 1.9307123140024487,
+            "audio_s": 4.7,
+            "samples": 112800,
+            "rtf": 0.41078985404307417
+          },
+          "len146": {
+            "chars": 146,
+            "synth_s": 3.8283895750064403,
+            "audio_s": 8.8,
+            "samples": 211200,
+            "rtf": 0.43504426988709544
+          },
+          "len213": {
+            "chars": 213,
+            "synth_s": 5.786777645989787,
+            "audio_s": 12.9,
+            "samples": 309600,
+            "rtf": 0.4485874144178129
+          }
+        },
+        "onnx": {
+          "len4": {
+            "chars": 4,
+            "synth_s": 0.5152427960128989,
+            "audio_s": 0.6613333333333333,
+            "samples": 15872,
+            "rtf": 0.7790969697775689
+          },
+          "len19": {
+            "chars": 19,
+            "synth_s": 0.7095061010040808,
+            "audio_s": 1.1093333333333333,
+            "samples": 26624,
+            "rtf": 0.6395788170108903
+          },
+          "len77": {
+            "chars": 77,
+            "synth_s": 2.0837238999956753,
+            "audio_s": 4.117333333333334,
+            "samples": 98816,
+            "rtf": 0.506085791773561
+          },
+          "len146": {
+            "chars": 146,
+            "synth_s": 3.8409885939909145,
+            "audio_s": 8.085333333333333,
+            "samples": 194048,
+            "rtf": 0.47505630697447
+          },
+          "len213": {
+            "chars": 213,
+            "synth_s": 5.8312106290250085,
+            "audio_s": 12.352,
+            "samples": 296448,
+            "rtf": 0.4720863527384236
+          }
+        }
+      }
+    ]
+  },
+  "sizes": {
+    "torch_only": {
+      "packages": [
+        "addict",
+        "annotated-doc",
+        "anyio",
+        "certifi",
+        "cffi",
+        "click",
+        "filelock",
+        "fsspec",
+        "h11",
+        "hf-xet",
+        "httpcore",
+        "httpx",
+        "huggingface-hub",
+        "idna",
+        "jinja2",
+        "kokoro",
+        "loguru",
+        "markdown-it-py",
+        "markupsafe",
+        "mdurl",
+        "misaki",
+        "mpmath",
+        "networkx",
+        "pycparser",
+        "pygments",
+        "pyyaml",
+        "regex",
+        "rich",
+        "safetensors",
+        "scipy",
+        "setuptools",
+        "shellingham",
+        "sounddevice",
+        "sympy",
+        "tokenizers",
+        "torch",
+        "tqdm",
+        "transformers",
+        "typer"
+      ],
+      "bytes": 978859000
+    },
+    "onnx_only": {
+      "packages": [
+        "attrs",
+        "cloudpickle",
+        "dlinfo",
+        "espeakng-loader",
+        "flatbuffers",
+        "joblib",
+        "kokoro-onnx",
+        "onnxruntime",
+        "phonemizer",
+        "protobuf"
+      ],
+      "bytes": 87253371
+    },
+    "shared": {
+      "packages": [
+        "numpy",
+        "packaging",
+        "typing-extensions"
+      ],
+      "bytes": 57047505
+    },
+    "torch_model_bytes": 655476044,
+    "onnx_model_bytes": 353746785
+  }
+}

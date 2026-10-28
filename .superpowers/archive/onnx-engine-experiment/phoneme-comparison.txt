@@ -1,0 +1,122 @@
+==============================================================================
+01-ordinary
+  text        : 'The pipeline speaks each segment as soon as it is ready.'
+  misaki      : ðə pˈIplˌIn spˈiks ˈiʧ sˈɛɡmᵊnt æz sˈun æz ɪt ɪz ɹˈɛdi.
+  espeak      : ðə pˈaɪplaɪn spˈiːks ˈiːtʃ sˈɛɡmənt æz sˈuːn ˌæzɪtˌɪz ɹˈɛdi.
+  -> genuine differences (misaki < | > espeak):
+       -sɛɡmᵊnt
+       +sɛɡmənt
+       -æz
+       -ɪt
+       -ɪz
+       +æzɪtɪz
+==============================================================================
+02-abbreviations-symbols
+  text        : 'See §12, e.g. pp. 34-38, ca. 1787.'
+  after table : 'See §12, for example pp. 34-38, ca. 1787.'
+  misaki      : sˈi sˈɛkʃən twˈɛlv, fɔɹ ɪɡzˈæmpəl pˌipˈi. θˌɜɹTi fˌɔɹθˈɜɹTi ˈAt, kˈɑ. sˌɛvəntˈin ˈATi sˈɛvən.
+  espeak      : sˈiː sˈɛkʃən twˈɛlv, fɔːɹ ɛɡzˈæmpəl pˌiːpˈiː. θˈɜːɾi fˈɔːɹ dˈæʃ θˈɜːɾi ˈeɪt, kˈɑː. wˈʌn θˈaʊzənd sˈɛvənhˈʌndɹɪd ˈeɪɾi sˈɛvən.
+  -> genuine differences (misaki < | > espeak):
+       -ɪɡzæmpəl
+       +ɛɡzæmpəl
+       -fɔɹθɜɹTi
+       +fɔɹ
+       +dæʃ
+       +θɜɹTi
+       -sɛvəntin
+       +wʌn
+       +θWzənd
+       +sɛvənhʌndɹɪd
+==============================================================================
+03-proper-nouns
+  text        : "Kant's transcendental deduction, in the B edition, differs from Husserl's."
+  misaki      : kˈænts tɹˌænsˌɛndˈɛntᵊl dᵻdˈʌkʃən, ɪn ðə bˈi ədˈɪʃən, dˈɪfəɹz fɹʌm hˈʌsɜɹlz.
+  espeak      : kˈænts tɹænsəndˈɛntəl dᵻdˈʌkʃən, ɪnðə bˈiː ᵻdˈɪʃən, dˈɪfɚz fɹʌm hˈʌsɜːlz.
+  -> genuine differences (misaki < | > espeak):
+       -tɹænsɛndɛntᵊl
+       +tɹænsəndɛntəl
+       -ɪn
+       -ðə
+       +ɪnðə
+       -ədɪʃən
+       +ᵻdɪʃən
+==============================================================================
+04-citation-key
+  text        : 'Stiegler 1994, Technics and Time, volume 1.'
+  misaki      : stˈiɡləɹ nˌIntˈin nˈIndi fˈɔɹ, tˈɛknɪks ænd tˈIm, vˈɑljˌum wˈʌn.
+  espeak      : stˈiːɡlɚ nˈaɪntiːnhˈʌndɹɪd nˈaɪnti fˈɔːɹ, tˈɛknɪks ænd tˈaɪm, vˈɑːljuːm wˈʌn.
+  -> genuine differences (misaki < | > espeak):
+       -nIntin
+       -nIndi
+       +nIntinhʌndɹɪd
+       +nInti
+==============================================================================
+len4
+  text        : 'Yes.'
+  misaki      : jˈɛs.
+  espeak      : jˈɛs.
+  -> identical once espeak IPA is rewritten misaki's way
+==============================================================================
+len19
+  text        : 'The answer is four.'
+  misaki      : ði ˈænsəɹ ɪz fˈɔɹ.
+  espeak      : ðɪ ˈænsɚɹ ɪz fˈɔːɹ.
+  -> genuine differences (misaki < | > espeak):
+       -ði
+       -ænsəɹ
+       +ðɪ
+       +ænsəɹɹ
+==============================================================================
+len77
+  text        : 'The transcendental question asks how knowledge is possible, not what we know.'
+  misaki      : ðə tɹˌænsˌɛndˈɛntᵊl kwˈɛsʧᵊn ˈæsks hˌW nˈɑləʤ ɪz pˈɑsəbᵊl, nˌɑt wˌʌt wi nˈO.
+  espeak      : ðə tɹænsəndˈɛntəl kwˈɛstʃən ˈæsks hˌaʊ nˈɑːlɪdʒ ɪz pˈɑːsᵻbəl, nˌɑːt wʌt wiː nˈoʊ.
+  -> genuine differences (misaki < | > espeak):
+       -tɹænsɛndɛntᵊl
+       -kwɛsʧᵊn
+       +tɹænsəndɛntəl
+       +kwɛsʧən
+       -nɑləʤ
+       +nɑlɪʤ
+       -pɑsəbᵊl
+       +pɑsᵻbəl
+==============================================================================
+len146
+  text        : 'The transcendental question asks how knowledge is possible, not what we know. That answer cannot be drawn from experience, since it conditions it.'
+  misaki      : ðə tɹˌænsˌɛndˈɛntᵊl kwˈɛsʧᵊn ˈæsks hˌW nˈɑləʤ ɪz pˈɑsəbᵊl, nˌɑt wˌʌt wi nˈO. ðˈæt ˈænsəɹ kənˈɑt bi dɹˈɔn fɹʌm ɪkspˈɪɹiəns, sˈɪns ɪt kəndˈɪʃənz ɪt.
+  espeak      : ðə tɹænsəndˈɛntəl kwˈɛstʃən ˈæsks hˌaʊ nˈɑːlɪdʒ ɪz pˈɑːsᵻbəl, nˌɑːt wʌt wiː nˈoʊ. ðæt ˈænsɚ kænˈɑːt biː dɹˈɔːn fɹʌm ɛkspˈiəɹɪəns, sˈɪns ɪt kəndˈɪʃənz ɪt.
+  -> genuine differences (misaki < | > espeak):
+       -tɹænsɛndɛntᵊl
+       -kwɛsʧᵊn
+       +tɹænsəndɛntəl
+       +kwɛsʧən
+       -nɑləʤ
+       +nɑlɪʤ
+       -pɑsəbᵊl
+       +pɑsᵻbəl
+       -kənɑt
+       +kænɑt
+       -ɪkspɪɹiəns
+       +ɛkspiəɹiəns
+==============================================================================
+len213
+  text        : 'The transcendental question asks how knowledge is possible, not what we know. That answer cannot be drawn from experience, since it conditions it. Hence the deduction argues where an empirical psychology observes.'
+  misaki      : ðə tɹˌænsˌɛndˈɛntᵊl kwˈɛsʧᵊn ˈæsks hˌW nˈɑləʤ ɪz pˈɑsəbᵊl, nˌɑt wˌʌt wi nˈO. ðˈæt ˈænsəɹ kənˈɑt bi dɹˈɔn fɹʌm ɪkspˈɪɹiəns, sˈɪns ɪt kəndˈɪʃənz ɪt. hˈɛns ðə dᵻdˈʌkʃən ˈɑɹɡjuz wˌɛɹ ɐn ɪmpˈɪɹəkᵊl sIkˈɑləʤi əbzˈɜɹvz.
+  espeak      : ðə tɹænsəndˈɛntəl kwˈɛstʃən ˈæsks hˌaʊ nˈɑːlɪdʒ ɪz pˈɑːsᵻbəl, nˌɑːt wʌt wiː nˈoʊ. ðæt ˈænsɚ kænˈɑːt biː dɹˈɔːn fɹʌm ɛkspˈiəɹɪəns, sˈɪns ɪt kəndˈɪʃənz ɪt. hˈɛns ðə dᵻdˈʌkʃən ˈɑːɹɡjuːz wˌɛɹ ɐn ɛmpˈɪɹɪkəl saɪkˈɑːlədʒi əbzˈɜːvz.
+  -> genuine differences (misaki < | > espeak):
+       -tɹænsɛndɛntᵊl
+       -kwɛsʧᵊn
+       +tɹænsəndɛntəl
+       +kwɛsʧən
+       -nɑləʤ
+       +nɑlɪʤ
+       -pɑsəbᵊl
+       +pɑsᵻbəl
+       -kənɑt
+       +kænɑt
+       -ɪkspɪɹiəns
+       +ɛkspiəɹiəns
+       -ɐn
+       -ɪmpɪɹəkᵊl
+       +ən
+       +ɛmpɪɹɪkəl
