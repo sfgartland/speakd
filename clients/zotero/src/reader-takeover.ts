@@ -48,6 +48,7 @@ import {
   NO_TEXT,
   ReaderSession,
   capturedSegments,
+  withInheritedPages,
   resumesOnStart,
   ControllerCore,
   type CaptureResult,
@@ -396,7 +397,8 @@ class Adopted implements ReaderHandle {
         // lookup at planned() time, never an await in the read path.
         overrides: (segments) => {
           const file = this.labelFile;
-          return file === null ? null : matchLabels(file, segments).overrides;
+          // Pages inherited as the capture places them, which the locators were written from.
+          return file === null ? null : matchLabels(file, withInheritedPages(segments)).overrides;
         },
         log: (message) => this.log.log(message),
       }),

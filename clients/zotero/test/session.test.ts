@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Problem } from "../src/channel";
-import { CAPTURE_TIMEOUT, CAPTURE_WAIT_MS, CONTROLLER_WAIT_MS, NO_TEXT, ReaderSession, resumesOnStart, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
+import { CAPTURE_TIMEOUT, CAPTURE_WAIT_MS, CONTROLLER_WAIT_MS, NO_TEXT, ReaderSession, resumesOnStart, withInheritedPages, type ChannelLike, type SegmentInfo, type SessionHooks } from "../src/session";
 import type { CallResult, SpeakdEvent } from "../src/speakd";
+import { locatorFor, matchLabels, type LabelFile } from "../src/labelstore";
 import type { SegmentText } from "../src/sections";
 
 const OK: CallResult = { kind: "ok", data: {} };
@@ -623,5 +624,25 @@ describe("ReaderSession.capture", () => {
     create(3);
     tick();
     expect(channel.log).toEqual(["start 3"]);
+  });
+});
+
+describe("withInheritedPages", () => {
+  it("lets a live read's labels bind to a segment Zotero gave no page", () => {
+    // Locators are written from captured segments, where a pageless segment
+    // takes its predecessor's page; the live read must place it the same way.
+    const live = [
+      { text: "On page two.", pageIndex: 2, anchor: "paragraphStart", firstRectY: 700 },
+      { text: "Pageless tail.", pageIndex: null, anchor: null, firstRectY: 600 },
+    ];
+    const file: LabelFile = {
+      schema: 1,
+      attachmentKey: "A",
+      documentSha256: "",
+      capture: { zoteroVersion: "10", segments: 2, labelledAt: 0 },
+      labels: [{ locator: locatorFor({ ...live[1]!, pageIndex: 2 }), category: "junk", labelledAt: 0, note: "" }],
+    };
+    expect(matchLabels(file, live).overrides.size).toBe(0);
+    expect([...matchLabels(file, withInheritedPages(live)).overrides.entries()]).toEqual([[1, "junk"]]);
   });
 });

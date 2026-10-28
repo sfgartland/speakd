@@ -78,17 +78,30 @@ export type CaptureResult =
   | { readonly ok: false; readonly problem: Problem };
 
 /**
+ * `segments` with every page filled in: one Zotero could not place takes its
+ * predecessor's (0 at the start). The one rule capture and live reads share,
+ * so a label written from the one binds in the other.
+ */
+export function withInheritedPages<T extends { readonly pageIndex?: number | null }>(
+  segments: readonly T[],
+): (T & { readonly pageIndex: number })[] {
+  let page = 0;
+  return segments.map((segment) => {
+    if (typeof segment.pageIndex === "number") page = segment.pageIndex;
+    return { ...segment, pageIndex: page };
+  });
+}
+
+/**
  * A copy of `segments`, each with a page. One whose page Zotero could not
  * place is put on its predecessor's: in reading order, which is all a page
  * range needs of it.
  */
 export function capturedSegments(segments: readonly SegmentInfo[]): CapturedSegment[] {
-  let page = 0;
-  return segments.map((segment) => {
-    if (typeof segment.pageIndex === "number") page = segment.pageIndex;
+  return withInheritedPages(segments).map((segment) => {
     return {
       text: segment.text,
-      pageIndex: page,
+      pageIndex: segment.pageIndex,
       anchor: segment.anchor,
       rectCount: segment.rectCount ?? null,
       firstRectY: segment.firstRectY ?? null,
