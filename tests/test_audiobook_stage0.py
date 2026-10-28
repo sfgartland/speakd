@@ -219,6 +219,25 @@ def test_stext_orders_columns_before_rows() -> None:
     assert notes == [[]]
 
 
+def test_stext_keeps_columns_apart_across_a_ten_point_gutter() -> None:
+    """A normal LaTeX gutter (10pt at a 10pt font) is wider than a word space:
+    same-baseline fragments across it are two columns, not one visual line."""
+    doc = stext_doc(
+        [
+            stext_page(
+                [
+                    stext_line("Left one.", 54, 60, 250, 10),
+                    stext_line("Right one.", 260, 60, 456, 10),
+                    stext_line("Left two.", 54, 72, 250, 10),
+                    stext_line("Right two.", 260, 72, 456, 10),
+                ]
+            )
+        ]
+    )
+    bodies, _ = prep.stext_body_pages(doc, "classify")
+    assert bodies == [["Left one.", "Left two.", "", "Right one.", "Right two."]]
+
+
 def test_stext_drops_recurring_top_band_heads() -> None:
     bodies, _ = prep.stext_body_pages(stext_doc(paper_pages()), "classify")
     assert all("Sample Journal" not in lines for lines in bodies)

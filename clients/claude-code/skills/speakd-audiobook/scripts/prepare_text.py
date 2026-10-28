@@ -50,6 +50,11 @@ PARAGRAPH_GAP = 1.5
 # share of the line's font size, the horizontal guard a multiple of it.
 VISUAL_BAND = 0.6
 VISUAL_GAP = 2.0
+# A gutter: at most this share of fragments may cross it, it is this many ems
+# wide, and each side holds at least this share of the fragments.
+GUTTER_COVERAGE = 0.1
+GUTTER_WIDTH = 0.5
+GUTTER_SIDE = 0.2
 OCR_SUSPICION_GATE = 6.0
 SCAN_JUNK = re.compile("[\ufb00-\ufb04\x00-\x08\x0e-\x1f\x7f\xad\xac\xb7\u200b-\u200d\u2060\ufeff]")
 SPLIT_DIGITS = re.compile(r"(?<=\d)\s+(?=\d)")
@@ -217,12 +222,53 @@ def _merge_visual_line(run: list[StextLine]) -> StextLine:
     )
 
 
+def _gutter(lines: list[StextLine], median_height: float) -> float | None:
+    """The x of a column gutter, or None: a stretch of the page's middle that
+    almost no fragment covers (a few full-width ones may), at least half an em
+    wide, with a real share of the fragments on each side of it. Word gaps in
+    running text are never aligned line after line, so they cannot qualify."""
+    if len(lines) < 4:
+        return None
+    sizes = sorted(line.size for line in lines if line.size > 0)
+    em = sizes[len(sizes) // 2] if sizes else median_height
+    left = min(line.x0 for line in lines)
+    right = max(line.x1 for line in lines)
+    width = right - left
+    if width <= 0 or em <= 0:
+        return None
+    points = sorted({line.x0 for line in lines} | {line.x1 for line in lines})
+    allowed = GUTTER_COVERAGE * len(lines)
+    best: tuple[float, float] | None = None
+    start: float | None = None
+    for low, high in [*pairwise(points), (right, right)]:
+        covered = sum(1 for line in lines if line.x0 < high and line.x1 > low)
+        empty = low < high and covered <= allowed
+        if empty and start is None:
+            start = low
+        if not empty and start is not None:
+            if best is None or low - start > best[1] - best[0]:
+                best = (start, low)
+            start = None
+    if best is None or best[1] - best[0] < GUTTER_WIDTH * em:
+        return None
+    middle = (best[0] + best[1]) / 2
+    if not left + 0.3 * width <= middle <= left + 0.7 * width:
+        return None
+    on_left = sum(1 for line in lines if line.x1 <= middle)
+    on_right = sum(1 for line in lines if line.x0 >= middle)
+    if min(on_left, on_right) < GUTTER_SIDE * len(lines):
+        return None
+    return middle
+
+
 def _visual_lines(lines: list[StextLine]) -> list[StextLine]:
     """mutool emits each word as its own `<line>` with a noisy top; lines whose
     vertical centres share a band (a share of the font size) are one visual
     line, read left to right -- the fix for the Köhler word-order regression.
     A horizontal guard (a few ems) keeps two columns' words on the same
-    baseline apart, so column detection still sees two columns."""
+    baseline apart, so column detection still sees two columns; so does a
+    detected gutter, which no fragment is merged across however narrow it is
+    (a LaTeX gutter of 10pt at a 10pt font is well under the guard)."""
     if not lines:
         return []
     heights = sorted(line.bottom - line.top for line in lines if line.bottom > line.top)
@@ -241,14 +287,17 @@ def _visual_lines(lines: list[StextLine]) -> list[StextLine]:
                 break
         else:
             bands.append([line])
+    gutter = _gutter(lines, median_height)
     visual: list[StextLine] = []
     for band in bands:
         ordered = sorted(band, key=lambda item: item.x0)
         run = [ordered[0]]
         for line in ordered[1:]:
-            gap = line.x0 - max(item.x1 for item in run)
+            right = max(item.x1 for item in run)
+            gap = line.x0 - right
             size = max(line.size, max(item.size for item in run))
-            if gap > VISUAL_GAP * size:
+            across_gutter = gutter is not None and right <= gutter < line.x0
+            if gap > VISUAL_GAP * size or across_gutter:
                 visual.append(_merge_visual_line(run))
                 run = [line]
             else:
