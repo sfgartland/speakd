@@ -15,6 +15,22 @@ declare const PathUtils: any;
 /** The taxonomy the pane offers (spec §7.1). */
 export type LabelCategory = "body" | "footnote" | "heading" | "running-head" | "footer" | "page-number" | "junk";
 
+/** Every category the taxonomy names, for validating a file's records. */
+export const LABEL_CATEGORIES: readonly LabelCategory[] = [
+  "body",
+  "footnote",
+  "heading",
+  "running-head",
+  "footer",
+  "page-number",
+  "junk",
+];
+
+/** Whether `value` is a category of the taxonomy. */
+export function isLabelCategory(value: unknown): value is LabelCategory {
+  return typeof value === "string" && (LABEL_CATEGORIES as readonly string[]).includes(value);
+}
+
 /** Where a segment was when it was labelled: content and place, not an index. */
 export interface LabelLocator {
   /** `pageIndex`, predecessor-inherited as the capture places it. */
@@ -203,6 +219,9 @@ export function matchLabels(file: LabelFile, segments: readonly LabelableSegment
   const unmatched: LabelRecord[] = [];
 
   for (const label of file.labels) {
+    // A category this build does not know (a newer file, a hand edit) is no
+    // override: ignored, never read as a drop. The record stays in the file.
+    if (!isLabelCategory(label.category)) continue;
     let found = -1;
     for (let index = 0; index < segments.length; index++) {
       if (used.has(index)) continue;

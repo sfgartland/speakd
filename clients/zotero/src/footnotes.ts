@@ -232,9 +232,15 @@ function overrideTag(category: LabelCategory, text: string, policy: FootnotePoli
       return "body";
     case "footnote":
       return footnoteTag(text, policy);
-    default:
-      // running-head / footer / page-number / junk: dropped, and audited.
+    case "running-head":
+    case "footer":
+    case "page-number":
+    case "junk":
+      // Dropped, and audited.
       return "drop";
+    default:
+      // A category this build does not know: no override, never a drop.
+      return "body";
   }
 }
 
