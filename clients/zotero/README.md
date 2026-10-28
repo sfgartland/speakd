@@ -58,14 +58,36 @@ continuations — and treated by the **Footnote policy** setting:
 
 - `classify` (default): bare citations (author–year, "Ibid.", "Cf.", "See",
   mostly digits and punctuation) are dropped; everything a shape rule cannot
-  judge is kept and read at the end of the section that owns its page, never
-  inline mid-flow.
+  judge is kept.
 - `drop_all`: every footnote is dropped.
-- `keep_all`: every footnote is kept, read at its section's end.
+- `keep_all`: every footnote is kept. (`defer_all`, its old name, is still
+  read from a stored preference.)
+
+A marker and the bottom band are not enough on their own: a digit-led line
+there is a footnote only when something else agrees (the body cites the same
+number, a neighbouring note numbers one off it, it has a citation's shape, or
+the page's body breaks off above it and carries on next page).
 
 The policy is `extensions.speakd-reader.footnote_policy`, set in the plugin's
 preferences pane (**Edit → Settings → speakd reader**). Under `drop_all` and
 `keep_all` no classifier runs at all.
+
+Where the kept footnotes are read is a separate setting,
+`extensions.speakd-reader.footnote_placement`, also in the pane:
+
+- `after-paragraph` (default): at the first paragraph break at or after the
+  end of the footnote's page, so a paragraph that straddles the page break is
+  finished first.
+- `inline`: where the footnote sits in the page's text, not moved.
+- `page-end`: at the end of its page.
+- `chapter-end`: at the end of the chapter (or export part).
+
+Audiobook exports honour all four. A live read supports `inline` and
+`page-end`; `after-paragraph` and `chapter-end` read at the end of the page
+there, because live sections are page-sized and the highlight needs every
+segment's true place.
+
+Both settings are read afresh at each read and export; no restart is needed.
 
 ### Optional language model (off by default)
 

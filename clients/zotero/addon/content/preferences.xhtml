@@ -22,11 +22,11 @@
   <groupbox>
     <label><html:h2>Footnotes</html:h2></label>
     <description>
-      How a read treats footnotes. Classify drops the bare citations and reads the rest at
-      the end of their section; drop removes every footnote; defer keeps every one.
+      Which footnotes are read, and where. Classify drops the bare citations and keeps the
+      rest; drop removes every footnote; keep reads every one.
     </description>
     <hbox align="center">
-      <label control="speakd-reader-footnotes" value="Policy"/>
+      <label control="speakd-reader-footnotes" value="Which footnotes are read"/>
       <menulist id="speakd-reader-footnotes"
                 preference="extensions.speakd-reader.footnote_policy">
         <menupopup>
@@ -36,6 +36,22 @@
         </menupopup>
       </menulist>
     </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-footnote-placement" value="Where kept footnotes are read"/>
+      <menulist id="speakd-reader-footnote-placement"
+                preference="extensions.speakd-reader.footnote_placement">
+        <menupopup>
+          <menuitem label="After the paragraph the page ends in" value="after-paragraph"/>
+          <menuitem label="Inline, where they sit on the page" value="inline"/>
+          <menuitem label="At the end of their page" value="page-end"/>
+          <menuitem label="At the end of the chapter or export part" value="chapter-end"/>
+        </menupopup>
+      </menulist>
+    </hbox>
+    <description>
+      A live read supports inline and end of page; the other two read at the end of the page
+      there. Audiobook exports honour all four.
+    </description>
   </groupbox>
   <groupbox>
     <label><html:h2>Language model (optional)</html:h2></label>
