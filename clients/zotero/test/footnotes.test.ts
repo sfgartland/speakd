@@ -81,7 +81,9 @@ describe("planFootnotes", () => {
       ],
       "classify",
     );
-    expect([...plan.tags]).toEqual(["body", "body", "classify", "body"]);
+    // The count-led line in the band has no second signal (no "12" cited in
+    // the body, no neighbouring note): it is body, as the test's name says.
+    expect([...plan.tags]).toEqual(["body", "body", "body", "body"]);
   });
 
   it("keeps a continuation whose candidate sits on the previous page: kept beats dropped", () => {
@@ -145,7 +147,7 @@ describe("planFootnotes", () => {
     // bottom band it is body; with the band widened to the whole page it is a
     // candidate, and its shape is in-between -- `classify`, kept for now.
     const segments = [
-      seg("The body opens.", 0, "paragraphStart", 770),
+      seg("The body opens with a claim.12", 0, "paragraphStart", 770),
       seg("A low body paragraph, ending well above the notes.", 0, null, 300),
       seg("12 of them were counted on the last line, which is body text still.", 0, "paragraphStart", 500),
     ];
@@ -162,6 +164,7 @@ describe("planFootnotes", () => {
   it("treats a pageless segment as its predecessor's, like capturedSegments", () => {
     const plan = planFootnotes(
       [
+        seg("The body cites a note.1", 0, "paragraphStart", 760),
         seg("1 Kant, KrV, B25.", 0, "paragraphStart", 140),
         seg("A wrapped tail of the note.", 0, null, null),
         seg("2 Heidegger 1962, p. 65.", 2, "paragraphStart", 126),
@@ -170,21 +173,23 @@ describe("planFootnotes", () => {
     );
     // The pageless continuation sits in page 0's group, in a band it has no y
     // for: kept, never dropped on a guess.
-    expect([...plan.tags]).toEqual(["drop", "body", "drop"]);
+    expect([...plan.tags]).toEqual(["body", "drop", "body", "drop"]);
   });
 
   it("recognises an OCR-mangled footnote marker in the bottom band", () => {
-    // The marker OCR'd as 'il' (for '1 I') still opens a footnote: the bottom
-    // band is the guard, not the marker's exact shape.
+    // The marker OCR'd as 'il' (for '11') still opens a footnote when a
+    // neighbouring note numbers one off it: a letter-lookalike marker is
+    // taken only on a second signal.
     const plan = planFootnotes(
       [
         seg("The body paragraph.", 0, "paragraphStart", 760),
         seg("il found recently that these words aie quoted from A. N. Whitehead,", 0, "paragraphStart", 140),
         seg("who does not of course share the opinion which they express.", 0, null, 130),
+        seg("12 Another note, numbered one after it.", 0, "paragraphStart", 120),
       ],
       "defer_all",
     );
-    expect([...plan.tags]).toEqual(["body", "defer", "defer"]);
+    expect([...plan.tags]).toEqual(["body", "defer", "defer", "defer"]);
   });
 
   it("keeps a body paragraph in the band that opens with a lone 'I '", () => {
@@ -198,6 +203,46 @@ describe("planFootnotes", () => {
       "drop_all",
     );
     expect([...plan.tags]).toEqual(["body", "body"]);
+  });
+});
+
+describe("planFootnotes false positives", () => {
+  it("keeps a short numbered list item in the band: '2. The second premise is false.'", () => {
+    const plan = planFootnotes(
+      [
+        seg("The argument has two premises.", 0, "paragraphStart", 760),
+        seg("1. The first premise is true.", 0, "paragraphStart", 140),
+        seg("2. The second premise is false.", 0, "paragraphStart", 126),
+      ],
+      "classify",
+    );
+    expect([...plan.tags]).toEqual(["body", "body", "body"]);
+    expect(plan.drops).toEqual([]);
+  });
+
+  it("keeps 'Oil prices rose.' in the band: letter-lookalike alone is not a marker", () => {
+    for (const policy of ["classify", "drop_all"] as const) {
+      const plan = planFootnotes(
+        [
+          seg("The body opens the page.", 0, "paragraphStart", 760),
+          seg("Oil prices rose.", 0, "paragraphStart", 140),
+          seg("Ill advised, the policy failed.", 0, "paragraphStart", 126),
+        ],
+        policy,
+      );
+      expect([...plan.tags]).toEqual(["body", "body", "body"]);
+    }
+  });
+
+  it("takes a lone digit marker when the body cites the same number above", () => {
+    const plan = planFootnotes(
+      [
+        seg("The claim is contested.3", 0, "paragraphStart", 760),
+        seg("3 Compare the second edition.", 0, "paragraphStart", 140),
+      ],
+      "drop_all",
+    );
+    expect([...plan.tags]).toEqual(["body", "drop"]);
   });
 });
 
