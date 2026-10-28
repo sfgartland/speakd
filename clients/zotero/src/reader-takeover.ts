@@ -66,6 +66,18 @@ type Any = any;
 const Cu = (): Any => Components.utils;
 const waive = <T>(value: T): Any => (value === null || value === undefined ? value : Cu().waiveXrays(value));
 
+/**
+ * The first rect's top edge, or null: no rects at all, an empty list, or a
+ * rect of a shape not recognised are all null geometry, never a throw.
+ */
+export function firstRectYOf(rects: unknown): number | null {
+  if (!Array.isArray(rects)) return null;
+  const first = waive(rects[0]);
+  if (first == null) return null;
+  if (typeof first.y === "number") return first.y;
+  return Array.isArray(first) && typeof first[1] === "number" ? first[1] : null;
+}
+
 /** The class on the reader document's root while the plugin's own read runs. */
 const TAKEOVER_CLASS = "speakd-takeover";
 const STYLE_ID = "speakd-reader-style";
@@ -531,15 +543,7 @@ class Adopted implements ReaderHandle {
       // `y` member or an `[x, y, w, h]` array, whichever Zotero's PDF worker
       // left there. Nothing may throw into Zotero's controller build.
       const rects = waive(position?.rects);
-      const first = Array.isArray(rects) ? waive(rects[0]) : null;
-      const firstRectY =
-        first === null
-          ? null
-          : typeof first.y === "number"
-            ? first.y
-            : Array.isArray(first) && typeof first[1] === "number"
-              ? first[1]
-              : null;
+      const firstRectY = firstRectYOf(rects);
       infos.push({
         text: String(segment.text ?? ""),
         anchor: typeof segment.anchor === "string" ? segment.anchor : null,
