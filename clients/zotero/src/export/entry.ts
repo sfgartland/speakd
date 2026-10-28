@@ -7,10 +7,10 @@
 import { dialogItem, type ExportChoice } from "./dialog";
 import { captureSegments, type CaptureHost, type CapturedSegment } from "./capture";
 import { openExportDialog, type ExportDialogRequest } from "./dialog-window";
-import { type FootnotePolicy } from "../footnotes";
+import { type FootnotePlacement, type FootnotePolicy } from "../footnotes";
 import { exportTarget, type ExportTarget, type MenuItem } from "./menu";
 import { readStructure, type PdfStructure } from "./structure";
-import { readExportSettings, readFootnotePolicy } from "../prefs";
+import { readExportSettings, readFootnotePlacement, readFootnotePolicy } from "../prefs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
@@ -29,6 +29,8 @@ export interface ExportRequest {
   readonly choice: ExportChoice;
   /** The footnote policy the parts were built under (the `footnote_policy` pref). */
   readonly footnotes: FootnotePolicy;
+  /** Where the kept footnotes are read (the `footnote_placement` pref). */
+  readonly placement?: FootnotePlacement;
 }
 
 export interface ExportEntryOptions {
@@ -73,6 +75,8 @@ export interface ExportFlowDeps extends Pick<ExportEntryOptions, "captureHost" |
   readonly itemType: string;
   /** The footnote policy as the preferences stand (prefs.ts). */
   footnotes(): FootnotePolicy;
+  /** The footnote placement as the preferences stand. */
+  placement?(): FootnotePlacement;
   /** The page count and outline of a reader's PDF, read on the reader the capture used. */
   structure(reader: Any): Promise<PdfStructure>;
   /** Shows the dialog; null when cancelled. */
@@ -119,6 +123,7 @@ export async function exportFlow(target: ExportTarget, deps: ExportFlowDeps): Pr
       segments: captured.segments,
       choice,
       footnotes,
+      placement: deps.placement?.(),
     });
   } catch (error) {
     deps.warn("the audiobook export failed", error);
@@ -184,6 +189,7 @@ export async function exportItem(
     title: String(item.getDisplayTitle()),
     itemType: item.itemType,
     footnotes: readFootnotePolicy,
+    placement: readFootnotePlacement,
     captureHost: options.captureHost,
     structure: readStructure,
     openDialog:

@@ -20,6 +20,17 @@ import type { TaggedSegment } from "./sections";
 /** How a read's footnotes are treated (proposal §3, the brief's open question 1). */
 export type FootnotePolicy = "classify" | "drop_all" | "keep_all";
 
+/**
+ * Where the footnotes a read keeps are read (the `footnote_placement` pref),
+ * apart from which are kept (`FootnotePolicy`):
+ * - `after-paragraph`: at the first paragraph break at or after the end of
+ *   the footnote's page, so a paragraph straddling the page break is finished;
+ * - `inline`: where they sit in the captured flow, not moved;
+ * - `page-end`: at the end of their page;
+ * - `chapter-end`: at the end of the export part (the live read: its section).
+ */
+export type FootnotePlacement = "after-paragraph" | "inline" | "page-end" | "chapter-end";
+
 /** What the plan says of one segment. */
 export type FootnoteTag = "body" | "drop" | "defer" | "classify";
 

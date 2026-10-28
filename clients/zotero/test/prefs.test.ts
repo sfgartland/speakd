@@ -14,7 +14,9 @@ import {
   LLM_MODEL_PREF,
   LLM_PROVIDER_PREF,
   parseConfig,
+  parseFootnotePlacement,
   parseFootnotePolicy,
+  FOOTNOTE_PLACEMENT_PREF,
   parseLlmConfig,
 } from "../src/prefs";
 
@@ -54,6 +56,18 @@ describe("parseFootnotePolicy", () => {
 
   it("declares the pref beside the plugin's other settings", () => {
     expect(FOOTNOTE_POLICY_PREF).toBe("extensions.speakd-reader.footnote_policy");
+  });
+});
+
+describe("parseFootnotePlacement", () => {
+  it("takes the four placements, and defaults to after-paragraph", () => {
+    for (const value of ["after-paragraph", "inline", "page-end", "chapter-end"]) {
+      expect(parseFootnotePlacement(value)).toBe(value);
+    }
+    for (const value of [undefined, null, "", "end", 3]) {
+      expect(parseFootnotePlacement(value)).toBe("after-paragraph");
+    }
+    expect(FOOTNOTE_PLACEMENT_PREF).toBe("extensions.speakd-reader.footnote_placement");
   });
 });
 

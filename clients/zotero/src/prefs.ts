@@ -6,7 +6,7 @@
 // from inside Zotero's flatpak.
 
 import { parseSettings, type ExportSettings } from "./export/dialog";
-import { type FootnotePolicy } from "./footnotes";
+import { type FootnotePlacement, type FootnotePolicy } from "./footnotes";
 import { type LlmConfig } from "./llm";
 import type { LinkConfig } from "./link";
 import { resolveProfile, type RequestProfile } from "./presets";
@@ -15,6 +15,7 @@ export const PREF_PREFIX = "extensions.speakd-reader.";
 export const PORT_PREF = `${PREF_PREFIX}port`;
 export const TOKEN_PREF = `${PREF_PREFIX}token`;
 export const FOOTNOTE_POLICY_PREF = `${PREF_PREFIX}footnote_policy`;
+export const FOOTNOTE_PLACEMENT_PREF = `${PREF_PREFIX}footnote_placement`;
 export const LLM_ENABLED_PREF = `${PREF_PREFIX}llm_enabled`;
 export const LLM_ENDPOINT_PREF = `${PREF_PREFIX}llm_endpoint`;
 export const LLM_KEY_PREF = `${PREF_PREFIX}llm_key`;
@@ -29,6 +30,8 @@ export const LLM_CUSTOM_THINKING_PREF = `${PREF_PREFIX}llm_custom_thinking`;
 export const DEFAULT_PORT = 8642;
 /** How a read treats footnotes (proposal §3, the brief's open question 1): drop the bare citations, read the rest at their section's end. */
 export const DEFAULT_FOOTNOTE_POLICY: FootnotePolicy = "classify";
+/** Where the footnotes a read keeps are read: after the paragraph the page break falls in, unless set otherwise. */
+export const DEFAULT_FOOTNOTE_PLACEMENT: FootnotePlacement = "after-paragraph";
 /** The one-line disclosure the preference pane carries when the LLM is on (reader-design revision #7). */
 export const LLM_DISCLOSURE = "When enabled, this sends the paper's text to this endpoint.";
 
@@ -58,6 +61,18 @@ export function observeConfig(onChange: () => void): () => void {
 /** The footnote policy as the preferences stand: the brief's open question 1, a setting rather than an architecture decision. */
 export function readFootnotePolicy(): FootnotePolicy {
   return parseFootnotePolicy(Zotero.Prefs.get(FOOTNOTE_POLICY_PREF, true));
+}
+
+/** The footnote placement as the preferences stand. */
+export function readFootnotePlacement(): FootnotePlacement {
+  return parseFootnotePlacement(Zotero.Prefs.get(FOOTNOTE_PLACEMENT_PREF, true));
+}
+
+/** The placement as set, or the default for anything else. */
+export function parseFootnotePlacement(value: unknown): FootnotePlacement {
+  return value === "inline" || value === "page-end" || value === "chapter-end" || value === "after-paragraph"
+    ? value
+    : DEFAULT_FOOTNOTE_PLACEMENT;
 }
 
 /** The policy as set, or the default for anything else. */

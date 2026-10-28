@@ -43,6 +43,7 @@ export function renderPayload(
 ): RenderPayload | null {
   const parts = buildParts(request.segments, request.title, request.choice.selection, {
     footnotes: request.footnotes,
+    placement: request.placement,
     footnoteKinds: options.footnoteKinds,
     overrides: options.overrides,
   });
