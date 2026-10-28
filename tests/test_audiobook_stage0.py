@@ -485,6 +485,16 @@ def test_cli_footnotes_flag_and_default(
     assert "2 A prose footnote that argues its case at length across the page." in text
 
 
+def test_ocr_suspicion_is_per_thousand_words() -> None:
+    """A long clean book with a few stray artefacts is not a scan: the count
+    is normalised by length, so only the density of artefacts raises it."""
+    clean = "The reading goes on at some length through the argument. " * 1000
+    stray = "A stray \ufb01 mark and 1 994 split. " * 10
+    assert prep.ocr_suspicion(clean + stray) < prep.OCR_SUSPICION_GATE
+    dense = "Tbe mo\u00adde rn scan says 1 994 and \u00b7 tbe year. " * 100
+    assert prep.ocr_suspicion(dense) > prep.OCR_SUSPICION_GATE
+
+
 def test_ocr_report_fires_on_mangled_text_and_not_on_clean(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

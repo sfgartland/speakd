@@ -159,11 +159,13 @@ def _policy_units(units: list[list[str]], footnotes: str) -> list[list[str]]:
 def ocr_suspicion(text: str) -> float:
     """How much a text looks like a scan's OCR layer (the plugin's cleanup.ts,
     mirrored): stray marks, digit runs broken by one space, and one- and
-    two-letter tokens. Counts, never rewrites; the gate is provisional."""
-    score = len(SCAN_JUNK.findall(text)) + 2 * len(SPLIT_DIGITS.findall(text))
+    two-letter tokens. Counts per 1,000 words, never rewrites; the gate is provisional."""
+    artefacts = len(SCAN_JUNK.findall(text)) + 2 * len(SPLIT_DIGITS.findall(text))
     tokens = LETTERS.findall(text)
     short = sum(1 for token in tokens if len(token) <= 2)
-    return score + (4 * short / len(tokens) if tokens else 0.0)
+    # Artefacts per 1,000 words, so a long clean book is not flagged for a few.
+    density = 1000 * artefacts / len(text.split()) if text.split() else 0.0
+    return density + (4 * short / len(tokens) if tokens else 0.0)
 
 
 # ---- the stext path: mutool's structured text, geometry and font sizes ----
