@@ -3,11 +3,19 @@ import type { ExportChoice } from "../../src/export/dialog";
 import type { ExportRequest } from "../../src/export/entry";
 import { Exporter, EXPORT_SOURCE, type ExporterHost } from "../../src/export/exporter";
 import { serializeLedger, type TrackedJob } from "../../src/export/jobs";
+import { locatorFor, type LabelFile } from "../../src/labelstore";
+import type { FootnoteClassifier, FootnoteKind } from "../../src/llm";
 import type { CallResult } from "../../src/speakd";
 
 const STAGING = "/home/u/profile/speakd-exports";
 
-const text = (value: string, pageIndex = 0) => ({ text: value, pageIndex, anchor: null });
+const text = (value: string, pageIndex = 0) => ({
+  text: value,
+  pageIndex,
+  anchor: null,
+  rectCount: null,
+  firstRectY: null,
+});
 
 function request(choice: Partial<ExportChoice> = {}): ExportRequest {
   return {
@@ -16,6 +24,7 @@ function request(choice: Partial<ExportChoice> = {}): ExportRequest {
     attachmentID: 7,
     segments: [text("x".repeat(150))],
     choice: { selection: { kind: "whole" }, format: "mp3", destination: "attach", folder: null, ...choice },
+    footnotes: "classify",
   };
 }
 
@@ -50,6 +59,8 @@ function setup(
     attachFails?: boolean;
     /** Holds `status`'s answer back until it resolves. */
     statusGate?: Promise<void>;
+    labelFile?: LabelFile | null;
+    classifier?: FootnoteClassifier | (() => FootnoteClassifier | undefined);
   } = {},
 ) {
   const calls: [string, string, Record<string, unknown>][] = [];
@@ -86,11 +97,12 @@ function setup(
       attached.push([tracked.itemID, tracked.title, file]);
     },
     tags: () => ({ artist: "Ada" }),
+    labelFile: async () => options.labelFile ?? null,
     notify: (title, message) => void notes.push([title, message]),
     now: () => now,
     warn: () => {},
   };
-  const exporter = new Exporter(host);
+  const exporter = new Exporter(host, options.classifier);
   return {
     exporter,
     calls,
@@ -330,5 +342,83 @@ describe("Exporter.sync, on start", () => {
     await run.exporter.sync();
     expect(run.exporter.jobsFor(3)).toHaveLength(1);
     expect(run.notes).toEqual([]);
+  });
+});
+
+describe("Exporter labels", () => {
+  it("applies the attachment's label file to the render parts", async () => {
+    const segments = [text("Kept body sentence."), text("Junk to drop.")];
+    const labels: LabelFile = {
+      schema: 1,
+      attachmentKey: "ATTACH01",
+      documentSha256: "doc",
+      capture: { zoteroVersion: "10.0.6", segments: 2, labelledAt: 0 },
+      labels: [{ locator: locatorFor(segments[1]!), category: "junk", labelledAt: 0, note: "" }],
+    };
+    const run = setup({ labelFile: labels });
+    await run.exporter.start({ ...request(), segments });
+    expect(run.calls[0]?.[2].parts).toEqual([{ title: "A Paper", text: "Kept body sentence." }]);
+  });
+
+  it("renders unchanged when the label file matches nothing", async () => {
+    const segments = [text("Kept body sentence.")];
+    const labels: LabelFile = {
+      schema: 1,
+      attachmentKey: "ATTACH01",
+      documentSha256: "doc",
+      capture: { zoteroVersion: "10.0.6", segments: 1, labelledAt: 0 },
+      labels: [
+        {
+          locator: { page: 9, rectY: null, anchor: null, prefix: "elsewhere", textSha256: "nope" },
+          category: "junk",
+          labelledAt: 0,
+          note: "",
+        },
+      ],
+    };
+    const run = setup({ labelFile: labels });
+    await run.exporter.start({ ...request(), segments });
+    expect(run.calls[0]?.[2].parts).toEqual([{ title: "A Paper", text: "Kept body sentence." }]);
+  });
+});
+
+describe("Exporter's classifier", () => {
+  const notes = (page: number) => [
+    { text: "The page's body opens here.", pageIndex: page, anchor: "paragraphStart", rectCount: 1, firstRectY: 760 },
+    {
+      text:
+        "1 The inaugurating gesture of the lecture is reversed here. What that reversal means " +
+        "for the order of asking is worked out across three pages of close reading.",
+      pageIndex: page,
+      anchor: "paragraphStart",
+      rectCount: 1,
+      firstRectY: 140,
+    },
+    {
+      text: "2 What the reversal means for the asking's order is not yet settled anywhere.",
+      pageIndex: page,
+      anchor: "paragraphStart",
+      rectCount: 1,
+      firstRectY: 126,
+    },
+  ];
+
+  it("is looked up at each export, so a switched-off model is not asked", async () => {
+    let asked = 0;
+    let live = true;
+    const classifier: FootnoteClassifier = {
+      configured: true,
+      cached: () => undefined,
+      classifyFootnotes: async () => {
+        asked++;
+        return new Map<number, FootnoteKind>();
+      },
+    };
+    const run = setup({ classifier: () => (live ? classifier : undefined) });
+    await run.exporter.start({ ...request(), segments: notes(0) });
+    expect(asked).toBe(1);
+    live = false;
+    await run.exporter.start({ ...request(), segments: notes(0) });
+    expect(asked).toBe(1);
   });
 });

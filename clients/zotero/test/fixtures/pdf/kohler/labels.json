@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "attachmentKey": "NZBZ2NQ9",
+  "documentSha256": "f66453e8cd6df3cafda5f49609d39cae5c8ea4533fce0ac1b9c6c0605707e783",
+  "capture": {
+    "zoteroVersion": "10.0.6",
+    "segments": 6054,
+    "labelledAt": 1791537652
+  },
+  "labels": [
+    {
+      "locator": {
+        "page": 34,
+        "rectY": 44.3,
+        "anchor": "paragraphStart",
+        "prefix": "il found recently that these words aie quoted fr",
+        "textSha256": "048dab4542d56d4c3be19df332d2dbec75ee75110ac709b5c1761b571eb3f841"
+      },
+      "category": "footnote",
+      "labelledAt": 1791537652,
+      "note": ""
+    }
+  ]
+}

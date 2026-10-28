@@ -1,6 +1,6 @@
 # Handoff — resume here
 
-Last updated 2026-10-03. `main` **is pushed** to https://github.com/sfgartland/speakd.
+Last updated 2026-10-09. `main` **is pushed** to https://github.com/sfgartland/speakd.
 The OpenRouter branch (`claude/beautiful-hypatia-wg0nzy`, PR #1) is **merged**:
 verified against the real API and live in the daemon, two review waves fixed.
 
@@ -231,6 +231,76 @@ Built in a cloud session, then verified and finished locally the same day.
   - Gemini silently truncates output past about 80 s, so its units are capped at 600 chars.
   - Plus's other voice, `longanlufeng`, sounded too Chinese-accented to the user.
   - Other OpenRouter TTS models (MAI-Voice-2, Grok, Deepgram, MiniMax…) were sampled in `~/Music/speakd-compare-*.wav`.
+
+## Built 2026-10-08: PDF text cleanup (branch `feat/pdf-text-cleanup`, not yet merged)
+
+Spec `docs/design/2026-10-08-pdf-text-cleanup-proposal-glm.md`; plan
+`docs/superpowers/plans/2026-10-08-pdf-text-cleanup.md`; Stage 0 characterisation
+`docs/design/2026-10-08-pdf-text-cleanup-stage0.md`.
+
+- **Zotero plugin, Stage A (deterministic, rules-only):** a segment-level
+  running-head/footer filter, structural footnote detection with a
+  `classify`/`drop_all`/`defer_all` policy (default `classify`), deferred
+  footnotes appended at their section's end with true indices (highlights
+  stay exact), ligature/scan-mark cleanup, and the same filters on the
+  export path. The policy is `extensions.speakd-reader.footnote_policy`.
+- **Zotero plugin, Stage B (optional LLM):** `src/llm.ts` — an
+  OpenAI-compatible chat client for small OCR repair and batched footnote
+  classification, **off until an endpoint and model are configured** (its
+  settings are in the plugin's preferences pane, with the disclosure line
+  that enabled text goes to the endpoint). Section 1 never calls it; no live
+  read waits on it; every repair is diff-verified under a 2 % edit budget.
+- **Skill path:** `prepare_text.py` now extracts through `mutool draw -F
+  stext` (column order, font-size/bottom-band footnotes) with the tolerant
+  `pdftotext` fallback, plus `--footnotes {classify,drop,defer}` and
+  `--ocr-report`.
+- **Corpus and live checks:** the three document classes are checked in
+  (`test/fixtures/pdf/`, harness dumps, stext/pdftotext fixtures). Live in a
+  headless test Zotero: no highlight ever landed on a dropped segment,
+  two-column order correct, time-to-first-audio 246–313 ms, and an enabled
+  but dead LLM endpoint did not stall the read.
+- **Still conditional on the owner's failing sample:** the bottom-band
+  percentile (provisional bottom ~25 %), the OCR suspicion cut-off
+  (provisional 6.0; needs a real scan fixture), and `joinSplitDigits` (cut
+  for want of evidence). Full playback past a deferred footnote and the
+  export text diff remain a longer harness run.
+
+## Built 2026-10-09: PDF component labeler (branch `feat/pdf-text-cleanup`, not yet merged)
+
+Spec `docs/superpowers/specs/2026-10-09-speakd-pdf-labeler-design.md`; plan
+`docs/superpowers/plans/2026-10-09-speakd-pdf-labeler.md`; live notes
+`docs/design/2026-10-09-labeler-verification.md`.
+
+- **Label mode in the reader.** The **L** button captures the document once
+  (a cold capture on the Köhler scan took 10 s / 6054 segments), shows a pane
+  of the current page's segments with prediction-seeded category chips, and
+  drives Zotero's own highlight on the selected segment. Keys are pane-scoped
+  (`b f h p k g`, `Esc` exits); a read under way is stopped and its segments
+  taken. A reader the plugin refused shows the reason and never opens the pane.
+- **Labels apply at the one whole-segment seam** both pipelines already use:
+  `body` forces a keep, `footnote` feeds detection and the policy decides,
+  `running-head`/`footer`/`page-number`/`junk` drop, `heading` is spoken. The
+  override map is resolved once per capture; time-to-first-audio is unchanged.
+  Nothing touches characters, so a label can never mis-highlight.
+- **Ground truth is `labels.json`; `expected.json` is a regression snapshot**
+  (what today's pipeline with the labels produces), never scored against.
+  `scoring.ts` scores the unaided rules against `labels.json` (miss /
+  over-drop, precision / recall; footnote detection on its own line).
+- **Fixtures:** a checked-in synthetic one
+  (`test/fixtures/pdf/synthetic/`) and the first real one, Köhler pages 34–38
+  (`test/fixtures/pdf/kohler/`, 5 pages, 18,107 bytes of text, inside the
+  §8.5 bound; the PDF is not checked in). The real fixture's gap report names
+  the running head and title head Zotero dropped **before** the capture; the
+  one labelable failure (the OCR'd `il found…` footnote) the unaided rules
+  already detect, so the Köhler's real debt is the pre-capture gap.
+- **Open questions and their shipped defaults (spec §15):** storage is the
+  plugin profile dir `speakd-reader/labels` (Q1); headings are spoken (Q2);
+  skill-path `--labels` consumption is deferred until a corpus wants it (Q3);
+  the first real corpus is the Köhler 34–38 (Q4); the fixture bound is 8
+  pages / ~20 KB text content (Q5).
+- **Not verified live:** a labelled live read and its time-to-first-audio,
+  the corrupt-label-file fail-open, and two tabs on one item — see the
+  verification notes' pending table.
 
 ## Next
 

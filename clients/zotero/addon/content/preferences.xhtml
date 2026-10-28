@@ -1,4 +1,4 @@
-<vbox id="speakd-reader-prefs" xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul" xmlns:html="http://www.w3.org/1999/xhtml">
+<vbox id="speakd-reader-prefs" onload="Zotero.SpeakdReader?.onPrefsEvent?.('load', { window })" xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul" xmlns:html="http://www.w3.org/1999/xhtml">
   <groupbox>
     <label><html:h2>speakd</html:h2></label>
     <description>
@@ -17,6 +17,89 @@
     <description>
       Run <html:code>speakctl http-token</html:code> in a terminal and paste what it prints.
       The port is 8642 unless speakd's config says otherwise.
+    </description>
+  </groupbox>
+  <groupbox>
+    <label><html:h2>Footnotes</html:h2></label>
+    <description>
+      Which footnotes are read, and where. Classify drops the bare citations and keeps the
+      rest; drop removes every footnote; keep reads every one.
+    </description>
+    <hbox align="center">
+      <label control="speakd-reader-footnotes" value="Which footnotes are read"/>
+      <menulist id="speakd-reader-footnotes"
+                preference="extensions.speakd-reader.footnote_policy">
+        <menupopup>
+          <menuitem label="Classify citations, keep the rest" value="classify"/>
+          <menuitem label="Drop every footnote" value="drop_all"/>
+          <menuitem label="Keep every footnote" value="keep_all"/>
+        </menupopup>
+      </menulist>
+    </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-footnote-placement" value="Where kept footnotes are read"/>
+      <menulist id="speakd-reader-footnote-placement"
+                preference="extensions.speakd-reader.footnote_placement">
+        <menupopup>
+          <menuitem label="After the paragraph the page ends in" value="after-paragraph"/>
+          <menuitem label="Inline, where they sit on the page" value="inline"/>
+          <menuitem label="At the end of their page" value="page-end"/>
+          <menuitem label="At the end of the chapter or export part" value="chapter-end"/>
+        </menupopup>
+      </menulist>
+    </hbox>
+    <description>
+      A live read supports inline and end of page; the other two read at the end of the page
+      there. Audiobook exports honour all four.
+    </description>
+  </groupbox>
+  <groupbox>
+    <label><html:h2>Language model (optional)</html:h2></label>
+    <description>
+      An OpenAI-compatible chat endpoint for the optional Stage B: it repairs small OCR
+      errors and classifies borderline footnotes. Off until an endpoint and a model are set.
+    </description>
+    <checkbox id="speakd-reader-llm-enabled" label="Use a language model"
+              preference="extensions.speakd-reader.llm_enabled"/>
+    <hbox align="center">
+      <label control="speakd-reader-llm-provider" value="Provider"/>
+      <menulist id="speakd-reader-llm-provider">
+        <menupopup id="speakd-reader-llm-provider-menu"/>
+      </menulist>
+    </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-llm-base-url" value="Base URL"/>
+      <html:input id="speakd-reader-llm-base-url" type="text" size="50" autocomplete="off"
+                  preference="extensions.speakd-reader.llm_endpoint"/>
+    </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-llm-model" value="Model"/>
+      <menulist id="speakd-reader-llm-model">
+        <menupopup id="speakd-reader-llm-model-menu"/>
+      </menulist>
+      <html:input id="speakd-reader-llm-model-custom" type="text" size="24" autocomplete="off"
+                  preference="extensions.speakd-reader.llm_model"/>
+    </hbox>
+    <hbox align="center">
+      <label control="speakd-reader-llm-key" value="API key"/>
+      <html:input id="speakd-reader-llm-key" type="password" size="40" autocomplete="off"
+                  preference="extensions.speakd-reader.llm_key"/>
+    </hbox>
+    <hbox align="center">
+      <button id="speakd-reader-llm-test" label="Test connection"/>
+      <description id="speakd-reader-llm-test-status"/>
+    </hbox>
+    <vbox id="speakd-reader-llm-custom-profile" hidden="true">
+      <description>
+        Custom request shape. Tick these only if your endpoint expects them.
+      </description>
+      <checkbox id="speakd-reader-llm-custom-session" label="Send the x-opencode-session header"
+                preference="extensions.speakd-reader.llm_custom_session"/>
+      <checkbox id="speakd-reader-llm-custom-thinking" label="Send the thinking parameter"
+                preference="extensions.speakd-reader.llm_custom_thinking"/>
+    </vbox>
+    <description>
+      When enabled, this sends the paper's text to this endpoint.
     </description>
   </groupbox>
 </vbox>

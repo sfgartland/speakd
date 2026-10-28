@@ -2,6 +2,28 @@
 // plugin's root. The pane is addon/content/preferences.xhtml.
 pref("extensions.speakd-reader.port", 8642);
 pref("extensions.speakd-reader.token", "");
+// How a read treats footnotes (src/footnotes.ts): drop the bare citations and
+// read the rest at their section's end (classify), drop every footnote, or
+// keep every one.
+pref("extensions.speakd-reader.footnote_policy", "classify");
+// Where the footnotes a read keeps are read (src/footnotes.ts): after the
+// paragraph the page break falls in (after-paragraph), inline, at the end of
+// their page (page-end), or at the end of the export part (chapter-end).
+pref("extensions.speakd-reader.footnote_placement", "after-paragraph");
+// The optional Stage B LLM (src/llm.ts): off until an endpoint and a model
+// are set here. The key is masked in the pane. When on, the paper's text is
+// sent to the endpoint (the pane says so).
+pref("extensions.speakd-reader.llm_enabled", false);
+pref("extensions.speakd-reader.llm_endpoint", "");
+pref("extensions.speakd-reader.llm_key", "");
+pref("extensions.speakd-reader.llm_model", "");
+// The chosen provider preset. Empty on purpose: the stored endpoint decides
+// the request flavour until the user picks one, so an install from before
+// providers existed is not switched onto the opencode shape.
+pref("extensions.speakd-reader.llm_provider", "");
+// The request flags used when the provider is "custom".
+pref("extensions.speakd-reader.llm_custom_session", false);
+pref("extensions.speakd-reader.llm_custom_thinking", false);
 // The audiobook export dialog's starting points (src/export/dialog.ts).
 // Formats are mp3, opus or m4b; the destination is attach or folder; an
 // empty folder means ask.

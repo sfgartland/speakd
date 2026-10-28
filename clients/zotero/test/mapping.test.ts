@@ -76,6 +76,26 @@ describe("planHighlights", () => {
     expect([...plan.values()]).toEqual([1, 2, 3]);
   });
 
+  it("maps a daemon sentence over a deferred footnote to the footnote's own segment", () => {
+    // The footnote plan held the footnote back; it rides at the end of the
+    // section that owns its page, with its true original index and offset.
+    const deferred = [
+      { text: "The body opens the page.", pageIndex: 0 },
+      { text: "1 A footnote deferred to the end.", tag: "defer" as const, pageIndex: 0 },
+      { text: "The body of the next page.", pageIndex: 1 },
+    ];
+    const [first, second] = buildSections(deferred, 0, 1, 1000);
+    expect(first!.segmentIndices).toEqual([0, 1]);
+    expect(second!.segmentIndices).toEqual([2]);
+    const text = first!.text;
+    const plan = planHighlights(
+      first!,
+      daemon(text, ["The body opens the page.", "1 A footnote deferred to the end."]),
+      identity(text.length),
+    );
+    expect([...plan.values()]).toEqual([0, 1]);
+  });
+
   it("leaves out a sentence whose span lies outside the section's text", () => {
     const text = section!.text;
     const plan = planHighlights(

@@ -12,7 +12,9 @@ import { busy, notify, zoteroExporterHost } from "./export/host";
 import { registerExportPane } from "./export/pane";
 import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
-import { observeConfig, readConfig } from "./prefs";
+import { liveLlm, LlmClient, testConnection } from "./llm";
+import { wirePrefsPane, type PrefsTestResult, type PrefsValues } from "./llm-prefs";
+import { observeConfig, parseLlmConfig, readConfig, readLlmConfig } from "./prefs";
 import { Takeover } from "./reader-takeover";
 import { SpeakdClient, type FetchLike } from "./speakd";
 
@@ -49,6 +51,41 @@ function warn(message: string, error?: unknown): void {
   Zotero.logError(new Error(`speakd reader: ${message}${detail}`));
 }
 
+/** The preference pane's read/write bridge onto Zotero's preference branch. */
+function prefsApi(): {
+  getPref(key: string): string | boolean;
+  setPref(key: string, value: string | boolean): void;
+} {
+  return {
+    getPref: (key) => {
+      const value = Zotero.Prefs.get(key, true);
+      // The pane's prefs are strings and booleans; a numeric pref would only
+      // be one the pane does not read.
+      return typeof value === "number" ? String(value) : (value ?? "");
+    },
+    setPref: (key, value) => Zotero.Prefs.set(key, value, true),
+  };
+}
+
+/** The Test button: resolve the pane's current values and make one minimal
+ * request. Not gated on the enabled checkbox: testing is what it is for. */
+async function testProvider(values: PrefsValues): Promise<PrefsTestResult> {
+  const config = parseLlmConfig({
+    enabled: true,
+    endpoint: values.baseUrl,
+    key: values.apiKey,
+    model: values.model,
+    provider: values.provider,
+    customSessionHeader: values.customSessionHeader,
+    customThinking: values.customThinking,
+  });
+  if (config.apiKey === "") {
+    return { ok: false, ms: 0, message: "no API key: paste one above" };
+  }
+  const sandboxFetch = fetch as unknown as FetchLike;
+  return testConnection({ config, fetch: sandboxFetch });
+}
+
 /**
  * The plugin sandbox has no AbortController (internals §6); a window does.
  * The main window's is used, or the hidden window's before there is one.
@@ -83,6 +120,8 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   // every connection: a render goes on while Zotero is closed.
   const exporter = new Exporter(
     zoteroExporterHost({ call: (verb, sourceId, payload) => link.call(verb, sourceId, payload), warn }),
+    // Read afresh at each export: a pref change needs no restart.
+    liveLlm(readLlmConfig, (config) => new LlmClient({ config, fetch: sandboxFetch, log })),
   );
   link.onEvent((event) => exporter.onEvent(event));
   let connected = false;
@@ -154,6 +193,19 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
       if (target === null) throw new Error(`item ${itemID} cannot be exported`);
       await exportItem(target, exportOptions, async () => choice);
     },
+    // The preference pane calls this when it opens. See
+    // addon/content/preferences.xhtml.
+    onPrefsEvent: (_type: string, data: Any) => {
+      const win = data?.window;
+      if (!win) return;
+      try {
+        wirePrefsPane(win, { ...prefsApi(), test: testProvider });
+      } catch (error) {
+        warn("could not wire the preference pane", error);
+      }
+    },
+    // The Test button, also callable from the console.
+    testConnection: testProvider,
   };
   log(`loaded (${data.version})`);
 }

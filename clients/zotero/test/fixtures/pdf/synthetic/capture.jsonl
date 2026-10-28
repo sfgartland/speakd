@@ -1,0 +1,25 @@
+{"index":0,"text":"Sample Journal","pageIndex":0,"anchor":"paragraphStart","rectCount":1,"firstRectY":770}
+{"index":1,"text":"Body of page 0 with alpha discussion continuing at length so the recurrence filter never mistakes it for a head.","pageIndex":0,"anchor":"paragraphStart","rectCount":1,"firstRectY":740}
+{"index":2,"text":"found recently that page 0 quotes a source at length.","pageIndex":0,"anchor":"paragraphStart","rectCount":1,"firstRectY":140}
+{"index":3,"text":"A recurring closing clause.","pageIndex":0,"anchor":"paragraphStart","rectCount":1,"firstRectY":700}
+{"index":4,"text":"Sample Journal","pageIndex":1,"anchor":"paragraphStart","rectCount":1,"firstRectY":770}
+{"index":5,"text":"Body of page 1 with beta discussion continuing at length so the recurrence filter never mistakes it for a head.","pageIndex":1,"anchor":"paragraphStart","rectCount":1,"firstRectY":740}
+{"index":6,"text":"found recently that page 1 quotes a source at length.","pageIndex":1,"anchor":"paragraphStart","rectCount":1,"firstRectY":140}
+{"index":7,"text":"A recurring closing clause.","pageIndex":1,"anchor":"paragraphStart","rectCount":1,"firstRectY":700}
+{"index":8,"text":"Sample Journal","pageIndex":2,"anchor":"paragraphStart","rectCount":1,"firstRectY":770}
+{"index":9,"text":"Body of page 2 with gamma discussion continuing at length so the recurrence filter never mistakes it for a head.","pageIndex":2,"anchor":"paragraphStart","rectCount":1,"firstRectY":740}
+{"index":10,"text":"found recently that page 2 quotes a source at length.","pageIndex":2,"anchor":"paragraphStart","rectCount":1,"firstRectY":140}
+{"index":11,"text":"A recurring closing clause.","pageIndex":2,"anchor":"paragraphStart","rectCount":1,"firstRectY":700}
+{"index":12,"text":"Sample Journal","pageIndex":3,"anchor":"paragraphStart","rectCount":1,"firstRectY":770}
+{"index":13,"text":"Body of page 3 with delta discussion continuing at length so the recurrence filter never mistakes it for a head.","pageIndex":3,"anchor":"paragraphStart","rectCount":1,"firstRectY":740}
+{"index":14,"text":"found recently that page 3 quotes a source at length.","pageIndex":3,"anchor":"paragraphStart","rectCount":1,"firstRectY":140}
+{"index":15,"text":"A recurring closing clause.","pageIndex":3,"anchor":"paragraphStart","rectCount":1,"firstRectY":700}
+{"index":16,"text":"Sample Journal","pageIndex":4,"anchor":"paragraphStart","rectCount":1,"firstRectY":770}
+{"index":17,"text":"Body of page 4 with epsilon discussion continuing at length so the recurrence filter never mistakes it for a head.","pageIndex":4,"anchor":"paragraphStart","rectCount":1,"firstRectY":740}
+{"index":18,"text":"found recently that page 4 quotes a source at length.","pageIndex":4,"anchor":"paragraphStart","rectCount":1,"firstRectY":140}
+{"index":19,"text":"A recurring closing clause.","pageIndex":4,"anchor":"paragraphStart","rectCount":1,"firstRectY":700}
+{"page":0,"segments":4,"withRects":4,"minFirstRectY":140,"maxFirstRectY":770}
+{"page":1,"segments":4,"withRects":4,"minFirstRectY":140,"maxFirstRectY":770}
+{"page":2,"segments":4,"withRects":4,"minFirstRectY":140,"maxFirstRectY":770}
+{"page":3,"segments":4,"withRects":4,"minFirstRectY":140,"maxFirstRectY":770}
+{"page":4,"segments":4,"withRects":4,"minFirstRectY":140,"maxFirstRectY":770}

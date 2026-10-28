@@ -21,6 +21,9 @@ import {
   type TrackedJob,
 } from "./jobs";
 import { expectedAudioSeconds, folderOut, renderPayload, stagingOut, type ItemTags } from "./render";
+import { classificationResidue } from "../footnotes";
+import { matchLabels, type LabelCategory, type LabelFile } from "../labelstore";
+import type { FootnoteClassifier, FootnoteKind } from "../llm";
 import type { CallResult, SpeakdEvent } from "../speakd";
 
 /** The source the export's verbs are sent as: the `zotero` owner, nobody's channel. */
@@ -42,6 +45,8 @@ export interface ExporterHost {
   /** Imports `file` as the item's "Audio — <title>" attachment. */
   attach(tracked: TrackedJob, file: string): Promise<void>;
   tags(itemID: number): ItemTags;
+  /** The label file for a PDF attachment, or null: the export path's overrides (Task 3). */
+  labelFile?(attachmentID: number): Promise<LabelFile | null>;
   notify(title: string, message: string): void;
   /** Milliseconds, as Date.now(). */
   now(): number;
@@ -81,11 +86,18 @@ export class Exporter {
   /** Jobs being attached or reported: done may be heard twice. */
   private readonly settling = new Set<string>();
   private readonly listeners = new Set<() => void>();
+  /**
+   * The optional Stage B classifier: the export path's batch (Task 11).
+   * A function is asked at the start of each export, so the preferences as
+   * they stand then decide.
+   */
+  private readonly classifier: FootnoteClassifier | (() => FootnoteClassifier | undefined) | undefined;
   /** The daemon's last measured real-time factor, from its `metrics` events. */
   rtf: number | undefined;
 
-  constructor(host: ExporterHost) {
+  constructor(host: ExporterHost, classifier?: FootnoteClassifier | (() => FootnoteClassifier | undefined)) {
     this.host = host;
+    this.classifier = classifier;
     this.ledger = parseLedger(host.loadLedger());
   }
 
@@ -113,7 +125,10 @@ export class Exporter {
         choice.destination === "folder" && choice.folder !== null
           ? await folderOut(choice.folder, request.title, choice.format, (path) => this.host.exists(path))
           : stagingOut(await this.host.stagingDir(), request.itemID, choice.format, this.host.now());
-      const payload = renderPayload(request, out, this.host.tags(request.itemID));
+      const payload = renderPayload(request, out, this.host.tags(request.itemID), {
+        footnoteKinds: await this.footnoteKinds(request),
+        overrides: await this.overrides(request),
+      });
       if (payload === null) {
         this.host.notify(headline(request.title), "The selection has no text.");
         return;
@@ -140,6 +155,44 @@ export class Exporter {
     } catch (error) {
       this.host.warn("starting the render failed", error);
       this.host.notify(headline(request.title), `Failed: ${String(error)}`);
+    }
+  }
+
+  /**
+   * The Stage B batch for an export (Task 11): every borderline footnote of
+   * the document in as few calls as the chunking allows, before
+   * `renderPayload`. No budget to protect here, so it may take its time; a
+   * failure or an unconfigured endpoint is the policy default (kept), never
+   * a lost export.
+   */
+  private async footnoteKinds(request: ExportRequest): Promise<ReadonlyMap<number, FootnoteKind> | undefined> {
+    const classifier = typeof this.classifier === "function" ? this.classifier() : this.classifier;
+    if (classifier === undefined || !classifier.configured || request.footnotes !== "classify") return undefined;
+    const residue = classificationResidue(request.segments, request.footnotes);
+    if (residue.length === 0) return undefined;
+    try {
+      return await classifier.classifyFootnotes(residue);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The labeler's overrides for this export (spec §7.2): the attachment's
+   * label file, matched against the captured segments. Exports are not
+   * TTFA-bound, so this may take its time. A missing, unreadable or
+   * corrupt file -- or one that matches nothing -- is no overrides, never a
+   * lost export.
+   */
+  private async overrides(request: ExportRequest): Promise<ReadonlyMap<number, LabelCategory> | undefined> {
+    if (this.host.labelFile === undefined) return undefined;
+    try {
+      const file = await this.host.labelFile(request.attachmentID);
+      if (file === null) return undefined;
+      const { overrides } = matchLabels(file, request.segments);
+      return overrides.size === 0 ? undefined : overrides;
+    } catch {
+      return undefined;
     }
   }
 

@@ -7,9 +7,10 @@
 import { dialogItem, type ExportChoice } from "./dialog";
 import { captureSegments, type CaptureHost, type CapturedSegment } from "./capture";
 import { openExportDialog, type ExportDialogRequest } from "./dialog-window";
+import { type FootnotePlacement, type FootnotePolicy } from "../footnotes";
 import { exportTarget, type ExportTarget, type MenuItem } from "./menu";
 import { readStructure, type PdfStructure } from "./structure";
-import { readExportSettings } from "../prefs";
+import { readExportSettings, readFootnotePlacement, readFootnotePolicy } from "../prefs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
@@ -26,6 +27,10 @@ export interface ExportRequest {
   readonly attachmentID: number;
   readonly segments: readonly CapturedSegment[];
   readonly choice: ExportChoice;
+  /** The footnote policy the parts were built under (the `footnote_policy` pref). */
+  readonly footnotes: FootnotePolicy;
+  /** Where the kept footnotes are read (the `footnote_placement` pref). */
+  readonly placement?: FootnotePlacement;
 }
 
 export interface ExportEntryOptions {
@@ -68,6 +73,10 @@ export const targetFor = (itemID: number): ExportTarget | null => targetOf([Zote
 export interface ExportFlowDeps extends Pick<ExportEntryOptions, "captureHost" | "onRequest" | "onProblem" | "onBusy" | "warn"> {
   readonly title: string;
   readonly itemType: string;
+  /** The footnote policy as the preferences stand (prefs.ts). */
+  footnotes(): FootnotePolicy;
+  /** The footnote placement as the preferences stand. */
+  placement?(): FootnotePlacement;
   /** The page count and outline of a reader's PDF, read on the reader the capture used. */
   structure(reader: Any): Promise<PdfStructure>;
   /** Shows the dialog; null when cancelled. */
@@ -100,9 +109,11 @@ export async function exportFlow(target: ExportTarget, deps: ExportFlowDeps): Pr
       deps.onProblem(deps.title, "this document has no text to read");
       return;
     }
+    const footnotes = deps.footnotes();
     const choice = await deps.openDialog({
       item: dialogItem(deps.itemType, deps.title, structure ?? fallbackStructure(captured.segments)),
       segments: captured.segments,
+      footnotes,
     });
     if (choice === null) return;
     await deps.onRequest({
@@ -111,6 +122,8 @@ export async function exportFlow(target: ExportTarget, deps: ExportFlowDeps): Pr
       attachmentID: target.attachmentID,
       segments: captured.segments,
       choice,
+      footnotes,
+      placement: deps.placement?.(),
     });
   } catch (error) {
     deps.warn("the audiobook export failed", error);
@@ -175,10 +188,13 @@ export async function exportItem(
   await exportFlow(target, {
     title: String(item.getDisplayTitle()),
     itemType: item.itemType,
+    footnotes: readFootnotePolicy,
+    placement: readFootnotePlacement,
     captureHost: options.captureHost,
     structure: readStructure,
     openDialog:
-      openDialog ?? ((request) => openExportDialog({ ...request, settings: readExportSettings(), rtf: options.rtf?.() })),
+      openDialog ??
+      ((request) => openExportDialog({ ...request, settings: readExportSettings(), rtf: options.rtf?.() })),
     onRequest: options.onRequest,
     onProblem: options.onProblem,
     onBusy: options.onBusy,

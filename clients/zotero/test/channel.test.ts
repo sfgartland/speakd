@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { Channel, type Problem } from "../src/channel";
-import type { CallResult, SpeakdEvent } from "../src/speakd";
+import { cleanup } from "../src/cleanup";
+import type { LabelCategory } from "../src/labelstore";
+import type { FootnotePolicy } from "../src/footnotes";
+import { cleanWithLlm, LlmClient, type FootnoteClassifier, type FootnoteKind, type FootnoteLabel, type LlmTimers } from "../src/llm";
+import type { CallResult, FetchLike, SpeakdEvent } from "../src/speakd";
 
 const SOURCE = "zotero:ABC123";
 
@@ -89,6 +93,85 @@ function setup() {
   return { daemon, channel, highlights, problems };
 }
 
+// Six pages of a paper with a running head, a citation footnote and a prose
+// footnote on every page, as the filters see them: rect y running bottom-up
+// (footnotes low, body high).
+const PAPER = [0, 1, 2, 3, 4, 5].flatMap((n) => [
+  { text: "Sample Journal", anchor: "paragraphStart" as const, pageIndex: n, firstRectY: 770 },
+  { text: `The body of page ${n} opens.`, anchor: "paragraphStart" as const, pageIndex: n, firstRectY: 740 },
+  { text: `The body of page ${n} goes on.`, anchor: null, pageIndex: n, firstRectY: 726 },
+  { text: "1 Kant, KrV, B25.", anchor: "paragraphStart" as const, pageIndex: n, firstRectY: 140 },
+  {
+    text: `2 A footnote of page ${n} holds real prose, and it argues its case across the sentences at length.`,
+    anchor: "paragraphStart" as const,
+    pageIndex: n,
+    firstRectY: 120,
+  },
+]);
+
+function setupPaper(footnotes: FootnotePolicy = "classify") {
+  const daemon = new FakeDaemon();
+  const channel = new Channel({ client: daemon.client, sourceId: SOURCE, label: "A Paper", size: 60, footnotes });
+  daemon.channel = channel;
+  const highlights: (number | null)[] = [];
+  const problems: Problem[] = [];
+  channel.onHighlight((index) => highlights.push(index));
+  channel.onProblem((problem) => problems.push(problem));
+  return { daemon, channel, highlights, problems };
+}
+
+describe("Channel's footnote policy", () => {
+  it("is asked at each read start when given as a function", async () => {
+    let policy: FootnotePolicy = "drop_all";
+    const daemon = new FakeDaemon();
+    const channel = new Channel({ client: daemon.client, sourceId: SOURCE, label: "A Paper", size: 60, footnotes: () => policy });
+    daemon.channel = channel;
+    const page = [
+      { text: "The body opens the page.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 760 },
+      { text: "1 Kant, KrV, B25.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 140 },
+    ];
+    await channel.start(page, 0);
+    expect(daemon.enqueued()[0]).toBe("The body opens the page.");
+    policy = "keep_all";
+    await channel.start(page, 0);
+    expect(daemon.enqueued()[1]).toContain("Kant");
+  });
+});
+
+describe("Channel's footnote placement", () => {
+  const page = [
+    { text: "The body opens the page.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 760 },
+    { text: "More body follows it.", anchor: null, pageIndex: 0, firstRectY: 740 },
+    { text: "1 Kant, KrV, B25.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 140 },
+    { text: "The next page begins.", anchor: "paragraphStart", pageIndex: 1, firstRectY: 760 },
+  ];
+  const run = async (placement: "inline" | "page-end" | "after-paragraph" | "chapter-end") => {
+    const daemon = new FakeDaemon();
+    const channel = new Channel({
+      client: daemon.client,
+      sourceId: SOURCE,
+      label: "A Paper",
+      size: 400,
+      firstSize: 10,
+      footnotes: "keep_all",
+      placement: () => placement,
+    });
+    daemon.channel = channel;
+    await channel.start(page, 0);
+    return daemon.enqueued()[0]!;
+  };
+
+  it("reads a kept footnote where it sits when inline", async () => {
+    expect(await run("inline")).toContain("More body follows it. Kant, KrV, B25. The next page");
+  });
+
+  it("reads it at the end of its page's section for page-end, and for the placements live maps to it", async () => {
+    for (const placement of ["page-end", "after-paragraph", "chapter-end"] as const) {
+      expect(await run(placement)).toBe("The body opens the page. More body follows it. The next page begins. Kant, KrV, B25.");
+    }
+  });
+});
+
 describe("Channel", () => {
   it("labels the channel and enqueues the first section with the pdf profile", async () => {
     const { daemon, channel } = setup();
@@ -148,6 +231,71 @@ describe("Channel", () => {
     await channel.stop();
     daemon.finished(true);
     expect(ends).toHaveLength(1);
+  });
+
+  it("still starts with speech when the first page's every segment is dropped", async () => {
+    const { daemon, channel, highlights } = setupPaper();
+    // Page 0 holds only a citation footnote, dropped by the plan; the body
+    // starts on page 1.
+    const segments = [
+      { text: "1 Kant, KrV, B25.", anchor: "paragraphStart" as const, pageIndex: 0, firstRectY: 140 },
+      ...PAPER.slice(5),
+    ];
+    await channel.start(segments, 0);
+    // The dropped citation never appears; the first section is the next
+    // body page's, and speech starts with it as ever. (The footnote's bare
+    // marker digit is the page-number rule's to drop, as ever.)
+    expect(daemon.enqueued()).toEqual([
+      "The body of page 1 opens. The body of page 1 goes on. A footnote of page 1 holds real prose, " +
+        "and it argues its case across the sentences at length.",
+    ]);
+    daemon.started(daemon.enqueued()[0]!);
+    daemon.position(0);
+    daemon.position(2);
+    expect(highlights).toEqual([2, 5]);
+  });
+
+  it("reads without running heads and citation footnotes, prose deferred to its section's end", async () => {
+    const { daemon, channel, highlights } = setupPaper();
+    await channel.start(PAPER, 0);
+    // The prose footnote of page 0 rides at the end of the section that owns
+    // page 0, after the page's body, never inline. (Its bare marker digit is
+    // the page-number rule's to drop, as ever.)
+    expect(daemon.enqueued()).toEqual([
+      "The body of page 0 opens. The body of page 0 goes on. A footnote of page 0 holds real " +
+        "prose, and it argues its case across the sentences at length.",
+    ]);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    // Every section of the read, not just the first: the head and the
+    // citations are gone from all of them.
+    expect(daemon.enqueued().length).toBeGreaterThan(1);
+    for (const text of daemon.enqueued()) {
+      expect(text).not.toContain("Sample Journal");
+      expect(text).not.toContain("Kant, KrV");
+    }
+    // Highlights still resolve, by original document index: the deferred
+    // footnote is segment 4, never a body segment.
+    daemon.position(0);
+    daemon.position(2);
+    expect(highlights).toEqual([1, 4]);
+  });
+
+  it("changes exactly the footnotes' treatment when the policy pref flips", async () => {
+    const deferAll = setupPaper("keep_all");
+    await deferAll.channel.start(PAPER, 0);
+    const first = deferAll.daemon.enqueued()[0]!;
+    // The citation is kept now too, and read at the section's end, in order.
+    // (Its bare marker digit is the page-number rule's to drop, as ever.)
+    expect(first).toContain("Kant, KrV, B25.");
+    expect(first.endsWith("at length.")).toBe(true);
+
+    const dropAll = setupPaper("drop_all");
+    await dropAll.channel.start(PAPER, 0);
+    for (const text of dropAll.daemon.enqueued()) {
+      expect(text).not.toContain("Kant, KrV");
+      expect(text).not.toContain("holds real prose");
+    }
   });
 
   it("maps positions for a read started partway through the document", async () => {
@@ -442,5 +590,297 @@ describe("Channel", () => {
     expect(problems).toEqual([{ kind: "empty", error: "this document has no text to read" }]);
     expect(daemon.calls).toEqual([]);
     expect(channel.reading).toBe(false);
+  });
+});
+
+// A classifier whose cache the test pre-seeds, so the channel's cache-first
+// resolution can be driven without a network; `hang` models a call that
+// never answers.
+class FakeClassifier implements FootnoteClassifier {
+  readonly configured = true;
+  readonly calls: FootnoteLabel[][] = [];
+  constructor(
+    private readonly kinds = new Map<string, FootnoteKind>(),
+    private readonly hang = false,
+  ) {}
+  cached(text: string): FootnoteKind | undefined {
+    return this.kinds.get(text);
+  }
+  async classifyFootnotes(residue: readonly FootnoteLabel[]): Promise<Map<number, FootnoteKind>> {
+    this.calls.push([...residue]);
+    if (this.hang) return new Promise(() => {});
+    const out = new Map<number, FootnoteKind>();
+    for (const footnote of residue) {
+      const kind = this.kinds.get(footnote.text);
+      if (kind !== undefined) out.set(footnote.index, kind);
+    }
+    return out;
+  }
+}
+
+// A stubbed chat endpoint: each answer is a completion holding `content`, or
+// "hang"; what was asked is recorded.
+function stubLlm(answers: (string | "hang")[]) {
+  const requests: { body?: string }[] = [];
+  const fetch: FetchLike = async (_url, init) => {
+    requests.push({ body: init?.body });
+    const answer = answers.shift();
+    if (answer === undefined || answer === "hang") return new Promise(() => {});
+    return new Response(JSON.stringify({ choices: [{ message: { content: answer } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  return { fetch, requests };
+}
+
+const PROSE_NOTE =
+  "2 A footnote of page 0 holds real prose, and it argues its case across the sentences at length.";
+
+describe("Channel with a footnote classifier", () => {
+  it("drops a cache-resolved citation footnote, and the body still reads", async () => {
+    const classifier = new FakeClassifier(new Map([[PROSE_NOTE, "citation"]]));
+    const daemon = new FakeDaemon();
+    const channel = new Channel({
+      client: daemon.client,
+      sourceId: SOURCE,
+      label: "A Paper",
+      size: 60,
+      footnotes: "classify",
+      footnoteClassifier: classifier,
+    });
+    daemon.channel = channel;
+    await channel.start(PAPER, 0);
+    const first = daemon.enqueued()[0]!;
+    expect(first).not.toContain("holds real prose");
+    expect(first).toContain("The body of page 0 opens.");
+  });
+
+  it("never blocks enqueueNext on a classification that hangs", async () => {
+    const classifier = new FakeClassifier(new Map(), true);
+    const daemon = new FakeDaemon();
+    const channel = new Channel({
+      client: daemon.client,
+      sourceId: SOURCE,
+      label: "A Paper",
+      size: 60,
+      footnotes: "classify",
+      footnoteClassifier: classifier,
+    });
+    daemon.channel = channel;
+    await channel.start(PAPER, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    expect(daemon.enqueued().length).toBeGreaterThan(1);
+  });
+
+  it("makes zero classification calls under drop_all and keep_all", async () => {
+    for (const policy of ["drop_all", "keep_all"] as const) {
+      const classifier = new FakeClassifier(new Map(), true);
+      const daemon = new FakeDaemon();
+      const channel = new Channel({
+        client: daemon.client,
+        sourceId: SOURCE,
+        label: "A Paper",
+        size: 60,
+        footnotes: policy,
+        footnoteClassifier: classifier,
+      });
+      daemon.channel = channel;
+      await channel.start(PAPER, 0);
+      await channel.idle();
+      daemon.started(daemon.enqueued()[0]!);
+      await channel.idle();
+      expect(classifier.calls).toEqual([]);
+    }
+  });
+});
+
+// Three one-sentence sections ([0], [1], [2]) with a typo in the second, for
+// the LLM repair stage.
+const SECTIONS = [
+  { text: "First section text." },
+  { text: "Second section has a tbe typo." },
+  { text: "Third section is here." },
+];
+
+const instantTimers = {
+  setTimeout: (callback: () => void) => {
+    queueMicrotask(callback);
+    return 0;
+  },
+  clearTimeout: () => {},
+};
+const neverTimers = { setTimeout: () => 0, clearTimeout: () => {} };
+
+function llmChannel(answers: (string | "hang")[], timers: LlmTimers, enabled = true) {
+  const { fetch, requests } = stubLlm(answers);
+  const client = new LlmClient({
+    config: { enabled, endpoint: enabled ? "https://e.test/v1" : "", apiKey: "k", model: enabled ? "m" : "" },
+    fetch,
+    timers,
+    log: () => {},
+  });
+  const daemon = new FakeDaemon();
+  const channel = new Channel({
+    client: daemon.client,
+    sourceId: SOURCE,
+    label: "A Paper",
+    firstSize: 1,
+    size: 30,
+    clean: cleanWithLlm(client),
+  });
+  daemon.channel = channel;
+  return { daemon, channel, requests };
+}
+
+describe("Channel with the Stage B clean", () => {
+  it("skips the LLM for ordinal 0: zero fetches and the deterministic text", async () => {
+    const { daemon, channel, requests } = llmChannel(["changed"], neverTimers);
+    await channel.start(SECTIONS, 0);
+    expect(requests).toHaveLength(0);
+    expect(daemon.enqueued()[0]).toBe(cleanup(SECTIONS[0]!.text).text);
+  });
+
+  it("repairs sections after the first with a configured endpoint", async () => {
+    const { daemon, channel, requests } = llmChannel(["Second section has a the typo."], neverTimers);
+    await channel.start(SECTIONS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    expect(requests).toHaveLength(1);
+    expect(daemon.enqueued()[1]).toBe("Second section has a the typo.");
+  });
+
+  it("leaves speech identical to rules-only when the model fails", async () => {
+    const { daemon, channel } = llmChannel(["hang"], instantTimers);
+    await channel.start(SECTIONS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    await channel.idle();
+    expect(daemon.enqueued()[1]).toBe(cleanup(SECTIONS[1]!.text).text);
+  });
+
+  it("hushes at once on stop while a repair is still in flight", async () => {
+    const { daemon, channel } = llmChannel(["hang"], neverTimers);
+    await channel.start(SECTIONS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    // The second section's repair now waits on a fetch that never answers.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const before = daemon.verbs().length;
+    await Promise.race([channel.stop(), new Promise((_, reject) => setTimeout(() => reject(new Error("stop waited on the LLM")), 500))]);
+    expect(daemon.verbs().slice(before)).toContain("hush");
+    expect(daemon.enqueued()).toHaveLength(1);
+  });
+
+  it("is indistinguishable from Stage A when unconfigured", async () => {
+    const configured = llmChannel([], neverTimers);
+    const unconfigured = llmChannel([], neverTimers, false);
+    await configured.channel.start(SECTIONS, 0);
+    await unconfigured.channel.start(SECTIONS, 0);
+    expect(configured.requests).toHaveLength(0);
+    expect(unconfigured.requests).toHaveLength(0);
+    expect(unconfigured.daemon.enqueued()).toEqual(configured.daemon.enqueued());
+  });
+});
+
+// ---- labels (Task 3) ----
+
+function labelChannel(
+  overrides: ((segments: readonly { text: string }[]) => ReadonlyMap<number, LabelCategory> | null) | undefined,
+  footnotes: FootnotePolicy = "classify",
+  size = 1000,
+) {
+  const daemon = new FakeDaemon();
+  const logs: string[] = [];
+  const channel = new Channel({
+    client: daemon.client,
+    sourceId: SOURCE,
+    label: "A Paper",
+    size,
+    footnotes,
+    overrides,
+    log: (message) => logs.push(message),
+  });
+  daemon.channel = channel;
+  return { daemon, channel, logs };
+}
+
+function labelled(text: string, anchor: string, pageIndex: number, firstRectY: number) {
+  return { text, anchor, pageIndex, firstRectY };
+}
+
+describe("Channel with a label override map", () => {
+  it("never enqueues a labelled-away segment, and audits the label once", async () => {
+    const segments = [
+      labelled("Body one is here.", "paragraphStart", 0, 770),
+      labelled("A segment to drop.", "paragraphStart", 0, 740),
+      labelled("Body two follows.", "paragraphStart", 0, 720),
+    ];
+    const { daemon, channel, logs } = labelChannel(() => new Map([[1, "running-head"]]));
+    await channel.start(segments, 0);
+    expect(daemon.enqueued()[0]).toContain("Body one is here.");
+    expect(daemon.enqueued()[0]).not.toContain("A segment to drop.");
+    expect(logs).toContain("label: segment 1 → running-head (dropped)");
+  });
+
+  it("restores a head-filtered false positive with a body label", async () => {
+    const segments = [];
+    for (let n = 0; n < 6; n++) {
+      segments.push(labelled("Sample Journal", "paragraphStart", n, 770));
+      segments.push(
+        labelled(
+          `Body of page ${n} opens with a paragraph long enough that the recurrence filter never mistakes it for a head.`,
+          "paragraphStart",
+          n,
+          740,
+        ),
+      );
+    }
+    const unaided = labelChannel(undefined);
+    await unaided.channel.start(segments, 0);
+    expect(unaided.daemon.enqueued()[0]).not.toContain("Sample Journal");
+    const labelledChannel = labelChannel(() => new Map([[0, "body"]]));
+    await labelledChannel.channel.start(segments, 0);
+    expect(labelledChannel.daemon.enqueued()[0]).toContain("Sample Journal");
+  });
+
+  it("lands a labelled footnote at its section's end under keep_all", async () => {
+    const segments = [
+      labelled("Body one is here.", "paragraphStart", 0, 770),
+      labelled("Target to defer.", "paragraphStart", 0, 740),
+      labelled("Body two follows.", "paragraphStart", 0, 720),
+    ];
+    const { daemon, channel } = labelChannel(() => new Map([[1, "footnote"]]), "keep_all");
+    await channel.start(segments, 0);
+    expect(daemon.enqueued()[0]).toBe("Body one is here. Body two follows. Target to defer.");
+  });
+
+  it("calls the resolver exactly once per start", async () => {
+    let calls = 0;
+    const resolver = () => {
+      calls++;
+      return new Map<number, LabelCategory>();
+    };
+    const { channel } = labelChannel(resolver);
+    await channel.start(SEGMENTS, 0);
+    await channel.start(SEGMENTS, 0);
+    expect(calls).toBe(2);
+  });
+
+  it("reads as unlabelled when the resolver returns null", async () => {
+    const withNull = labelChannel(() => null);
+    const without = labelChannel(undefined);
+    await withNull.channel.start(SEGMENTS, 0);
+    await without.channel.start(SEGMENTS, 0);
+    expect(withNull.daemon.enqueued()).toEqual(without.daemon.enqueued());
+  });
+
+  it("fails open when the resolver throws", async () => {
+    const without = labelChannel(undefined);
+    const throwing = labelChannel(() => {
+      throw new Error("bad file");
+    });
+    await without.channel.start(SEGMENTS, 0);
+    await throwing.channel.start(SEGMENTS, 0);
+    expect(throwing.daemon.enqueued()).toEqual(without.daemon.enqueued());
   });
 });

@@ -26,14 +26,33 @@
 import type { Adoption } from "./bar";
 import { Channel } from "./channel";
 import { adoptionProblem } from "./export/capture";
+import { dumpToFile, type DumpResult } from "./export/debugdump";
+import { defaultFixtureDir, fixtureContent, writeFixture } from "./export/fixture";
+import { checkPageGaps } from "./export/gaps";
+import { Labeler, mountCapturePane, type CapturePane } from "./labeler";
+import {
+  emptyLabelFile,
+  labelsPath,
+  matchLabels,
+  readLabelFile,
+  sha256Bytes,
+  writeLabelFile,
+  type LabelCategory,
+  type LabelFile,
+} from "./labelstore";
+import { cleanWithLlm, liveLlm, LlmClient, type FootnoteClassifier } from "./llm";
+import { readFootnotePlacement, readFootnotePolicy, readLlmConfig } from "./prefs";
+import type { FetchLike } from "./speakd";
 import type { Link } from "./link";
 import {
   NO_TEXT,
   ReaderSession,
   capturedSegments,
+  withInheritedPages,
   resumesOnStart,
+  ControllerCore,
   type CaptureResult,
-  type ControllerCore,
+  type CapturedSegment,
   type Intent,
   type SegmentInfo,
 } from "./session";
@@ -42,10 +61,23 @@ import { SPEAKD_VOICE_ID, mergeVoices, silentWav } from "./voices";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const Components: any;
+declare const IOUtils: any;
 type Any = any;
 
 const Cu = (): Any => Components.utils;
 const waive = <T>(value: T): Any => (value === null || value === undefined ? value : Cu().waiveXrays(value));
+
+/**
+ * The first rect's top edge, or null: no rects at all, an empty list, or a
+ * rect of a shape not recognised are all null geometry, never a throw.
+ */
+export function firstRectYOf(rects: unknown): number | null {
+  if (!Array.isArray(rects)) return null;
+  const first = waive(rects[0]);
+  if (first == null) return null;
+  if (typeof first.y === "number") return first.y;
+  return Array.isArray(first) && typeof first[1] === "number" ? first[1] : null;
+}
 
 /** The class on the reader document's root while the plugin's own read runs. */
 const TAKEOVER_CLASS = "speakd-takeover";
@@ -98,12 +130,32 @@ export interface ReaderHandle {
   skip(direction: 1 | -1): void;
   /** The document's segments, through Zotero's Read Aloud, with nothing played. Never rejects. */
   capture(): Promise<CaptureResult>;
+  /**
+   * Dev-only, for the Stage 0 characterisation: the captured segments with
+   * their geometry coverage, dumped as JSONL to `path` (absolute). No
+   * shipped UI reaches it; the live-test bridge drives it. Never rejects.
+   */
+  dumpSegments(path: string): Promise<DumpResult>;
+  /** Enter label mode: capture the document, show the pane. Never rejects. */
+  enterLabelMode(): Promise<LabelResult>;
+  /** Leave label mode: destroy the pane and the highlight. */
+  exitLabelMode(): void;
+  /** Re-categorize one captured segment. Never rejects. */
+  labelSegment(index: number, category: LabelCategory): Promise<LabelResult>;
+  /** Write the labelled fixture (Task 5). Never rejects. */
+  exportFixture(path: string, range?: { readonly first: number; readonly last: number }): Promise<FixtureResult>;
   /** Hear the handle's state change. Returns an unsubscribe. */
   onChange(listener: () => void): () => void;
 }
 
+/** Why label mode did or did not turn on. */
+export type LabelResult = { readonly ok: true; readonly segments: number } | { readonly ok: false; readonly error: string };
+
+/** Why a fixture did or did not export. */
+export type FixtureResult = { readonly ok: true; readonly path: string } | { readonly ok: false; readonly error: string };
+
 /** A reader opened before the plugin started, or of a kind it does not read. */
-class Unadopted implements ReaderHandle {
+export class Unadopted implements ReaderHandle {
   readonly sourceId = "";
   readonly session = null;
   constructor(readonly adoption: Adoption) {}
@@ -113,6 +165,19 @@ class Unadopted implements ReaderHandle {
   skip(): void {}
   capture(): Promise<CaptureResult> {
     return Promise.resolve(adoptionProblem(this.adoption));
+  }
+  dumpSegments(): Promise<DumpResult> {
+    return Promise.resolve({ ok: false, error: "this reader is not speakd's" });
+  }
+  enterLabelMode(): Promise<LabelResult> {
+    return Promise.resolve({ ok: false, error: "this reader is not speakd's" });
+  }
+  exitLabelMode(): void {}
+  labelSegment(): Promise<LabelResult> {
+    return Promise.resolve({ ok: false, error: "this reader is not speakd's" });
+  }
+  exportFixture(): Promise<FixtureResult> {
+    return Promise.resolve({ ok: false, error: "this reader is not speakd's" });
   }
   onChange(): () => void {
     return () => {};
@@ -142,6 +207,13 @@ class Adopted implements ReaderHandle {
   private unload: (() => void) | null = null;
   private readonly changeListeners = new Set<() => void>();
   private closed = false;
+  /** The label mode's pane and held capture (spec §6). */
+  private labeler: Labeler | null = null;
+  private capturePane: CapturePane | null = null;
+  private labelFile: LabelFile | null = null;
+  private labelFilePromise: Promise<void> | null = null;
+  private labelSegments: readonly CapturedSegment[] = [];
+  private labelCore: ControllerCore | null = null;
 
   constructor(takeover: Takeover, reader: Any) {
     this.takeover = takeover;
@@ -300,8 +372,49 @@ class Adopted implements ReaderHandle {
     }, win);
     this.hooked = true;
 
+    // The Stage B endpoint as the preferences stand now: off until
+    // configured, and read afresh for each section and each footnote lookup,
+    // so a pref change (switching the model off, say) needs no new tab.
+    const llmNow = liveLlm(
+      readLlmConfig,
+      (config) =>
+        new LlmClient({
+          config,
+          fetch: fetch as unknown as FetchLike,
+          log: (message) => this.log.log(message),
+          // The one bar mark a failed call leaves; for now it is the debug log.
+          onFailure: () => this.log.log("the language model failed; the rules-only text stands"),
+        }),
+    );
+    const llm: FootnoteClassifier = {
+      get configured() {
+        return llmNow().configured;
+      },
+      cached: (text) => llmNow().cached(text),
+      classifyFootnotes: (residue) => llmNow().classifyFootnotes(residue),
+    };
     const session = new ReaderSession(
-      new Channel({ client: this.takeover.options.link, sourceId: this.sourceId, label: this.title() }),
+      new Channel({
+        client: this.takeover.options.link,
+        sourceId: this.sourceId,
+        label: this.title(),
+        // The footnote policy as the preferences stand at each read start:
+        // the filters' word for what a read skips and what it keeps.
+        footnotes: readFootnotePolicy,
+        placement: readFootnotePlacement,
+        // Stage B: the deterministic cleanup always, the model on top of it
+        // after the first section, and cache-first footnote classification.
+        clean: (text, ordinal, signal) => cleanWithLlm(llmNow())(text, ordinal, signal),
+        footnoteClassifier: llm,
+        // The labeler's overrides, from the file cached at adoption: one map
+        // lookup at planned() time, never an await in the read path.
+        overrides: (segments) => {
+          const file = this.labelFile;
+          // Pages inherited as the capture places them, which the locators were written from.
+          return file === null ? null : matchLabels(file, withInheritedPages(segments)).overrides;
+        },
+        log: (message) => this.log.log(message),
+      }),
       {
         defer: (task) => {
           Promise.resolve()
@@ -343,6 +456,9 @@ class Adopted implements ReaderHandle {
     };
 
     this._adoption = { kind: "ready" };
+    // Load the label file in the background: a read before it lands is
+    // unlabelled (fail-open), and the next read has it.
+    this.requestLabelFile();
     this.log.log(`adopted the reader for ${this.sourceId}`);
     this.changed();
   }
@@ -434,11 +550,21 @@ class Adopted implements ReaderHandle {
     const infos: SegmentInfo[] = [];
     for (let index = 0; index < list.length; index++) {
       const segment = waive(list[index]);
-      const pageIndex = waive(segment.sourcePosition)?.pageIndex;
+      const position = waive(segment.sourcePosition);
+      const pageIndex = position?.pageIndex;
+      // Rect coverage is unverified (internals §3.2: the position itself may
+      // be null), so a segment without rects is null geometry, never a throw
+      // and never a drop. The rect's own shape is read tolerantly too: a
+      // `y` member or an `[x, y, w, h]` array, whichever Zotero's PDF worker
+      // left there. Nothing may throw into Zotero's controller build.
+      const rects = waive(position?.rects);
+      const firstRectY = firstRectYOf(rects);
       infos.push({
         text: String(segment.text ?? ""),
         anchor: typeof segment.anchor === "string" ? segment.anchor : null,
         pageIndex: typeof pageIndex === "number" ? pageIndex : null,
+        rectCount: Array.isArray(rects) ? rects.length : null,
+        firstRectY,
       });
     }
     return infos;
@@ -655,6 +781,252 @@ class Adopted implements ReaderHandle {
     }
   }
 
+  /** The Stage 0 dev action: capture (as `capture` does), and write the dump. */
+  dumpSegments(path: string): Promise<DumpResult> {
+    return dumpToFile(() => this.capture(), path);
+  }
+
+  // ---- label mode (spec §6, §14) ----
+
+  /**
+   * Enter label mode: capture the document, load its labels and mount the
+   * pane. A live read gives its segments and is stopped. Everything that can
+   * fail -- capture, file, pane, highlight controller -- fails open, so a
+   * refused result leaves reading exactly as it was.
+   */
+  async enterLabelMode(): Promise<LabelResult> {
+    try {
+      const { session, win } = this;
+      if (this._adoption.kind !== "ready" || !session || !win) {
+        const problem = adoptionProblem(this._adoption);
+        return { ok: false, error: problem.ok ? "the reader is not ready" : problem.problem.error };
+      }
+      if (this.labeler !== null) return { ok: true, segments: this.labelSegments.length };
+      const wasLive = session.live;
+      const result = await this.captureForLabels();
+      if (!result.ok) return { ok: false, error: result.problem.error };
+      // A read that was under way has now given us its segments: stop it.
+      if (wasLive) this.stop();
+      this.labelSegments = result.segments;
+      await this.requestLabelFile();
+      const file =
+        this.labelFile ??
+        emptyLabelFile(this.attachmentKey(), result.segments.length, this.zoteroVersion(), Math.floor(Date.now() / 1000), (await this.pdfSha256()) ?? "");
+      const match = matchLabels(file, result.segments);
+      const labeler = new Labeler({
+        document: win.document,
+        segments: result.segments,
+        policy: readFootnotePolicy(),
+        file,
+        overrides: match.overrides,
+        unmatched: match.unmatched,
+        save: (next) => this.saveLabelFile(next),
+        now: () => Math.floor(Date.now() / 1000),
+        onSelect: (index) => this.highlightSegment(index),
+        onExit: () => this.exitLabelMode(),
+        onExport: () => {
+          void this.exportFixture(defaultFixtureDir(this.attachmentKey())).then((result) => {
+            if (!result.ok) this.labeler?.note(result.error);
+          });
+        },
+        warn: (message, error) => this.log.warn(message, error),
+      });
+      this.guard("mounting the label pane", () => labeler.mount());
+      this.labeler = labeler;
+      this.guard("building the label controller", () => this.buildLabelController());
+      this.changed();
+      return { ok: true, segments: result.segments.length };
+    } catch (error) {
+      this.log.warn("entering label mode failed", error);
+      return { ok: false, error: `entering label mode failed: ${String(error)}` };
+    }
+  }
+
+  /** Leave label mode, taking the pane and the highlight with it. */
+  exitLabelMode(): void {
+    this.guard("leaving label mode", () => {
+      this.labeler?.dispose();
+      this.labeler = null;
+      this.capturePane?.dispose();
+      this.capturePane = null;
+      this.labelCore?.destroy();
+      this.labelCore = null;
+      this.labelSegments = [];
+      this.closeReadAloud();
+      this.changed();
+    });
+  }
+
+  /** Re-categorize one captured segment, through the atomic label store. */
+  async labelSegment(index: number, category: LabelCategory): Promise<LabelResult> {
+    try {
+      const labeler = this.labeler;
+      if (labeler === null) return { ok: false, error: "label mode is not on" };
+      if (index < 0 || index >= this.labelSegments.length) return { ok: false, error: `there is no segment ${index}` };
+      await labeler.setCategory(index, category);
+      return { ok: true, segments: this.labelSegments.length };
+    } catch (error) {
+      this.log.warn("labelling a segment failed", error);
+      return { ok: false, error: `labelling the segment failed: ${String(error)}` };
+    }
+  }
+
+  /** The fixture export (spec §8.3): the captured segments, their labels, and the snapshot. */
+  async exportFixture(path: string, range?: { readonly first: number; readonly last: number }): Promise<FixtureResult> {
+    try {
+      if (this.labeler === null) {
+        const entered = await this.enterLabelMode();
+        if (!entered.ok) return { ok: false, error: entered.error };
+      }
+      const all = this.labelSegments;
+      const segments =
+        range === undefined ? all : all.filter((segment) => segment.pageIndex >= range.first && segment.pageIndex <= range.last);
+      const file =
+        this.labelFile ?? emptyLabelFile(this.attachmentKey(), all.length, this.zoteroVersion(), Math.floor(Date.now() / 1000));
+      const { overrides } = matchLabels(file, segments);
+      const gaps = await this.collectGaps(segments);
+      const content = fixtureContent({
+        segments,
+        labels: file,
+        policy: readFootnotePolicy(),
+        overrides,
+        pdfPath: this.pdfPath(),
+        gaps,
+        command: `Zotero.SpeakdReader.handles().find(...).exportFixture(${JSON.stringify(path)}${range === undefined ? "" : `, { first: ${range.first}, last: ${range.last} }`})`,
+      });
+      return await writeFixture(path, content);
+    } catch (error) {
+      this.log.warn("exporting the fixture failed", error);
+      return { ok: false, error: `exporting the fixture failed: ${String(error)}` };
+    }
+  }
+
+  /** The range's dropped-before-capture lines, or null when the pdf.js reach fails. */
+  private async collectGaps(segments: readonly CapturedSegment[]): Promise<string[] | null> {
+    const pages = [...new Set(segments.map((segment) => segment.pageIndex))].sort((a, b) => a - b);
+    const gaps: string[] = [];
+    for (const page of pages) {
+      const captured = segments.filter((segment) => segment.pageIndex === page).map((segment) => segment.text);
+      const result = await checkPageGaps(this.reader, page, captured);
+      if (!result.ok) return null;
+      gaps.push(...result.gaps);
+    }
+    return gaps;
+  }
+
+  /** The attachment's file on disk, best-effort; never the file in the fixture. */
+  private pdfPath(): string | null {
+    try {
+      const item = this.reader._item;
+      const path = typeof item?.getFilePath === "function" ? item.getFilePath() : null;
+      return typeof path === "string" && path !== "" ? path : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The PDF's sha256, a hint recorded in the label file and the fixture README. */
+  private async pdfSha256(): Promise<string | null> {
+    const path = this.pdfPath();
+    if (path === null) return null;
+    try {
+      return sha256Bytes(new Uint8Array(await IOUtils.read(path)));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Capture with a "capturing…" pane when the manager holds nothing already. */
+  private captureForLabels(): Promise<CaptureResult> {
+    const win = this.win;
+    if (this.manager?.active || !win) return this.capture();
+    const started = Date.now();
+    const pane = mountCapturePane(win.document, () => {
+      this.capturePane = null;
+      this.session?.giveUp({ kind: "zotero", error: "label mode was abandoned" });
+    });
+    this.capturePane = pane;
+    const timer = setInterval(() => pane.setElapsed((Date.now() - started) / 1000), 250);
+    return this.capture().finally(() => {
+      clearInterval(timer);
+      pane.dispose();
+      if (this.capturePane === pane) this.capturePane = null;
+    });
+  }
+
+  /** Load the attachment's label file once, in the background. */
+  private requestLabelFile(): Promise<void> {
+    if (this.labelFilePromise === null) this.labelFilePromise = this.loadLabelFile();
+    return this.labelFilePromise;
+  }
+
+  private async loadLabelFile(): Promise<void> {
+    const key = this.attachmentKey();
+    if (key === "") return;
+    try {
+      this.labelFile = await readLabelFile(labelsPath(key));
+      this.changed();
+    } catch (error) {
+      this.log.warn("reading the label file failed", error);
+    }
+  }
+
+  private async saveLabelFile(file: LabelFile): Promise<void> {
+    await writeLabelFile(labelsPath(this.attachmentKey()), file);
+    this.labelFile = file;
+    this.changed();
+  }
+
+  /** A capture-only controller: it drives the highlight, and starts nothing. */
+  private buildLabelController(): void {
+    const win = this.win;
+    const session = this.session;
+    const list = waive(this.manager?._segments);
+    if (!win || !session || !list || list.length === 0) return;
+    const infos = this.readSegments(list);
+    if (infos.length === 0) return;
+    const target = new win.EventTarget();
+    const sink = {
+      emit: (type: string, index: number | null) => {
+        if (Cu().isDeadWrapper(win)) return;
+        const event = new win.Event(type);
+        waive(event).segment = index === null ? null : list[index];
+        target.dispatchEvent(event);
+      },
+    };
+    this.labelCore = new ControllerCore(session, infos, 0, infos.length - 1, sink, list, true);
+  }
+
+  /** Zotero's own highlight on the selected segment, and a scroll to it. */
+  private highlightSegment(index: number): void {
+    try {
+      this.labelCore?.highlighted(index);
+      const view = waive(this.ir?._primaryView);
+      const list = waive(this.manager?._segments);
+      const position = waive(list?.[index]?.sourcePosition);
+      if (view && position && isFunction(view.navigateToPosition)) view.navigateToPosition(position);
+    } catch (error) {
+      this.log.warn("driving the label highlight failed", error);
+      this.labeler?.note("the highlight could not be driven");
+    }
+  }
+
+  private attachmentKey(): string {
+    try {
+      return String(this.reader._item?.key ?? "");
+    } catch {
+      return "";
+    }
+  }
+
+  private zoteroVersion(): string {
+    try {
+      return String((Zotero as Any).version ?? "");
+    } catch {
+      return "";
+    }
+  }
+
   onChange(listener: () => void): () => void {
     this.changeListeners.add(listener);
     return () => this.changeListeners.delete(listener);
@@ -709,6 +1081,12 @@ class Adopted implements ReaderHandle {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.labeler?.dispose();
+    this.labeler = null;
+    this.capturePane?.dispose();
+    this.capturePane = null;
+    this.labelCore?.destroy();
+    this.labelCore = null;
     this.guard("closing", () => this.session?.close());
     this.unsubscribeLink?.();
     this.unload?.();

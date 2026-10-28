@@ -13,6 +13,7 @@ import {
   type ExportChoice,
   type ExportSettings,
 } from "./dialog";
+import { type FootnotePolicy } from "../footnotes";
 import type { PartSegment } from "./parts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -27,6 +28,8 @@ export interface ExportDialogRequest {
   readonly item: DialogItem;
   readonly segments: readonly PartSegment[];
   readonly settings: ExportSettings;
+  /** The footnote policy the parts will be built under (prefs.ts), for the estimate. */
+  readonly footnotes: FootnotePolicy;
   /** The daemon's measured real-time factor, if known. */
   readonly rtf?: number;
 }

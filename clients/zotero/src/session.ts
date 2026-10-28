@@ -57,6 +57,10 @@ export interface SegmentInfo {
   readonly anchor: string | null;
   /** The page it starts on (`sourcePosition.pageIndex`), when Zotero knows. */
   readonly pageIndex?: number | null;
+  /** How many rects `sourcePosition.rects` had, or null when there were none. */
+  readonly rectCount?: number | null;
+  /** The y of the segment's first rect, or null when there were none. */
+  readonly firstRectY?: number | null;
 }
 
 /** A segment as an export takes it: the shape export/parts.ts reads. */
@@ -64,6 +68,9 @@ export interface CapturedSegment {
   readonly text: string;
   readonly pageIndex: number;
   readonly anchor: string | null;
+  /** Geometry coverage, null when the segment carried no rects (internals §3.2). */
+  readonly rectCount: number | null;
+  readonly firstRectY: number | null;
 }
 
 export type CaptureResult =
@@ -71,15 +78,34 @@ export type CaptureResult =
   | { readonly ok: false; readonly problem: Problem };
 
 /**
+ * `segments` with every page filled in: one Zotero could not place takes its
+ * predecessor's (0 at the start). The one rule capture and live reads share,
+ * so a label written from the one binds in the other.
+ */
+export function withInheritedPages<T extends { readonly pageIndex?: number | null }>(
+  segments: readonly T[],
+): (T & { readonly pageIndex: number })[] {
+  let page = 0;
+  return segments.map((segment) => {
+    if (typeof segment.pageIndex === "number") page = segment.pageIndex;
+    return { ...segment, pageIndex: page };
+  });
+}
+
+/**
  * A copy of `segments`, each with a page. One whose page Zotero could not
  * place is put on its predecessor's: in reading order, which is all a page
  * range needs of it.
  */
 export function capturedSegments(segments: readonly SegmentInfo[]): CapturedSegment[] {
-  let page = 0;
-  return segments.map((segment) => {
-    if (typeof segment.pageIndex === "number") page = segment.pageIndex;
-    return { text: segment.text, pageIndex: page, anchor: segment.anchor };
+  return withInheritedPages(segments).map((segment) => {
+    return {
+      text: segment.text,
+      pageIndex: segment.pageIndex,
+      anchor: segment.anchor,
+      rectCount: segment.rectCount ?? null,
+      firstRectY: segment.firstRectY ?? null,
+    };
   });
 }
 

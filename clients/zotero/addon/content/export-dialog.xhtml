@@ -113,7 +113,7 @@
       $("folder-row").hidden = state.destination !== "folder";
       $("folder-path").textContent = state.folder === "" ? "No folder chosen" : state.folder;
 
-      const described = args.describeState(args.segments, args.item, state, args.rtf);
+      const described = args.describeState(args.segments, args.item, state, args.rtf, args.footnotes);
       $("status").className = described.ok ? "" : "error";
       $("status").textContent = described.ok ? "Estimated render time: " + described.estimate : described.error;
       // A selection with no text cannot be exported, whatever else is set.

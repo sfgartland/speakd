@@ -13,9 +13,12 @@
 // by the one thing that tells sections apart: their text.
 
 import { cleanup } from "./cleanup";
+import { tagSegments, type FootnotePlacement, type FootnotePolicy } from "./footnotes";
+import type { LabelCategory } from "./labelstore";
+import type { FootnoteClassifier, FootnoteLabel } from "./llm";
 import { planHighlights } from "./mapping";
 import { apply, identity, type Stage } from "./offsetmap";
-import { buildSections, type Section, type SegmentText } from "./sections";
+import { buildSections, type Section, type SegmentText, type TaggedSegment } from "./sections";
 import type { CallResult, SpeakdEvent } from "./speakd";
 
 /** What the channel needs of the client: verbs, and nothing else. */
@@ -37,7 +40,7 @@ export const NO_TEXT: Problem = { kind: "empty", error: "this document has no te
  * in the read, so a stage can leave the first alone to keep the first sound
  * quick.
  */
-export type Clean = (text: string, ordinal: number) => Stage | Promise<Stage>;
+export type Clean = (text: string, ordinal: number, signal?: AbortSignal) => Stage | Promise<Stage>;
 
 export interface ChannelOptions {
   client: Caller;
@@ -49,6 +52,46 @@ export interface ChannelOptions {
   /** Sections' sizes, as `buildSections` takes them. */
   firstSize?: number;
   size?: number;
+  /**
+   * The footnote policy (prefs.ts `footnote_policy`); `classify` by default.
+   * A function is asked at each read start, so a changed pref applies to the
+   * next read.
+   */
+  footnotes?: FootnotePolicy | (() => FootnotePolicy);
+  /**
+   * Where kept footnotes are read (prefs.ts `footnote_placement`); a function
+   * is asked at each read start. A live read supports `inline` (no deferral)
+   * and `page-end` (a footnote rides at the end of the section that owns its
+   * page). `after-paragraph` and `chapter-end` map to `page-end` here: live
+   * sections are page-sized, and the highlight plan needs each segment's true
+   * index, so a footnote is never moved into the middle of another section's
+   * text.
+   */
+  placement?: FootnotePlacement | (() => FootnotePlacement);
+  /**
+   * The Stage B classifier (Task 11): consulted cache-first for a section's
+   * `classify` residue, never awaited. Absent means rules-only.
+   */
+  footnoteClassifier?: FootnoteClassifier;
+  /** Says one line per dropped segment: the filter's audit trail. */
+  log?: (message: string) => void;
+  /**
+   * The labeler's per-capture overrides (spec §7.2, §8.2): called once per
+   * start over that start's segments, never awaited by the read path. A
+   * throw or a null is no overrides -- fail-open.
+   */
+  overrides?: (segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null;
+}
+
+/**
+ * What the read start can use of a segment, beyond its text: the filters'
+ * inputs. A segment that carries none of them -- text alone -- is read as
+ * ever, with nothing to filter and nothing to plan.
+ */
+export interface ReadSegment extends SegmentText {
+  readonly anchor?: string | null;
+  readonly pageIndex?: number | null;
+  readonly firstRectY?: number | null;
 }
 
 /** A section as enqueued: its segments, and the cleaned text the daemon was given. */
@@ -61,10 +104,16 @@ interface Entry {
 /** One start's read. It is replaced, never reused, by the next start. */
 interface Read {
   readonly generation: number;
-  readonly sections: readonly Section[];
+  /** Aborted when the read is superseded: what a slow cleanup stops waiting for. */
+  readonly signal: AbortSignal;
+  readonly sections: Section[];
   readonly entries: Entry[];
+  /** The planned segments, by original index: what a `classify` tag means. */
+  readonly tagged: readonly TaggedSegment[];
   /** The next section to enqueue. */
   next: number;
+  /** Sections whose classification has already been asked for, so it is asked once. */
+  readonly requested: Set<number>;
 }
 
 /** The section being spoken, and its highlight plan. */
@@ -81,8 +130,14 @@ export class Channel {
   private readonly clean: Clean;
   private readonly firstSize: number | undefined;
   private readonly size: number | undefined;
+  private readonly footnotes: FootnotePolicy | (() => FootnotePolicy);
+  private readonly placement: FootnotePlacement | (() => FootnotePlacement);
+  private readonly footnoteClassifier: FootnoteClassifier | undefined;
+  private readonly log: (message: string) => void;
+  private readonly overrides: ((segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null) | undefined;
 
   private _generation = 0;
+  private abort = new AbortController();
   private read: Read | null = null;
   private current: Current | null = null;
   // Whether the daemon may hold something of this channel's, queued or
@@ -114,6 +169,11 @@ export class Channel {
     this.clean = options.clean ?? ((text) => cleanup(text));
     this.firstSize = options.firstSize;
     this.size = options.size;
+    this.footnotes = options.footnotes ?? "classify";
+    this.placement = options.placement ?? "page-end";
+    this.footnoteClassifier = options.footnoteClassifier;
+    this.log = options.log ?? (() => {});
+    this.overrides = options.overrides;
   }
 
   /** Bumped by every start and stop. */
@@ -187,8 +247,9 @@ export class Channel {
    * already under way. Resolves once the first section is enqueued, or the
    * read has failed and said why.
    */
-  start(segments: readonly SegmentText[], startIndex: number): Promise<void> {
+  start(segments: readonly ReadSegment[], startIndex: number): Promise<void> {
     const generation = this.supersede();
+    const signal = this.abort.signal;
     return this.serially(async () => {
       if (generation !== this._generation) return;
       if (!(await this.hushIfLive(generation))) return;
@@ -196,7 +257,12 @@ export class Channel {
         this.fail(NO_TEXT);
         return;
       }
-      const sections = buildSections(segments, startIndex, this.firstSize, this.size);
+      // The override map is resolved once per capture (spec §7.2), from the
+      // file cached at reader adoption; the read path never awaits label I/O.
+      const overrides = this.resolveOverrides(segments);
+      const tagged = this.planned(segments, overrides);
+      const inline = (typeof this.placement === "function" ? this.placement() : this.placement) === "inline";
+      const sections = buildSections(tagged, startIndex, this.firstSize, this.size, inline);
       // Past the end of a document that has text: nothing left to read.
       if (sections.length === 0) return;
       // On every start, not once: the daemon forgets a channel idle for
@@ -207,10 +273,46 @@ export class Channel {
         this.fail(labelled);
         return;
       }
-      const read: Read = { generation, sections, entries: [], next: 0 };
+      const read: Read = { generation, signal, sections, entries: [], tagged, next: 0, requested: new Set() };
       this.read = read;
       await this.enqueueNext(read);
     });
+  }
+
+  /**
+   * The read's segments as the footnote plan leaves them: running heads and
+   * dropped footnotes never appear, kept ones wait for their section's end.
+   * Runs at read start, synchronously -- pure arithmetic over the segment
+   * list, milliseconds -- so the first sound is as quick as ever. A filter
+   * that fails costs its cleanup, never the speech: the segments are read
+   * exactly as they came. A segment without a dropped word for the log is
+   * read as ever; one that was dropped says so, once, in the debug log:
+   * silent drops are a filter's worst failure, and this is the trace.
+   */
+  private planned(segments: readonly ReadSegment[], overrides: ReadonlyMap<number, LabelCategory> | null = null): readonly TaggedSegment[] {
+    try {
+      const { tagged, dropped } = tagSegments(segments, typeof this.footnotes === "function" ? this.footnotes() : this.footnotes, overrides ?? undefined);
+      for (const segment of dropped) this.log(`a ${segment.why} was not read: ${brief(segment.text)}`);
+      if (overrides !== null) {
+        for (const [index, category] of overrides) {
+          const fate = tagged[index]?.tag === "drop" ? "dropped" : "spoken";
+          this.log(`label: segment ${index} → ${category} (${fate})`);
+        }
+      }
+      return tagged;
+    } catch {
+      return segments;
+    }
+  }
+
+  /** The label map for this start, or null: a throwing resolver is no labels. */
+  private resolveOverrides(segments: readonly ReadSegment[]): ReadonlyMap<number, LabelCategory> | null {
+    if (this.overrides === undefined) return null;
+    try {
+      return this.overrides(segments);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -340,6 +442,10 @@ export class Channel {
   /** Start a new generation: from now on, nothing of the old read moves the highlight. */
   private supersede(): number {
     this._generation++;
+    // Anything still waiting on the old read's cleanup lets go at once, so
+    // the stop or start queued behind it is not held up by the network.
+    this.abort.abort();
+    this.abort = new AbortController();
     this.read = null;
     this.current = null;
     this.seeking = false;
@@ -361,8 +467,12 @@ export class Channel {
   private async enqueueNext(read: Read): Promise<void> {
     while (read.next < read.sections.length) {
       const ordinal = read.next++;
-      const section = read.sections[ordinal]!;
-      const stage = await this.cleaned(section.text, ordinal);
+      const section = this.resolveFootnotes(read, read.sections[ordinal]!);
+      read.sections[ordinal] = section;
+      // One section ahead, matching how sections are cleaned: the next
+      // residue is asked for while this section speaks, never all at once.
+      this.requestClassification(read, ordinal + 1);
+      const stage = await this.cleaned(section.text, ordinal, read.signal);
       if (read !== this.read) return;
       // A section cleaned to nothing -- a page number alone -- has nothing
       // to say, and the daemon refuses empty text.
@@ -391,15 +501,79 @@ export class Channel {
   }
 
   /**
+   * The section's `classify` footnotes the cache has resolved to citations
+   * are dropped now -- whole segments, so the offsets stay true -- and the
+   * rest stand as kept. A miss is the policy default immediately, never a
+   * wait. Dropped here, like every drop, is logged: no silent loss.
+   */
+  private resolveFootnotes(read: Read, section: Section): Section {
+    const classifier = this.footnoteClassifier;
+    if (classifier === undefined) return section;
+    const kept: number[] = [];
+    let changed = false;
+    for (const index of section.segmentIndices) {
+      const segment = read.tagged[index];
+      if (segment?.tag === "classify" && classifier.cached(segment.text) === "citation") {
+        this.log(`a footnote was not read: ${brief(segment.text)}`);
+        changed = true;
+        continue;
+      }
+      kept.push(index);
+    }
+    if (!changed) return section;
+    let text = "";
+    const offsets: number[] = [];
+    for (const index of kept) {
+      const piece = read.tagged[index]!.text.trim();
+      offsets.push(text === "" ? 0 : text.length + 1);
+      text = text === "" ? piece : `${text} ${piece}`;
+    }
+    return { segmentIndices: kept, text, offsets };
+  }
+
+  /**
+   * Ask the classifier for one section's borderline residue, in the
+   * background. Guarded so a section is asked once, and never awaited: a
+   * call that hangs costs nothing but the cache miss it already was.
+   */
+  private requestClassification(read: Read, ordinal: number): void {
+    const classifier = this.footnoteClassifier;
+    if (classifier === undefined || !classifier.configured) return;
+    if (ordinal <= 0 || ordinal >= read.sections.length || read.requested.has(ordinal)) return;
+    const section = read.sections[ordinal]!;
+    const residue: FootnoteLabel[] = [];
+    for (const index of section.segmentIndices) {
+      const segment = read.tagged[index];
+      if (segment?.tag === "classify") residue.push({ index, text: segment.text });
+    }
+    if (residue.length === 0) return;
+    read.requested.add(ordinal);
+    void classifier.classifyFootnotes(residue).catch(() => {});
+  }
+
+  /**
    * The section's text through the cleanup stage, or unchanged when the
    * stage throws or its map does not add up: a failed cleanup costs the
    * cleanup, never the speech.
    */
-  private async cleaned(text: string, ordinal: number): Promise<Stage> {
+  private async cleaned(text: string, ordinal: number, signal: AbortSignal): Promise<Stage> {
+    const unchanged: Stage = { text, map: identity(text.length) };
+    if (signal.aborted) return unchanged;
+    let onAbort = (): void => {};
+    const superseded = new Promise<Stage>((resolve) => {
+      onAbort = () => resolve(unchanged);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
     try {
-      return apply(text, await this.clean(text, ordinal));
+      // Raced against the supersede signal: a stage on the network must not
+      // hold the serial queue, and its late answer is dropped with the read.
+      const stage = Promise.resolve(this.clean(text, ordinal, signal)).then((s) => apply(text, s));
+      stage.catch(() => {});
+      return await Promise.race([stage, superseded]);
     } catch {
-      return { text, map: identity(text.length) };
+      return unchanged;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   }
 
@@ -435,6 +609,12 @@ export class Channel {
     if (index !== null) this._lastIndex = index;
     for (const listener of this.highlightListeners) listener(index);
   }
+}
+
+// One dropped segment, said shortly: its first sixty characters, one line.
+function brief(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  return trimmed.length > 60 ? `${trimmed.slice(0, 60)}…` : trimmed;
 }
 
 function isDaemonSegment(value: unknown): value is { index: number; span_start: number; span_end: number } {
