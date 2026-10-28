@@ -153,12 +153,12 @@ describe("buildParts with the cleanup filters", () => {
     expect(parts[0]?.text?.endsWith("at length.")).toBe(true);
   });
 
-  it("takes the footnote policy: defer_all keeps the citation too, drop_all keeps neither", () => {
+  it("takes the footnote policy: keep_all keeps the citation too, drop_all keeps neither", () => {
     const deferAll = buildParts(
       paper(),
       "My Book",
       { kind: "pages", ranges: [{ startPage: 0, endPage: 0 }] },
-      { footnotes: "defer_all" },
+      { footnotes: "keep_all" },
     );
     expect(deferAll[0]?.text).toContain("Kant, KrV");
     expect(deferAll[0]?.text?.endsWith("at length.")).toBe(true);

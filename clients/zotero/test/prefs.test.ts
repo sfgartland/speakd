@@ -41,11 +41,15 @@ describe("parseFootnotePolicy", () => {
   it("takes the three policies, and defaults to classify", () => {
     expect(parseFootnotePolicy("classify")).toBe("classify");
     expect(parseFootnotePolicy("drop_all")).toBe("drop_all");
-    expect(parseFootnotePolicy("defer_all")).toBe("defer_all");
+    expect(parseFootnotePolicy("keep_all")).toBe("keep_all");
     for (const value of [undefined, null, "", "inline", "drop", 3]) {
       expect(parseFootnotePolicy(value)).toBe("classify");
     }
     expect(DEFAULT_FOOTNOTE_POLICY).toBe("classify");
+  });
+
+  it("still reads the old name defer_all as keep_all", () => {
+    expect(parseFootnotePolicy("defer_all")).toBe("keep_all");
   });
 
   it("declares the pref beside the plugin's other settings", () => {

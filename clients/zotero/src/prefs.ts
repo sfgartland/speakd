@@ -62,7 +62,9 @@ export function readFootnotePolicy(): FootnotePolicy {
 
 /** The policy as set, or the default for anything else. */
 export function parseFootnotePolicy(value: unknown): FootnotePolicy {
-  return value === "drop_all" || value === "defer_all" ? value : DEFAULT_FOOTNOTE_POLICY;
+  // `defer_all` is the old name of `keep_all`, still read from a stored pref.
+  if (value === "defer_all") return "keep_all";
+  return value === "drop_all" || value === "keep_all" ? value : DEFAULT_FOOTNOTE_POLICY;
 }
 
 /**

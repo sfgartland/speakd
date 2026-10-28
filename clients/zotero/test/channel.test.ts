@@ -132,7 +132,7 @@ describe("Channel's footnote policy", () => {
     ];
     await channel.start(page, 0);
     expect(daemon.enqueued()[0]).toBe("The body opens the page.");
-    policy = "defer_all";
+    policy = "keep_all";
     await channel.start(page, 0);
     expect(daemon.enqueued()[1]).toContain("Kant");
   });
@@ -248,7 +248,7 @@ describe("Channel", () => {
   });
 
   it("changes exactly the footnotes' treatment when the policy pref flips", async () => {
-    const deferAll = setupPaper("defer_all");
+    const deferAll = setupPaper("keep_all");
     await deferAll.channel.start(PAPER, 0);
     const first = deferAll.daemon.enqueued()[0]!;
     // The citation is kept now too, and read at the section's end, in order.
@@ -640,8 +640,8 @@ describe("Channel with a footnote classifier", () => {
     expect(daemon.enqueued().length).toBeGreaterThan(1);
   });
 
-  it("makes zero classification calls under drop_all and defer_all", async () => {
-    for (const policy of ["drop_all", "defer_all"] as const) {
+  it("makes zero classification calls under drop_all and keep_all", async () => {
+    for (const policy of ["drop_all", "keep_all"] as const) {
       const classifier = new FakeClassifier(new Map(), true);
       const daemon = new FakeDaemon();
       const channel = new Channel({
@@ -809,13 +809,13 @@ describe("Channel with a label override map", () => {
     expect(labelledChannel.daemon.enqueued()[0]).toContain("Sample Journal");
   });
 
-  it("lands a labelled footnote at its section's end under defer_all", async () => {
+  it("lands a labelled footnote at its section's end under keep_all", async () => {
     const segments = [
       labelled("Body one is here.", "paragraphStart", 0, 770),
       labelled("Target to defer.", "paragraphStart", 0, 740),
       labelled("Body two follows.", "paragraphStart", 0, 720),
     ];
-    const { daemon, channel } = labelChannel(() => new Map([[1, "footnote"]]), "defer_all");
+    const { daemon, channel } = labelChannel(() => new Map([[1, "footnote"]]), "keep_all");
     await channel.start(segments, 0);
     expect(daemon.enqueued()[0]).toBe("Body one is here. Body two follows. Target to defer.");
   });

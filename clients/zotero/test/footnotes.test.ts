@@ -132,12 +132,12 @@ describe("planFootnotes", () => {
     expect(plan.drops).toEqual([]);
   });
 
-  it("marks every candidate and continuation the same way under drop_all and defer_all", () => {
+  it("marks every candidate and continuation the same way under drop_all and keep_all", () => {
     const segments = [...citedPage(0), ...prosePage(1)];
     const dropAll = planFootnotes(segments, "drop_all");
     expect(dropAll.drops).toEqual([3, 4, 5, 6, 7, 9, 10]);
     expect(dropAll.tags.every((tag, i) => (i >= 3 && i <= 7) || i >= 9 ? tag === "drop" : tag === "body")).toBe(true);
-    const deferAll = planFootnotes(segments, "defer_all");
+    const deferAll = planFootnotes(segments, "keep_all");
     expect(deferAll.drops).toEqual([]);
     expect(deferAll.tags.every((tag, i) => (i >= 3 && i <= 7) || i >= 9 ? tag === "defer" : tag === "body")).toBe(true);
   });
@@ -187,7 +187,7 @@ describe("planFootnotes", () => {
         seg("who does not of course share the opinion which they express.", 0, null, 130),
         seg("12 Another note, numbered one after it.", 0, "paragraphStart", 120),
       ],
-      "defer_all",
+      "keep_all",
     );
     expect([...plan.tags]).toEqual(["body", "defer", "defer", "defer"]);
   });
@@ -241,7 +241,7 @@ describe("planFootnotes false positives", () => {
         seg("il found recently that these words are quoted from A. N. Whitehead.", 0, "paragraphStart", 60),
         seg("goes on over the page, in lower case.", 1, "paragraphStart", 760),
       ],
-      "defer_all",
+      "keep_all",
     );
     expect([...plan.tags]).toEqual(["body", "defer", "body"]);
   });
@@ -300,7 +300,7 @@ describe("tagSegments overrides", () => {
     const overrides = new Map([[1, "footnote"]] as const);
     expect(tagSegments(segments, "classify", overrides).tagged[1]?.tag).toBe("classify");
     expect(tagSegments(segments, "drop_all", overrides).tagged[1]?.tag).toBe("drop");
-    expect(tagSegments(segments, "defer_all", overrides).tagged[1]?.tag).toBe("defer");
+    expect(tagSegments(segments, "keep_all", overrides).tagged[1]?.tag).toBe("defer");
   });
 
   it("makes a markerless bottom-band paragraph a candidate the heuristics leave as body", () => {
@@ -352,9 +352,9 @@ describe("classificationResidue", () => {
     expect(residue).toEqual([{ index: 10, text: prosePage(1)[2]!.text }]);
   });
 
-  it("is empty under drop_all and defer_all", () => {
+  it("is empty under drop_all and keep_all", () => {
     const segments = [...citedPage(0), ...prosePage(1)];
     expect(classificationResidue(segments, "drop_all")).toEqual([]);
-    expect(classificationResidue(segments, "defer_all")).toEqual([]);
+    expect(classificationResidue(segments, "keep_all")).toEqual([]);
   });
 });

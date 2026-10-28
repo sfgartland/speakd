@@ -18,7 +18,7 @@ import type { LabelCategory } from "./labelstore";
 import type { TaggedSegment } from "./sections";
 
 /** How a read's footnotes are treated (proposal §3, the brief's open question 1). */
-export type FootnotePolicy = "classify" | "drop_all" | "defer_all";
+export type FootnotePolicy = "classify" | "drop_all" | "keep_all";
 
 /** What the plan says of one segment. */
 export type FootnoteTag = "body" | "drop" | "defer" | "classify";
@@ -194,7 +194,7 @@ export interface ClassifyResidue {
 
 /**
  * A document's `classify` footnotes, with their original indices: the export
- * path's batch input (Task 11). Empty under `drop_all`/`defer_all`, so the
+ * path's batch input (Task 11). Empty under `drop_all`/`keep_all`, so the
  * export makes no call there either.
  */
 export function classificationResidue<S extends PlanSegment>(
@@ -220,7 +220,7 @@ export interface SegmentsPlan<S extends PlanSegment> {
 /** The footnote policy's word for a detected candidate, shared by detection and labels. */
 function footnoteTag(text: string, policy: FootnotePolicy): FootnoteTag {
   if (policy === "drop_all") return "drop";
-  if (policy === "defer_all") return "defer";
+  if (policy === "keep_all") return "defer";
   return classifyShape(text);
 }
 

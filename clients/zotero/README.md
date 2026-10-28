@@ -61,11 +61,11 @@ continuations — and treated by the **Footnote policy** setting:
   judge is kept and read at the end of the section that owns its page, never
   inline mid-flow.
 - `drop_all`: every footnote is dropped.
-- `defer_all`: every footnote is kept, read at its section's end.
+- `keep_all`: every footnote is kept, read at its section's end.
 
 The policy is `extensions.speakd-reader.footnote_policy`, set in the plugin's
 preferences pane (**Edit → Settings → speakd reader**). Under `drop_all` and
-`defer_all` no classifier runs at all.
+`keep_all` no classifier runs at all.
 
 ### Optional language model (off by default)
 
