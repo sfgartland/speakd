@@ -52,9 +52,12 @@ VISUAL_BAND = 0.6
 VISUAL_GAP = 2.0
 # A gutter: at most this share of fragments may cross it, it is this many ems
 # wide, and each side holds at least this share of the fragments.
-GUTTER_COVERAGE = 0.1
+GUTTER_COVERAGE = 0.25
 GUTTER_WIDTH = 0.5
 GUTTER_SIDE = 0.2
+# A line wider than this share of the text width is a full-width block.
+WIDE_LINE = 0.6
+COLUMN_SHARE = 0.25
 OCR_SUSPICION_GATE = 6.0
 SCAN_JUNK = re.compile("[\ufb00-\ufb04\x00-\x08\x0e-\x1f\x7f\xad\xac\xb7\u200b-\u200d\u2060\ufeff]")
 SPLIT_DIGITS = re.compile(r"(?<=\d)\s+(?=\d)")
@@ -307,11 +310,32 @@ def _visual_lines(lines: list[StextLine]) -> list[StextLine]:
 
 
 def _order_columns(lines: list[StextLine]) -> list[list[StextLine]]:
-    """The page's lines grouped by x-overlap into columns, left to right, each
-    column read fully top to bottom before the next (proposal §4.3)."""
+    """The page's lines as reading-order groups, see `_column_segments`."""
+    return [group for segment in _column_segments(lines) for group in segment]
+
+
+def _column_segments(lines: list[StextLine]) -> list[list[list[StextLine]]]:
+    """The page's lines as segments of reading-order groups (proposal §4.3):
+    a segment is one full-width block, or the columns between two blocks. Columns are
+    found from the narrow lines only, grown by x-overlap: a line wider than
+    WIDE_LINE of the text width, or crossing the gutter (a centred title, an
+    abstract, a wide caption), would bridge both columns and merge the page.
+    Such full-width blocks stay in place by vertical position; the column
+    lines between two of them read left column in full, then the next."""
+    if not lines:
+        return []
+    left = min(line.x0 for line in lines)
+    right = max(line.x1 for line in lines)
+    gutter = _gutter(lines, 0.0)
+
+    def full_width(line: StextLine) -> bool:
+        crosses = gutter is not None and line.x0 < gutter < line.x1
+        return crosses or line.x1 - line.x0 > WIDE_LINE * (right - left)
+
     columns: list[list[StextLine]] = []
     spans: list[list[float]] = []
-    for line in sorted(lines, key=lambda item: (item.x0, item.top)):
+    narrow = [line for line in lines if not full_width(line)]
+    for line in sorted(narrow, key=lambda item: (item.x0, item.top)):
         for column, span in zip(columns, spans, strict=True):
             if line.x0 < span[1] and line.x1 > span[0]:
                 column.append(line)
@@ -321,7 +345,40 @@ def _order_columns(lines: list[StextLine]) -> list[list[StextLine]]:
         else:
             columns.append([line])
             spans.append([line.x0, line.x1])
-    return [sorted(column, key=lambda item: item.top) for column in columns]
+    # Stray narrow lines (a head, a page number, a short last line) are not
+    # columns: with no gutter found, a cluster must hold a real share of them.
+    substantial = [c for c in columns if len(c) >= 3 and len(c) >= COLUMN_SHARE * len(narrow)]
+    if len(columns) < 2 or (gutter is None and len(substantial) < 2):
+        # One column (or none): no gutter to respect, read straight down.
+        return [[sorted(lines, key=lambda item: item.top)]]
+    column_of = {id(line): number for number, column in enumerate(columns) for line in column}
+    ordered = sorted(lines, key=lambda item: item.top)
+    groups: list[list[list[StextLine]]] = []
+    segment: list[list[StextLine]] = [[] for _ in columns]
+    block: list[StextLine] = []
+
+    def flush_segment() -> None:
+        kept = [list(column) for column in segment if column]
+        if kept:
+            groups.append(kept)
+        for column in segment:
+            column.clear()
+
+    for line in ordered:
+        number = column_of.get(id(line))
+        if number is None:
+            if not block:
+                flush_segment()
+            block.append(line)
+        else:
+            if block:
+                groups.append([block])
+                block = []
+            segment[number].append(line)
+    if block:
+        groups.append([block])
+    flush_segment()
+    return groups
 
 
 def _running_head_texts(pages: list[StextPage]) -> set[str]:
@@ -336,7 +393,10 @@ def _running_head_texts(pages: list[StextPage]) -> set[str]:
         return set()
     counts: Counter[str] = Counter()
     for page in pages:
-        candidates = {_normalise(column[0].text) for column in _order_columns(page.lines) if column}
+        # Only the page's first segment: the first line of a later column or
+        # block is body, however often a paragraph opens it.
+        top = _column_segments(page.lines)[:1]
+        candidates = {_normalise(group[0].text) for segment in top for group in segment if group}
         content = [
             line for line in page.lines if line.text.strip() and not is_page_number(line.text)
         ]

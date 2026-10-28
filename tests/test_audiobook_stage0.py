@@ -238,6 +238,58 @@ def test_stext_keeps_columns_apart_across_a_ten_point_gutter() -> None:
     assert bodies == [["Left one.", "Left two.", "", "Right one.", "Right two."]]
 
 
+def test_stext_full_width_blocks_do_not_merge_the_columns() -> None:
+    """A centred title and a full-width abstract above two columns read first,
+    in place; the columns below read left in full, then right."""
+    lines = [
+        stext_line("A Centred Title", 200, 40, 400, 14),
+        stext_line("The abstract runs the full width of the page,", 54, 70, 507, 10),
+        stext_line("and it takes a second line to finish.", 54, 82, 507, 10),
+    ]
+    for row in range(5):
+        top = 110 + 12 * row
+        lines.append(stext_line(f"Left {row}.", 54, top, 250, 10))
+        lines.append(stext_line(f"Right {row}.", 311, top, 507, 10))
+    bodies, _ = prep.stext_body_pages(stext_doc([stext_page(lines)]), "classify")
+    assert [line for line in bodies[0] if line] == [
+        "A Centred Title",
+        "The abstract runs the full width of the page,",
+        "and it takes a second line to finish.",
+        *(f"Left {row}." for row in range(5)),
+        *(f"Right {row}." for row in range(5)),
+    ]
+
+
+def test_stext_columns_between_full_width_blocks_read_left_then_right() -> None:
+    lines = [
+        stext_line("Left above.", 54, 40, 250, 10),
+        stext_line("Right above.", 311, 40, 507, 10),
+        stext_line("Left above two.", 54, 52, 250, 10),
+        stext_line("Right above two.", 311, 52, 507, 10),
+        stext_line("A wide caption set across both columns of the page.", 54, 90, 507, 9),
+        stext_line("Left below.", 54, 120, 250, 10),
+        stext_line("Right below.", 311, 120, 507, 10),
+        stext_line("Left below two.", 54, 132, 250, 10),
+        stext_line("Right below two.", 311, 132, 507, 10),
+        stext_line("Left below three.", 54, 144, 250, 10),
+        stext_line("Right below three.", 311, 144, 507, 10),
+    ]
+    bodies, _ = prep.stext_body_pages(stext_doc([stext_page(lines)]), "classify")
+    assert [line for line in bodies[0] if line] == [
+        "Left above.",
+        "Left above two.",
+        "Right above.",
+        "Right above two.",
+        "A wide caption set across both columns of the page.",
+        "Left below.",
+        "Left below two.",
+        "Left below three.",
+        "Right below.",
+        "Right below two.",
+        "Right below three.",
+    ]
+
+
 def test_stext_drops_recurring_top_band_heads() -> None:
     bodies, _ = prep.stext_body_pages(stext_doc(paper_pages()), "classify")
     assert all("Sample Journal" not in lines for lines in bodies)
