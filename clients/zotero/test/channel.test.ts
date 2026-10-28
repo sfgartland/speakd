@@ -707,6 +707,18 @@ describe("Channel with the Stage B clean", () => {
     expect(daemon.enqueued()[1]).toBe(cleanup(SECTIONS[1]!.text).text);
   });
 
+  it("hushes at once on stop while a repair is still in flight", async () => {
+    const { daemon, channel } = llmChannel(["hang"], neverTimers);
+    await channel.start(SECTIONS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    // The second section's repair now waits on a fetch that never answers.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const before = daemon.verbs().length;
+    await Promise.race([channel.stop(), new Promise((_, reject) => setTimeout(() => reject(new Error("stop waited on the LLM")), 500))]);
+    expect(daemon.verbs().slice(before)).toContain("hush");
+    expect(daemon.enqueued()).toHaveLength(1);
+  });
+
   it("is indistinguishable from Stage A when unconfigured", async () => {
     const configured = llmChannel([], neverTimers);
     const unconfigured = llmChannel([], neverTimers, false);

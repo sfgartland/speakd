@@ -40,7 +40,7 @@ export const NO_TEXT: Problem = { kind: "empty", error: "this document has no te
  * in the read, so a stage can leave the first alone to keep the first sound
  * quick.
  */
-export type Clean = (text: string, ordinal: number) => Stage | Promise<Stage>;
+export type Clean = (text: string, ordinal: number, signal?: AbortSignal) => Stage | Promise<Stage>;
 
 export interface ChannelOptions {
   client: Caller;
@@ -90,6 +90,8 @@ interface Entry {
 /** One start's read. It is replaced, never reused, by the next start. */
 interface Read {
   readonly generation: number;
+  /** Aborted when the read is superseded: what a slow cleanup stops waiting for. */
+  readonly signal: AbortSignal;
   readonly sections: Section[];
   readonly entries: Entry[];
   /** The planned segments, by original index: what a `classify` tag means. */
@@ -120,6 +122,7 @@ export class Channel {
   private readonly overrides: ((segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null) | undefined;
 
   private _generation = 0;
+  private abort = new AbortController();
   private read: Read | null = null;
   private current: Current | null = null;
   // Whether the daemon may hold something of this channel's, queued or
@@ -230,6 +233,7 @@ export class Channel {
    */
   start(segments: readonly ReadSegment[], startIndex: number): Promise<void> {
     const generation = this.supersede();
+    const signal = this.abort.signal;
     return this.serially(async () => {
       if (generation !== this._generation) return;
       if (!(await this.hushIfLive(generation))) return;
@@ -252,7 +256,7 @@ export class Channel {
         this.fail(labelled);
         return;
       }
-      const read: Read = { generation, sections, entries: [], tagged, next: 0, requested: new Set() };
+      const read: Read = { generation, signal, sections, entries: [], tagged, next: 0, requested: new Set() };
       this.read = read;
       await this.enqueueNext(read);
     });
@@ -421,6 +425,10 @@ export class Channel {
   /** Start a new generation: from now on, nothing of the old read moves the highlight. */
   private supersede(): number {
     this._generation++;
+    // Anything still waiting on the old read's cleanup lets go at once, so
+    // the stop or start queued behind it is not held up by the network.
+    this.abort.abort();
+    this.abort = new AbortController();
     this.read = null;
     this.current = null;
     this.seeking = false;
@@ -447,7 +455,7 @@ export class Channel {
       // One section ahead, matching how sections are cleaned: the next
       // residue is asked for while this section speaks, never all at once.
       this.requestClassification(read, ordinal + 1);
-      const stage = await this.cleaned(section.text, ordinal);
+      const stage = await this.cleaned(section.text, ordinal, read.signal);
       if (read !== this.read) return;
       // A section cleaned to nothing -- a page number alone -- has nothing
       // to say, and the daemon refuses empty text.
@@ -531,11 +539,24 @@ export class Channel {
    * stage throws or its map does not add up: a failed cleanup costs the
    * cleanup, never the speech.
    */
-  private async cleaned(text: string, ordinal: number): Promise<Stage> {
+  private async cleaned(text: string, ordinal: number, signal: AbortSignal): Promise<Stage> {
+    const unchanged: Stage = { text, map: identity(text.length) };
+    if (signal.aborted) return unchanged;
+    let onAbort = (): void => {};
+    const superseded = new Promise<Stage>((resolve) => {
+      onAbort = () => resolve(unchanged);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
     try {
-      return apply(text, await this.clean(text, ordinal));
+      // Raced against the supersede signal: a stage on the network must not
+      // hold the serial queue, and its late answer is dropped with the read.
+      const stage = Promise.resolve(this.clean(text, ordinal, signal)).then((s) => apply(text, s));
+      stage.catch(() => {});
+      return await Promise.race([stage, superseded]);
     } catch {
-      return { text, map: identity(text.length) };
+      return unchanged;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   }
 
