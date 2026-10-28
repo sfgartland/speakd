@@ -170,10 +170,10 @@ export class LlmClient {
    * as ever. A timeout, HTTP error, empty or unparsable answer, or an
    * over-budget rewrite leaves the deterministic stage standing.
    */
-  async repairSection(text: string, mode: RepairMode, ordinal: number): Promise<Stage> {
+  async repairSection(text: string, mode: RepairMode, ordinal: number, signal?: AbortSignal): Promise<Stage> {
     const deterministic = cleanup(text);
     if (ordinal === 0 || !this.configured) return deterministic;
-    const answer = await this.chat(repairPrompt(mode, deterministic.text));
+    const answer = await this.chat(repairPrompt(mode, deterministic.text), signal);
     if (answer === null) return deterministic;
     const budget = Math.max(8, Math.ceil(deterministic.text.length * 0.02));
     const repaired = stageFromDiff(deterministic.text, answer, budget);
@@ -215,12 +215,12 @@ export class LlmClient {
   }
 
   /** One chat request, or null on any failure. Never rejects, never hangs past the timeout. */
-  private async chat(prompt: string): Promise<string | null> {
+  private async chat(prompt: string, signal?: AbortSignal): Promise<string | null> {
     const { url, headers, body } = buildRequest(this.config, this.sessionId, [{ role: "user", content: prompt }]);
     let response;
     try {
       response = await this.withTimeout(
-        this.fetch(url, { method: "POST", headers, body: JSON.stringify(body) }),
+        this.fetch(url, { method: "POST", headers, body: JSON.stringify(body), ...(signal === undefined ? {} : { signal }) }),
       );
       if (response === null) return this.give_up("the request timed out");
       if (response.status !== 200) return this.give_up(`HTTP ${response.status}`);
@@ -315,9 +315,32 @@ export async function testConnection(options: TestConnectionOptions): Promise<Te
   }
 }
 
+/**
+ * The client for the preferences as they stand now: `config` is read on
+ * every call, so an endpoint changed or the model switched off takes effect
+ * without a restart. The client (and its footnote cache) is kept while the
+ * config is unchanged, and replaced when it is not.
+ */
+export function liveLlm(
+  config: () => LlmConfig,
+  make: (config: LlmConfig) => LlmClient,
+): () => LlmClient {
+  let key = "";
+  let client: LlmClient | undefined;
+  return () => {
+    const now = config();
+    const next = JSON.stringify(now);
+    if (client === undefined || next !== key) {
+      key = next;
+      client = make(now);
+    }
+    return client;
+  };
+}
+
 /** The section's deterministic stage plus the repair, as the `Clean` seam takes it. */
-export function cleanWithLlm(client: LlmClient): (text: string, ordinal: number) => Promise<Stage> {
-  return (text, ordinal) => client.repairSection(text, client.modeFor(text), ordinal);
+export function cleanWithLlm(client: LlmClient): (text: string, ordinal: number, signal?: AbortSignal) => Promise<Stage> {
+  return (text, ordinal, signal) => client.repairSection(text, client.modeFor(text), ordinal, signal);
 }
 
 function repairPrompt(mode: RepairMode, text: string): string {

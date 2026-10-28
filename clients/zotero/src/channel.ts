@@ -13,7 +13,7 @@
 // by the one thing that tells sections apart: their text.
 
 import { cleanup } from "./cleanup";
-import { tagSegments, type FootnotePolicy } from "./footnotes";
+import { tagSegments, type FootnotePlacement, type FootnotePolicy } from "./footnotes";
 import type { LabelCategory } from "./labelstore";
 import type { FootnoteClassifier, FootnoteLabel } from "./llm";
 import { planHighlights } from "./mapping";
@@ -40,7 +40,7 @@ export const NO_TEXT: Problem = { kind: "empty", error: "this document has no te
  * in the read, so a stage can leave the first alone to keep the first sound
  * quick.
  */
-export type Clean = (text: string, ordinal: number) => Stage | Promise<Stage>;
+export type Clean = (text: string, ordinal: number, signal?: AbortSignal) => Stage | Promise<Stage>;
 
 export interface ChannelOptions {
   client: Caller;
@@ -52,8 +52,22 @@ export interface ChannelOptions {
   /** Sections' sizes, as `buildSections` takes them. */
   firstSize?: number;
   size?: number;
-  /** The footnote policy (prefs.ts `footnote_policy`); `classify` by default. */
-  footnotes?: FootnotePolicy;
+  /**
+   * The footnote policy (prefs.ts `footnote_policy`); `classify` by default.
+   * A function is asked at each read start, so a changed pref applies to the
+   * next read.
+   */
+  footnotes?: FootnotePolicy | (() => FootnotePolicy);
+  /**
+   * Where kept footnotes are read (prefs.ts `footnote_placement`); a function
+   * is asked at each read start. A live read supports `inline` (no deferral)
+   * and `page-end` (a footnote rides at the end of the section that owns its
+   * page). `after-paragraph` and `chapter-end` map to `page-end` here: live
+   * sections are page-sized, and the highlight plan needs each segment's true
+   * index, so a footnote is never moved into the middle of another section's
+   * text.
+   */
+  placement?: FootnotePlacement | (() => FootnotePlacement);
   /**
    * The Stage B classifier (Task 11): consulted cache-first for a section's
    * `classify` residue, never awaited. Absent means rules-only.
@@ -90,6 +104,8 @@ interface Entry {
 /** One start's read. It is replaced, never reused, by the next start. */
 interface Read {
   readonly generation: number;
+  /** Aborted when the read is superseded: what a slow cleanup stops waiting for. */
+  readonly signal: AbortSignal;
   readonly sections: Section[];
   readonly entries: Entry[];
   /** The planned segments, by original index: what a `classify` tag means. */
@@ -114,12 +130,14 @@ export class Channel {
   private readonly clean: Clean;
   private readonly firstSize: number | undefined;
   private readonly size: number | undefined;
-  private readonly footnotes: FootnotePolicy;
+  private readonly footnotes: FootnotePolicy | (() => FootnotePolicy);
+  private readonly placement: FootnotePlacement | (() => FootnotePlacement);
   private readonly footnoteClassifier: FootnoteClassifier | undefined;
   private readonly log: (message: string) => void;
   private readonly overrides: ((segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null) | undefined;
 
   private _generation = 0;
+  private abort = new AbortController();
   private read: Read | null = null;
   private current: Current | null = null;
   // Whether the daemon may hold something of this channel's, queued or
@@ -152,6 +170,7 @@ export class Channel {
     this.firstSize = options.firstSize;
     this.size = options.size;
     this.footnotes = options.footnotes ?? "classify";
+    this.placement = options.placement ?? "page-end";
     this.footnoteClassifier = options.footnoteClassifier;
     this.log = options.log ?? (() => {});
     this.overrides = options.overrides;
@@ -230,6 +249,7 @@ export class Channel {
    */
   start(segments: readonly ReadSegment[], startIndex: number): Promise<void> {
     const generation = this.supersede();
+    const signal = this.abort.signal;
     return this.serially(async () => {
       if (generation !== this._generation) return;
       if (!(await this.hushIfLive(generation))) return;
@@ -241,7 +261,8 @@ export class Channel {
       // file cached at reader adoption; the read path never awaits label I/O.
       const overrides = this.resolveOverrides(segments);
       const tagged = this.planned(segments, overrides);
-      const sections = buildSections(tagged, startIndex, this.firstSize, this.size);
+      const inline = (typeof this.placement === "function" ? this.placement() : this.placement) === "inline";
+      const sections = buildSections(tagged, startIndex, this.firstSize, this.size, inline);
       // Past the end of a document that has text: nothing left to read.
       if (sections.length === 0) return;
       // On every start, not once: the daemon forgets a channel idle for
@@ -252,7 +273,7 @@ export class Channel {
         this.fail(labelled);
         return;
       }
-      const read: Read = { generation, sections, entries: [], tagged, next: 0, requested: new Set() };
+      const read: Read = { generation, signal, sections, entries: [], tagged, next: 0, requested: new Set() };
       this.read = read;
       await this.enqueueNext(read);
     });
@@ -270,7 +291,7 @@ export class Channel {
    */
   private planned(segments: readonly ReadSegment[], overrides: ReadonlyMap<number, LabelCategory> | null = null): readonly TaggedSegment[] {
     try {
-      const { tagged, dropped } = tagSegments(segments, this.footnotes, overrides ?? undefined);
+      const { tagged, dropped } = tagSegments(segments, typeof this.footnotes === "function" ? this.footnotes() : this.footnotes, overrides ?? undefined);
       for (const segment of dropped) this.log(`a ${segment.why} was not read: ${brief(segment.text)}`);
       if (overrides !== null) {
         for (const [index, category] of overrides) {
@@ -421,6 +442,10 @@ export class Channel {
   /** Start a new generation: from now on, nothing of the old read moves the highlight. */
   private supersede(): number {
     this._generation++;
+    // Anything still waiting on the old read's cleanup lets go at once, so
+    // the stop or start queued behind it is not held up by the network.
+    this.abort.abort();
+    this.abort = new AbortController();
     this.read = null;
     this.current = null;
     this.seeking = false;
@@ -447,7 +472,7 @@ export class Channel {
       // One section ahead, matching how sections are cleaned: the next
       // residue is asked for while this section speaks, never all at once.
       this.requestClassification(read, ordinal + 1);
-      const stage = await this.cleaned(section.text, ordinal);
+      const stage = await this.cleaned(section.text, ordinal, read.signal);
       if (read !== this.read) return;
       // A section cleaned to nothing -- a page number alone -- has nothing
       // to say, and the daemon refuses empty text.
@@ -531,11 +556,24 @@ export class Channel {
    * stage throws or its map does not add up: a failed cleanup costs the
    * cleanup, never the speech.
    */
-  private async cleaned(text: string, ordinal: number): Promise<Stage> {
+  private async cleaned(text: string, ordinal: number, signal: AbortSignal): Promise<Stage> {
+    const unchanged: Stage = { text, map: identity(text.length) };
+    if (signal.aborted) return unchanged;
+    let onAbort = (): void => {};
+    const superseded = new Promise<Stage>((resolve) => {
+      onAbort = () => resolve(unchanged);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
     try {
-      return apply(text, await this.clean(text, ordinal));
+      // Raced against the supersede signal: a stage on the network must not
+      // hold the serial queue, and its late answer is dropped with the read.
+      const stage = Promise.resolve(this.clean(text, ordinal, signal)).then((s) => apply(text, s));
+      stage.catch(() => {});
+      return await Promise.race([stage, superseded]);
     } catch {
-      return { text, map: identity(text.length) };
+      return unchanged;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
     }
   }
 

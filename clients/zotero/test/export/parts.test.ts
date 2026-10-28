@@ -153,12 +153,12 @@ describe("buildParts with the cleanup filters", () => {
     expect(parts[0]?.text?.endsWith("at length.")).toBe(true);
   });
 
-  it("takes the footnote policy: defer_all keeps the citation too, drop_all keeps neither", () => {
+  it("takes the footnote policy: keep_all keeps the citation too, drop_all keeps neither", () => {
     const deferAll = buildParts(
       paper(),
       "My Book",
       { kind: "pages", ranges: [{ startPage: 0, endPage: 0 }] },
-      { footnotes: "defer_all" },
+      { footnotes: "keep_all" },
     );
     expect(deferAll[0]?.text).toContain("Kant, KrV");
     expect(deferAll[0]?.text?.endsWith("at length.")).toBe(true);
@@ -229,6 +229,49 @@ describe("buildParts with label overrides", () => {
     const segments = [seg("One.", 0), seg("Two.", 0)];
     expect(buildParts(segments, "A Paper", { kind: "whole" })).toEqual(
       buildParts(segments, "A Paper", { kind: "whole" }, {}),
+    );
+  });
+});
+
+describe("buildParts footnote placement", () => {
+  // Page 0: a paragraph that runs on past the page break, one footnote;
+  // page 1: the paragraph's tail, then a new paragraph; page 2: one more.
+  function flow() {
+    return [
+      seg("Para one opens", 0, "paragraphStart", 760),
+      seg("and runs down the page and", 0, null, 740),
+      seg("1 A note of page zero, Kant 1781.", 0, "paragraphStart", 100),
+      seg("over the break to finish.", 1, null, 760),
+      seg("Para two is next.", 1, "paragraphStart", 740),
+      seg("Para three.", 2, "paragraphStart", 760),
+    ];
+  }
+  const text = (placement: "after-paragraph" | "inline" | "page-end" | "chapter-end") =>
+    buildParts(flow(), "T", { kind: "whole" }, { footnotes: "keep_all", placement })[0]!.text;
+
+  it("after-paragraph (the default) finishes the straddling paragraph, then reads the note", () => {
+    const expected =
+      "Para one opens and runs down the page and over the break to finish. A note of page zero, Kant 1781. Para two is next. Para three.";
+    // (The cleanup rules drop a bare marker digit that opens a sentence.)
+    expect(text("after-paragraph")).toBe(expected);
+    expect(buildParts(flow(), "T", { kind: "whole" }, { footnotes: "keep_all" })[0]!.text).toBe(expected);
+  });
+
+  it("inline leaves the note where it sits in the flow", () => {
+    expect(text("inline")).toBe(
+      "Para one opens and runs down the page and 1 A note of page zero, Kant 1781. over the break to finish. Para two is next. Para three.",
+    );
+  });
+
+  it("page-end reads the note as the next page starts, mid-paragraph if need be", () => {
+    expect(text("page-end")).toBe(
+      "Para one opens and runs down the page and 1 A note of page zero, Kant 1781. over the break to finish. Para two is next. Para three.",
+    );
+  });
+
+  it("chapter-end reads every note at the part's end", () => {
+    expect(text("chapter-end")).toBe(
+      "Para one opens and runs down the page and over the break to finish. Para two is next. Para three. A note of page zero, Kant 1781.",
     );
   });
 });

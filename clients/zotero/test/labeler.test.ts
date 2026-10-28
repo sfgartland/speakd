@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
 import { Labeler, KEY_CATEGORIES, mountCapturePane, predictCategories, segmentsOnPage } from "../src/labeler";
-import { locatorFor, type LabelFile, type LabelRecord } from "../src/labelstore";
+import { locatorFor, matchLabels, type LabelFile, type LabelRecord } from "../src/labelstore";
 import type { CapturedSegment } from "../src/session";
 
 function segment(
@@ -188,5 +188,37 @@ describe("category keys", () => {
       k: "junk",
       g: "heading",
     });
+  });
+});
+
+describe("identical segments on one page", () => {
+  const twins = () => [segment("Same words."), segment("Between."), segment("Same words.")];
+
+  it("labelling one keeps the other's label, and each binds to its own segment", async () => {
+    const { labeler, save } = setup({ segments: twins() });
+    await labeler.setCategory(0, "footnote");
+    await labeler.setCategory(2, "junk");
+    const file = save.mock.calls.at(-1)![0];
+    expect(file.labels).toHaveLength(2);
+    const { overrides } = matchLabels(file, twins());
+    expect([...overrides.entries()]).toEqual([
+      [0, "footnote"],
+      [2, "junk"],
+    ]);
+  });
+
+  it("relabelling the same segment replaces only its own record", async () => {
+    const { labeler, save } = setup({ segments: twins() });
+    await labeler.setCategory(0, "footnote");
+    await labeler.setCategory(2, "junk");
+    await labeler.setCategory(2, "body");
+    const file = save.mock.calls.at(-1)![0];
+    expect(file.labels.map((label) => label.category)).toEqual(["footnote", "body"]);
+  });
+
+  it("still matches a label written before locators carried an occurrence", () => {
+    const old = locatorFor(twins()[0]!);
+    const file = { ...emptyFile(), labels: [{ locator: old, category: "junk" as const, labelledAt: 1, note: "" }] };
+    expect([...matchLabels(file, twins()).overrides.entries()]).toEqual([[0, "junk"]]);
   });
 });

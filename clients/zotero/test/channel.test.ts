@@ -120,6 +120,58 @@ function setupPaper(footnotes: FootnotePolicy = "classify") {
   return { daemon, channel, highlights, problems };
 }
 
+describe("Channel's footnote policy", () => {
+  it("is asked at each read start when given as a function", async () => {
+    let policy: FootnotePolicy = "drop_all";
+    const daemon = new FakeDaemon();
+    const channel = new Channel({ client: daemon.client, sourceId: SOURCE, label: "A Paper", size: 60, footnotes: () => policy });
+    daemon.channel = channel;
+    const page = [
+      { text: "The body opens the page.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 760 },
+      { text: "1 Kant, KrV, B25.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 140 },
+    ];
+    await channel.start(page, 0);
+    expect(daemon.enqueued()[0]).toBe("The body opens the page.");
+    policy = "keep_all";
+    await channel.start(page, 0);
+    expect(daemon.enqueued()[1]).toContain("Kant");
+  });
+});
+
+describe("Channel's footnote placement", () => {
+  const page = [
+    { text: "The body opens the page.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 760 },
+    { text: "More body follows it.", anchor: null, pageIndex: 0, firstRectY: 740 },
+    { text: "1 Kant, KrV, B25.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 140 },
+    { text: "The next page begins.", anchor: "paragraphStart", pageIndex: 1, firstRectY: 760 },
+  ];
+  const run = async (placement: "inline" | "page-end" | "after-paragraph" | "chapter-end") => {
+    const daemon = new FakeDaemon();
+    const channel = new Channel({
+      client: daemon.client,
+      sourceId: SOURCE,
+      label: "A Paper",
+      size: 400,
+      firstSize: 10,
+      footnotes: "keep_all",
+      placement: () => placement,
+    });
+    daemon.channel = channel;
+    await channel.start(page, 0);
+    return daemon.enqueued()[0]!;
+  };
+
+  it("reads a kept footnote where it sits when inline", async () => {
+    expect(await run("inline")).toContain("More body follows it. Kant, KrV, B25. The next page");
+  });
+
+  it("reads it at the end of its page's section for page-end, and for the placements live maps to it", async () => {
+    for (const placement of ["page-end", "after-paragraph", "chapter-end"] as const) {
+      expect(await run(placement)).toBe("The body opens the page. More body follows it. The next page begins. Kant, KrV, B25.");
+    }
+  });
+});
+
 describe("Channel", () => {
   it("labels the channel and enqueues the first section with the pdf profile", async () => {
     const { daemon, channel } = setup();
@@ -230,7 +282,7 @@ describe("Channel", () => {
   });
 
   it("changes exactly the footnotes' treatment when the policy pref flips", async () => {
-    const deferAll = setupPaper("defer_all");
+    const deferAll = setupPaper("keep_all");
     await deferAll.channel.start(PAPER, 0);
     const first = deferAll.daemon.enqueued()[0]!;
     // The citation is kept now too, and read at the section's end, in order.
@@ -622,8 +674,8 @@ describe("Channel with a footnote classifier", () => {
     expect(daemon.enqueued().length).toBeGreaterThan(1);
   });
 
-  it("makes zero classification calls under drop_all and defer_all", async () => {
-    for (const policy of ["drop_all", "defer_all"] as const) {
+  it("makes zero classification calls under drop_all and keep_all", async () => {
+    for (const policy of ["drop_all", "keep_all"] as const) {
       const classifier = new FakeClassifier(new Map(), true);
       const daemon = new FakeDaemon();
       const channel = new Channel({
@@ -707,6 +759,18 @@ describe("Channel with the Stage B clean", () => {
     expect(daemon.enqueued()[1]).toBe(cleanup(SECTIONS[1]!.text).text);
   });
 
+  it("hushes at once on stop while a repair is still in flight", async () => {
+    const { daemon, channel } = llmChannel(["hang"], neverTimers);
+    await channel.start(SECTIONS, 0);
+    daemon.started(daemon.enqueued()[0]!);
+    // The second section's repair now waits on a fetch that never answers.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const before = daemon.verbs().length;
+    await Promise.race([channel.stop(), new Promise((_, reject) => setTimeout(() => reject(new Error("stop waited on the LLM")), 500))]);
+    expect(daemon.verbs().slice(before)).toContain("hush");
+    expect(daemon.enqueued()).toHaveLength(1);
+  });
+
   it("is indistinguishable from Stage A when unconfigured", async () => {
     const configured = llmChannel([], neverTimers);
     const unconfigured = llmChannel([], neverTimers, false);
@@ -779,13 +843,13 @@ describe("Channel with a label override map", () => {
     expect(labelledChannel.daemon.enqueued()[0]).toContain("Sample Journal");
   });
 
-  it("lands a labelled footnote at its section's end under defer_all", async () => {
+  it("lands a labelled footnote at its section's end under keep_all", async () => {
     const segments = [
       labelled("Body one is here.", "paragraphStart", 0, 770),
       labelled("Target to defer.", "paragraphStart", 0, 740),
       labelled("Body two follows.", "paragraphStart", 0, 720),
     ];
-    const { daemon, channel } = labelChannel(() => new Map([[1, "footnote"]]), "defer_all");
+    const { daemon, channel } = labelChannel(() => new Map([[1, "footnote"]]), "keep_all");
     await channel.start(segments, 0);
     expect(daemon.enqueued()[0]).toBe("Body one is here. Body two follows. Target to defer.");
   });

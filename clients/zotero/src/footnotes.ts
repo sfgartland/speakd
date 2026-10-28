@@ -18,7 +18,18 @@ import type { LabelCategory } from "./labelstore";
 import type { TaggedSegment } from "./sections";
 
 /** How a read's footnotes are treated (proposal §3, the brief's open question 1). */
-export type FootnotePolicy = "classify" | "drop_all" | "defer_all";
+export type FootnotePolicy = "classify" | "drop_all" | "keep_all";
+
+/**
+ * Where the footnotes a read keeps are read (the `footnote_placement` pref),
+ * apart from which are kept (`FootnotePolicy`):
+ * - `after-paragraph`: at the first paragraph break at or after the end of
+ *   the footnote's page, so a paragraph straddling the page break is finished;
+ * - `inline`: where they sit in the captured flow, not moved;
+ * - `page-end`: at the end of their page;
+ * - `chapter-end`: at the end of the export part (the live read: its section).
+ */
+export type FootnotePlacement = "after-paragraph" | "inline" | "page-end" | "chapter-end";
 
 /** What the plan says of one segment. */
 export type FootnoteTag = "body" | "drop" | "defer" | "classify";
@@ -86,12 +97,57 @@ function markerNumber(text: string): number | null {
   return Number(plain[1] ?? plain[0]);
 }
 
+/**
+ * What a bottom-band segment's marker is, for the second signal geometry
+ * alone does not give (no font size reaches us): `symbol` markers (a
+ * superscript, *, a dagger) are unambiguous; a `number` is the digits a
+ * marker spells, with `lookalike` set when any of them was a letter OCR'd
+ * from a digit ('Oil', 'Ill'), and `listy` when it ends in a full stop or
+ * colon, as an enumerated body line does.
+ */
+interface MarkerInfo {
+  readonly symbol: boolean;
+  readonly number: number | null;
+  readonly lookalike: boolean;
+  readonly listy: boolean;
+}
+
+function markerInfo(text: string): MarkerInfo {
+  const head = MARKER.exec(text.trimStart())?.[0] ?? "";
+  if (/^(?:[¹²³⁰-⁹]|\*|[†‡¶])/u.test(head)) return { symbol: true, number: null, lookalike: false, listy: false };
+  const lookalike = /[OolIil]/u.test(head);
+  const digits = head.replace(/[Oo]/gu, "0").replace(/[Ili]/gu, "1").replace(/\D/gu, "");
+  return {
+    symbol: false,
+    number: digits === "" ? null : Number(digits),
+    lookalike,
+    listy: /[.:]\s*$/u.test(head),
+  };
+}
+
+/** The numbers body text cites as reference markers: a digit run stuck to the word or punctuation before it ("claim.3", "so,4", "word³"). */
+function referenceMarkers(texts: readonly string[]): Set<number> {
+  const found = new Set<number>();
+  for (const text of texts) {
+    for (const match of text.matchAll(/[\p{L}.,;:!?)"”’'](\d{1,3})(?![\d\p{L}])/gu)) found.add(Number(match[1]));
+    for (const match of text.matchAll(/[¹²³⁰-⁹]{1,3}/gu)) {
+      let value = 0;
+      for (const character of match[0]) value = value * 10 + SUPERSCRIPT.indexOf(character);
+      found.add(value);
+    }
+  }
+  return found;
+}
+
 /** Whether the marker opens a segment's text. */
 const hasMarker = (text: string): boolean => MARKER.test(text.trimStart());
 
 /** A citation's shape, when the text holds one of its openers. */
 const CITATION_OPENER =
   /\bIbid\.?\b|\bCf\.?\b|\bop\. cit\.|\bSee\b|\b\p{Lu}[\p{L}'’-]+[,]?\s+\d{4}\b/u;
+
+/** A citation's closing locator: "Kant, KrV, B25.", "Heidegger, p. 65." */
+const CITATION_LOCATOR = /(?:,|\bpp?\.)\s*[AB]?\d+(?:[/–-][AB]?\d+)?\.?\s*$/u;
 
 /** Mostly digits and punctuation: "KrV, A51/B75.", "pp. 12-20." */
 function dominatedByDigitsAndPunctuation(text: string): boolean {
@@ -149,7 +205,7 @@ export interface ClassifyResidue {
 
 /**
  * A document's `classify` footnotes, with their original indices: the export
- * path's batch input (Task 11). Empty under `drop_all`/`defer_all`, so the
+ * path's batch input (Task 11). Empty under `drop_all`/`keep_all`, so the
  * export makes no call there either.
  */
 export function classificationResidue<S extends PlanSegment>(
@@ -175,7 +231,7 @@ export interface SegmentsPlan<S extends PlanSegment> {
 /** The footnote policy's word for a detected candidate, shared by detection and labels. */
 function footnoteTag(text: string, policy: FootnotePolicy): FootnoteTag {
   if (policy === "drop_all") return "drop";
-  if (policy === "defer_all") return "defer";
+  if (policy === "keep_all") return "defer";
   return classifyShape(text);
 }
 
@@ -187,9 +243,15 @@ function overrideTag(category: LabelCategory, text: string, policy: FootnotePoli
       return "body";
     case "footnote":
       return footnoteTag(text, policy);
-    default:
-      // running-head / footer / page-number / junk: dropped, and audited.
+    case "running-head":
+    case "footer":
+    case "page-number":
+    case "junk":
+      // Dropped, and audited.
       return "drop";
+    default:
+      // A category this build does not know: no override, never a drop.
+      return "body";
   }
 }
 
@@ -276,11 +338,61 @@ export function planFootnotes(
       // Geometry mode: a marker-led paragraph starting in the bottom band is
       // a candidate, and non-anchor paragraphs after one still in the band
       // are its continuations (footnotes wrap).
+      //
+      // Marker and band alone are not enough for a digit marker: a body line
+      // or a short numbered list item ("2. The second premise is false.")
+      // can sit in the band too. A second structural signal must agree --
+      // the body above cites the same number as a reference marker, or a
+      // neighbouring note in the band numbers one off it, or the text has a
+      // citation's own shape. A marker OCR'd from letters ('Oil', 'Ill')
+      // needs one of the first two (or the page's body running on past it); a list-style "N." marker, one of the
+      // first and the last. No signal, no footnote: kept as body.
+      const bodyRefs = referenceMarkers(
+        indices
+          .filter((index) => !(inBand(index) && segments[index]!.anchor === "paragraphStart" && hasMarker(segments[index]!.text)))
+          .map((index) => segments[index]!.text),
+      );
+      const bandNumbers = new Set<number>();
+      for (const index of indices) {
+        const segment = segments[index]!;
+        if (segment.anchor === "paragraphStart" && inBand(index) && hasMarker(segment.text)) {
+          const number = markerInfo(segment.text).number;
+          if (number !== null) bandNumbers.add(number);
+        }
+      }
+      // The page's body runs on past the note: the segment above it stops
+      // mid-sentence and the next page opens in lower case, carrying on.
+      // Body does not break off to let a paragraph in at the bottom of the
+      // page, but a footnote does -- a signal of any marker's shape.
+      const lastOfPage = indices[indices.length - 1]!;
+      const following = segments[lastOfPage + 1];
+      const carriesOn =
+        following !== undefined &&
+        following.pageIndex !== null &&
+        following.pageIndex !== undefined &&
+        /^\p{Ll}/u.test(following.text.trimStart());
+      const interrupts = (index: number): boolean => {
+        if (!carriesOn) return false;
+        const above = segments[index - 1];
+        return above !== undefined && indices.includes(index - 1) && !/[.!?:;"”’')\]]\s*$/u.test(above.text);
+      };
+      const corroborated = (index: number): boolean => {
+        const text = segments[index]!.text;
+        const marker = markerInfo(text);
+        if (marker.symbol) return true;
+        if (interrupts(index)) return true;
+        const number = marker.number;
+        if (number === null) return false;
+        if (bodyRefs.has(number)) return true;
+        if (marker.lookalike) return bandNumbers.has(number - 1) || bandNumbers.has(number + 1);
+        const sequential = !marker.listy && (bandNumbers.has(number - 1) || bandNumbers.has(number + 1));
+        return sequential || CITATION_OPENER.test(text) || CITATION_LOCATOR.test(text.trim()) || dominatedByDigitsAndPunctuation(text.trim());
+      };
       let run = false;
       for (const index of indices) {
         const segment = segments[index]!;
         if (segment.anchor === "paragraphStart") {
-          if (inBand(index) && hasMarker(segment.text)) {
+          if (inBand(index) && hasMarker(segment.text) && corroborated(index)) {
             run = true;
             footnote(index);
           } else {

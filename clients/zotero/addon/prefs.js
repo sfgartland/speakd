@@ -4,8 +4,12 @@ pref("extensions.speakd-reader.port", 8642);
 pref("extensions.speakd-reader.token", "");
 // How a read treats footnotes (src/footnotes.ts): drop the bare citations and
 // read the rest at their section's end (classify), drop every footnote, or
-// keep and defer every one.
+// keep every one.
 pref("extensions.speakd-reader.footnote_policy", "classify");
+// Where the footnotes a read keeps are read (src/footnotes.ts): after the
+// paragraph the page break falls in (after-paragraph), inline, at the end of
+// their page (page-end), or at the end of the export part (chapter-end).
+pref("extensions.speakd-reader.footnote_placement", "after-paragraph");
 // The optional Stage B LLM (src/llm.ts): off until an endpoint and a model
 // are set here. The key is masked in the pane. When on, the paper's text is
 // sent to the endpoint (the pane says so).

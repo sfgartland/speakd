@@ -54,13 +54,15 @@ const DEFAULT_SIZE = 1800;
  * (a wrong kept footnote beats a wrong dropped paragraph); a Stage B
  * classifier may later resolve it to a drop. Sizes and the first-section
  * rule are unchanged; a footnote tail rides along. Original indices are kept
- * throughout, so a deferred footnote highlights its own rect.
+ * throughout, so a deferred footnote highlights its own rect. With `inline`
+ * the kept ones are not held back at all: they read where they sit.
  */
 export function buildSections(
   segments: readonly TaggedSegment[],
   start: number,
   firstSize = 2,
   size = DEFAULT_SIZE,
+  inline = false,
 ): Section[] {
   // The page of each segment, a pageless one inheriting its predecessor's:
   // the page a deferred footnote belongs to.
@@ -77,7 +79,7 @@ export function buildSections(
     const segment = segments[index]!;
     if (segment.text.trim() === "") continue;
     if (segment.tag === "drop") continue;
-    if (segment.tag === "defer" || segment.tag === "classify") waiting.push(index);
+    if (!inline && (segment.tag === "defer" || segment.tag === "classify")) waiting.push(index);
     else body.push(index);
   }
   // A document with nothing but deferred footnotes still reads them, in order.

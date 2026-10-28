@@ -143,7 +143,7 @@ describe("the Köhler fixture", () => {
       segments.map((segment) => ({ ...segment, pageIndex: segment.pageIndex ?? 0 })),
       "Köhler",
       { kind: "pages", ranges: [{ startPage: 34, endPage: 38 }] },
-      { footnotes: "classify", overrides },
+      { footnotes: "classify", overrides, placement: "chapter-end" },
     );
     expect(parts).toHaveLength(1);
     expect(parts[0]?.text.trimEnd().endsWith("which they express.")).toBe(true);

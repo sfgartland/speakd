@@ -7,6 +7,7 @@ import {
   type LabelFile,
   type LabelRecord,
 } from "../src/labelstore";
+import { tagSegments } from "../src/footnotes";
 import type { CapturedSegment } from "../src/session";
 
 function segment(
@@ -101,6 +102,22 @@ describe("matchLabels", () => {
     const { overrides, unmatched } = matchLabels(file([first, second]), [target]);
     expect([...overrides.entries()]).toEqual([[0, "body"]]);
     expect(unmatched).toEqual([second]);
+  });
+});
+
+describe("an unknown category", () => {
+  it("is ignored by matchLabels: no override, not unmatched", () => {
+    const target = segment("Some body text.", 1);
+    const unknown = { ...record(locatorFor(target), "body"), category: "sidebar" } as unknown as LabelRecord;
+    const { overrides, unmatched } = matchLabels(file([unknown]), [target]);
+    expect(overrides.size).toBe(0);
+    expect(unmatched).toEqual([]);
+  });
+
+  it("never drops a segment when it reaches the plan", () => {
+    const target = segment("Some body text.", 1);
+    const overrides = new Map([[0, "sidebar" as never]]);
+    expect(tagSegments([target], "classify", overrides).tagged[0]?.tag).toBe("body");
   });
 });
 

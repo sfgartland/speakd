@@ -13,7 +13,7 @@
 // through the injected `save`.
 
 import { tagSegments, type FootnotePolicy } from "./footnotes";
-import { locatorFor, type LabelCategory, type LabelFile, type LabelRecord } from "./labelstore";
+import { locatorFor, occurrenceIndices, type LabelCategory, type LabelFile, type LabelRecord } from "./labelstore";
 import { filterRunningHeads } from "./segmentfilter";
 
 /** The minimum shape the pane needs of a captured segment. */
@@ -61,11 +61,9 @@ export function segmentsOnPage(segments: readonly LabelledSegment[], page: numbe
   return indices;
 }
 
-/** The two locators name the same segment (spec §7.2). */
+/** The two locators name the same segment: same page, same text, same occurrence of it (absent counts as the first). */
 function sameSegment(a: LabelRecord["locator"], b: LabelRecord["locator"]): boolean {
-  if (a.page !== b.page) return false;
-  if (a.textSha256 === b.textSha256) return true;
-  return a.prefix === b.prefix && a.anchor === b.anchor;
+  return a.page === b.page && a.textSha256 === b.textSha256 && (a.occurrence ?? 0) === (b.occurrence ?? 0);
 }
 
 const DISPLAY_CHARS = 120;
@@ -205,7 +203,7 @@ export class Labeler {
   setCategory(index: number, category: LabelCategory): Promise<void> {
     const segment = this.segments[index];
     if (segment === undefined) return Promise.resolve();
-    const record: LabelRecord = { locator: locatorFor(segment), category, labelledAt: this.options.now(), note: "" };
+    const record: LabelRecord = { locator: locatorFor(segment, occurrenceIndices(this.segments)[index]), category, labelledAt: this.options.now(), note: "" };
     const labels = this.currentFile.labels.filter((entry) => !sameSegment(entry.locator, record.locator));
     labels.push(record);
     this.currentFile = { ...this.currentFile, labels };

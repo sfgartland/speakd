@@ -86,12 +86,16 @@ export class Exporter {
   /** Jobs being attached or reported: done may be heard twice. */
   private readonly settling = new Set<string>();
   private readonly listeners = new Set<() => void>();
-  /** The optional Stage B classifier: the export path's batch (Task 11). */
-  private readonly classifier: FootnoteClassifier | undefined;
+  /**
+   * The optional Stage B classifier: the export path's batch (Task 11).
+   * A function is asked at the start of each export, so the preferences as
+   * they stand then decide.
+   */
+  private readonly classifier: FootnoteClassifier | (() => FootnoteClassifier | undefined) | undefined;
   /** The daemon's last measured real-time factor, from its `metrics` events. */
   rtf: number | undefined;
 
-  constructor(host: ExporterHost, classifier?: FootnoteClassifier) {
+  constructor(host: ExporterHost, classifier?: FootnoteClassifier | (() => FootnoteClassifier | undefined)) {
     this.host = host;
     this.classifier = classifier;
     this.ledger = parseLedger(host.loadLedger());
@@ -162,7 +166,7 @@ export class Exporter {
    * a lost export.
    */
   private async footnoteKinds(request: ExportRequest): Promise<ReadonlyMap<number, FootnoteKind> | undefined> {
-    const classifier = this.classifier;
+    const classifier = typeof this.classifier === "function" ? this.classifier() : this.classifier;
     if (classifier === undefined || !classifier.configured || request.footnotes !== "classify") return undefined;
     const residue = classificationResidue(request.segments, request.footnotes);
     if (residue.length === 0) return undefined;

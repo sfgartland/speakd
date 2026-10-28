@@ -4,6 +4,7 @@ import type { ExportRequest } from "../../src/export/entry";
 import { Exporter, EXPORT_SOURCE, type ExporterHost } from "../../src/export/exporter";
 import { serializeLedger, type TrackedJob } from "../../src/export/jobs";
 import { locatorFor, type LabelFile } from "../../src/labelstore";
+import type { FootnoteClassifier, FootnoteKind } from "../../src/llm";
 import type { CallResult } from "../../src/speakd";
 
 const STAGING = "/home/u/profile/speakd-exports";
@@ -59,6 +60,7 @@ function setup(
     /** Holds `status`'s answer back until it resolves. */
     statusGate?: Promise<void>;
     labelFile?: LabelFile | null;
+    classifier?: FootnoteClassifier | (() => FootnoteClassifier | undefined);
   } = {},
 ) {
   const calls: [string, string, Record<string, unknown>][] = [];
@@ -100,7 +102,7 @@ function setup(
     now: () => now,
     warn: () => {},
   };
-  const exporter = new Exporter(host);
+  const exporter = new Exporter(host, options.classifier);
   return {
     exporter,
     calls,
@@ -377,5 +379,46 @@ describe("Exporter labels", () => {
     const run = setup({ labelFile: labels });
     await run.exporter.start({ ...request(), segments });
     expect(run.calls[0]?.[2].parts).toEqual([{ title: "A Paper", text: "Kept body sentence." }]);
+  });
+});
+
+describe("Exporter's classifier", () => {
+  const notes = (page: number) => [
+    { text: "The page's body opens here.", pageIndex: page, anchor: "paragraphStart", rectCount: 1, firstRectY: 760 },
+    {
+      text:
+        "1 The inaugurating gesture of the lecture is reversed here. What that reversal means " +
+        "for the order of asking is worked out across three pages of close reading.",
+      pageIndex: page,
+      anchor: "paragraphStart",
+      rectCount: 1,
+      firstRectY: 140,
+    },
+    {
+      text: "2 What the reversal means for the asking's order is not yet settled anywhere.",
+      pageIndex: page,
+      anchor: "paragraphStart",
+      rectCount: 1,
+      firstRectY: 126,
+    },
+  ];
+
+  it("is looked up at each export, so a switched-off model is not asked", async () => {
+    let asked = 0;
+    let live = true;
+    const classifier: FootnoteClassifier = {
+      configured: true,
+      cached: () => undefined,
+      classifyFootnotes: async () => {
+        asked++;
+        return new Map<number, FootnoteKind>();
+      },
+    };
+    const run = setup({ classifier: () => (live ? classifier : undefined) });
+    await run.exporter.start({ ...request(), segments: notes(0) });
+    expect(asked).toBe(1);
+    live = false;
+    await run.exporter.start({ ...request(), segments: notes(0) });
+    expect(asked).toBe(1);
   });
 });

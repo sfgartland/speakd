@@ -15,6 +15,22 @@ declare const PathUtils: any;
 /** The taxonomy the pane offers (spec §7.1). */
 export type LabelCategory = "body" | "footnote" | "heading" | "running-head" | "footer" | "page-number" | "junk";
 
+/** Every category the taxonomy names, for validating a file's records. */
+export const LABEL_CATEGORIES: readonly LabelCategory[] = [
+  "body",
+  "footnote",
+  "heading",
+  "running-head",
+  "footer",
+  "page-number",
+  "junk",
+];
+
+/** Whether `value` is a category of the taxonomy. */
+export function isLabelCategory(value: unknown): value is LabelCategory {
+  return typeof value === "string" && (LABEL_CATEGORIES as readonly string[]).includes(value);
+}
+
 /** Where a segment was when it was labelled: content and place, not an index. */
 export interface LabelLocator {
   /** `pageIndex`, predecessor-inherited as the capture places it. */
@@ -27,6 +43,13 @@ export interface LabelLocator {
   readonly prefix: string;
   /** sha256 of the full whitespace-collapsed text. */
   readonly textSha256: string;
+  /**
+   * Which of the page's segments with this same text it is, counting from 0
+   * in document order: what tells two identical segments apart. Absent in
+   * files written before it existed, which then match the first unused
+   * segment with the text, as they always did.
+   */
+  readonly occurrence?: number;
 }
 
 /** One labelled segment. */
@@ -168,7 +191,7 @@ export interface LabelableSegment {
 }
 
 /** The locator for a captured segment (spec §7.1). */
-export function locatorFor(segment: LabelableSegment): LabelLocator {
+export function locatorFor(segment: LabelableSegment, occurrence?: number): LabelLocator {
   const collapsed = collapseText(segment.text);
   return {
     page: segment.pageIndex ?? null,
@@ -176,7 +199,23 @@ export function locatorFor(segment: LabelableSegment): LabelLocator {
     anchor: segment.anchor ?? null,
     prefix: collapsed.slice(0, PREFIX_LENGTH),
     textSha256: sha256Hex(collapsed),
+    ...(occurrence === undefined ? {} : { occurrence }),
   };
+}
+
+/**
+ * For each segment, how many segments before it share its page and
+ * whitespace-collapsed text: 0 for the first of identical twins, 1 for the
+ * second. The `occurrence` a locator records.
+ */
+export function occurrenceIndices(segments: readonly LabelableSegment[]): number[] {
+  const seen = new Map<string, number>();
+  return segments.map((segment) => {
+    const key = `${segment.pageIndex ?? "null"}\u0000${collapseText(segment.text)}`;
+    const count = seen.get(key) ?? 0;
+    seen.set(key, count + 1);
+    return count;
+  });
 }
 
 export interface MatchResult {
@@ -198,15 +237,23 @@ export function matchLabels(file: LabelFile, segments: readonly LabelableSegment
   const collapsed = segments.map((segment) => collapseText(segment.text));
   const hashes = collapsed.map(sha256Hex);
   const prefixes = collapsed.map((text) => text.slice(0, PREFIX_LENGTH));
+  const occurrences = occurrenceIndices(segments);
   const used = new Set<number>();
   const overrides = new Map<number, LabelCategory>();
   const unmatched: LabelRecord[] = [];
 
   for (const label of file.labels) {
+    // A category this build does not know (a newer file, a hand edit) is no
+    // override: ignored, never read as a drop. The record stays in the file.
+    if (!isLabelCategory(label.category)) continue;
     let found = -1;
     for (let index = 0; index < segments.length; index++) {
       if (used.has(index)) continue;
-      if (segments[index]!.pageIndex === label.locator.page && hashes[index] === label.locator.textSha256) {
+      if (
+        segments[index]!.pageIndex === label.locator.page &&
+        hashes[index] === label.locator.textSha256 &&
+        (label.locator.occurrence === undefined || occurrences[index] === label.locator.occurrence)
+      ) {
         found = index;
         break;
       }
@@ -214,6 +261,9 @@ export function matchLabels(file: LabelFile, segments: readonly LabelableSegment
     if (found < 0) {
       for (let index = 0; index < segments.length; index++) {
         if (used.has(index)) continue;
+        // A label that names one of several identical segments never falls
+        // back onto another of them: a wrong hit is worse than none.
+        if (label.locator.occurrence !== undefined && hashes[index] === label.locator.textSha256) continue;
         const anchor = segments[index]!.anchor ?? null;
         if (
           segments[index]!.pageIndex === label.locator.page &&
@@ -265,6 +315,7 @@ function isLocator(value: unknown): value is LabelLocator {
     typeof locator.prefix === "string" &&
     typeof locator.textSha256 === "string" &&
     (locator.anchor === undefined || locator.anchor === null || typeof locator.anchor === "string") &&
+    (locator.occurrence === undefined || typeof locator.occurrence === "number") &&
     (locator.rectY === undefined || locator.rectY === null || typeof locator.rectY === "number")
   );
 }
