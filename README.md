@@ -207,14 +207,15 @@ the hooks send those, since an agent waiting at a prompt cannot. Briefings and
 alerts are spoken with the session's name in front, because with several
 sessions running you need to know who is talking.
 
-**New agent sessions start brief and muted** — Claude Code, OpenCode, and
-Codex alike. Unmute the ones you want to hear; switch one to full when you are
-following it closely:
+**New agent sessions start brief and muted** — Claude Code, OpenCode,
+Codex, and Pi alike. Unmute the ones you want to hear; switch one to full when
+you are following it closely:
 
 ```bash
 uv run speakctl mode full --source claude-code:<session>   # every response
 uv run speakctl mode full --source opencode:<session>      # same, for OpenCode
 uv run speakctl mode full --source codex:<session>         # same, for Codex
+uv run speakctl mode full --source pi:<session>            # same, for Pi
 ```
 
 Only a session with something that can brief for it has a mode; everything

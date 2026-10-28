@@ -286,13 +286,16 @@ class Server:
         briefing would be refused as one, telling the agent to stop. Both are
         a directory listing and two local round trips; a briefing is rare.
         """
-        if source_id is None:
+        # A missing or blank source_id both mean "resolve it from the process
+        # tree": some clients (pi) leave the optional property as "", and a
+        # blank id is not a channel anyone supplied.
+        if not source_id:
             channel, label = session.resolve(self._client, proc=self._proc)
             if channel.startswith("codex:") or "codex" in self._client.lower():
                 raise ToolError("Codex calls require source_id from the speakd prompt hook")
         else:
             if not isinstance(source_id, str) or not re.fullmatch(
-                r"(?:codex|claude-code|opencode):[A-Za-z0-9_.-]{1,200}", source_id
+                r"(?:codex|claude-code|opencode|pi):[A-Za-z0-9_.-]{1,200}", source_id
             ):
                 raise ToolError("source_id must be the agent session channel supplied by speakd")
             channel, label = source_id, None

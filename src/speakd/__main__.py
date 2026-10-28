@@ -115,12 +115,12 @@ def build_profiles() -> Callable[[str], ProfileView]:
 def _agent_defaults(source_id: str) -> dict[str, object]:
     """How an agent session's channel starts: able to brief, and muted.
 
-    Integrated agents -- `claude-code:<id>`, `opencode:<id>`, and
-    `codex:<id>`, exactly one colon -- start silent until chosen, and can
+    Integrated agents -- `claude-code:<id>`, `opencode:<id>`, `codex:<id>`,
+    and `pi:<id>`, exactly one colon -- start silent until chosen, and can
     brief because each ships the MCP server. Several sessions run at once and
     hearing all of them is noise, so each is silent until picked.
     """
-    agents = ("claude-code", "opencode", "codex")
+    agents = ("claude-code", "opencode", "codex", "pi")
     if source_id.count(":") == 1 and source_id.split(":", 1)[0] in agents:
         return {"briefs": True, "muted": True}
     return {}

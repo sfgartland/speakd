@@ -205,3 +205,15 @@ def test_opencode_sessions_start_brief_and_muted() -> None:
     assert table.open("opencode:ses_abc123:extra").briefs is False
     other = table.open("notify:whatsapp")
     assert (other.briefs, effective_mode(other), other.muted) == (False, "full", False)
+
+
+def test_pi_sessions_start_brief_and_muted() -> None:
+    from speakd.__main__ import build_channels
+    from speakd.channels import effective_mode
+
+    table = build_channels()
+    main = table.open("pi:01a11d20-cac6-75ef-8d79-34db13ee0615")
+    assert (main.briefs, effective_mode(main), main.muted) == (True, "brief", True)
+    assert table.open("pi:01a11d20-cac6-75ef-8d79-34db13ee0615:extra").briefs is False
+    other = table.open("notify:whatsapp")
+    assert (other.briefs, effective_mode(other), other.muted) == (False, "full", False)

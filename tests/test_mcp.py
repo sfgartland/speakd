@@ -362,6 +362,81 @@ def test_an_opencode_session_is_found_by_ancestry(tmp_path: Path, monkeypatch) -
     assert session.resolve("opencode", proc=proc) == ("opencode:ses_abc123", None)
 
 
+def test_a_pi_session_is_found_by_ancestry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from speakd.clients import registry
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    proc = fake_proc(
+        tmp_path / "proc", [(300, "python3", 290), (290, "bash", 700), (700, "node", 1)]
+    )
+    registry.register("01a11d20-abc", Path(""), "/work", client="pi", agent_pid=700)
+    assert session.resolve("pi", proc=proc) == ("pi:01a11d20-abc", None)
+
+
+def test_a_blank_source_id_resolves_instead_of_being_refused(  # type: ignore[no-untyped-def]
+    daemon_socket, tmp_path: Path, monkeypatch
+) -> None:
+    """Pi leaves the optional MCP property as ""; a blank id is not a bad one."""
+    from speakd.clients.mcp.server import Server
+
+    monkeypatch.setenv("SPEAKD_STATE_DIR", str(tmp_path / "st"))
+    socket, _ = daemon_socket
+    server = Server(
+        socket, proc=fake_proc(tmp_path / "proc", [(300, "python3", 700), (700, "node", 1)])
+    )
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "pi"}},
+        }
+    )
+    out = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "brief",
+                "arguments": {"source_id": "", "text": "Hi.", "kind": "done"},
+            },
+        }
+    )
+    result = out["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["spoken"] is True
+
+
+def test_an_explicit_pi_source_id_is_accepted(daemon_socket) -> None:  # type: ignore[no-untyped-def]
+    from speakd.clients.mcp.server import Server
+
+    socket, _ = daemon_socket
+    server = Server(socket)
+    server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "pi"}},
+        }
+    )
+    out = server.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "brief",
+                "arguments": {"source_id": "pi:01a11d20-abc", "text": "Hi.", "kind": "done"},
+            },
+        }
+    )
+    result = out["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["spoken"] is True
+
+
 def test_a_registered_ancestor_is_found_through_any_launcher_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
