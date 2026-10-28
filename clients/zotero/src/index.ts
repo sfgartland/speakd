@@ -12,7 +12,7 @@ import { busy, notify, zoteroExporterHost } from "./export/host";
 import { registerExportPane } from "./export/pane";
 import { dismantle, hushOnQuit } from "./lifecycle";
 import { Link, type AbortLike } from "./link";
-import { LlmClient, testConnection } from "./llm";
+import { liveLlm, LlmClient, testConnection } from "./llm";
 import { wirePrefsPane, type PrefsTestResult, type PrefsValues } from "./llm-prefs";
 import { observeConfig, parseLlmConfig, readConfig, readLlmConfig } from "./prefs";
 import { Takeover } from "./reader-takeover";
@@ -120,7 +120,8 @@ export async function startup(data: StartupData, _reason: number): Promise<void>
   // every connection: a render goes on while Zotero is closed.
   const exporter = new Exporter(
     zoteroExporterHost({ call: (verb, sourceId, payload) => link.call(verb, sourceId, payload), warn }),
-    new LlmClient({ config: readLlmConfig(), fetch: sandboxFetch, log }),
+    // Read afresh at each export: a pref change needs no restart.
+    liveLlm(readLlmConfig, (config) => new LlmClient({ config, fetch: sandboxFetch, log })),
   );
   link.onEvent((event) => exporter.onEvent(event));
   let connected = false;

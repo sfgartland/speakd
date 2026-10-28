@@ -315,6 +315,29 @@ export async function testConnection(options: TestConnectionOptions): Promise<Te
   }
 }
 
+/**
+ * The client for the preferences as they stand now: `config` is read on
+ * every call, so an endpoint changed or the model switched off takes effect
+ * without a restart. The client (and its footnote cache) is kept while the
+ * config is unchanged, and replaced when it is not.
+ */
+export function liveLlm(
+  config: () => LlmConfig,
+  make: (config: LlmConfig) => LlmClient,
+): () => LlmClient {
+  let key = "";
+  let client: LlmClient | undefined;
+  return () => {
+    const now = config();
+    const next = JSON.stringify(now);
+    if (client === undefined || next !== key) {
+      key = next;
+      client = make(now);
+    }
+    return client;
+  };
+}
+
 /** The section's deterministic stage plus the repair, as the `Clean` seam takes it. */
 export function cleanWithLlm(client: LlmClient): (text: string, ordinal: number, signal?: AbortSignal) => Promise<Stage> {
   return (text, ordinal, signal) => client.repairSection(text, client.modeFor(text), ordinal, signal);

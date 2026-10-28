@@ -52,8 +52,12 @@ export interface ChannelOptions {
   /** Sections' sizes, as `buildSections` takes them. */
   firstSize?: number;
   size?: number;
-  /** The footnote policy (prefs.ts `footnote_policy`); `classify` by default. */
-  footnotes?: FootnotePolicy;
+  /**
+   * The footnote policy (prefs.ts `footnote_policy`); `classify` by default.
+   * A function is asked at each read start, so a changed pref applies to the
+   * next read.
+   */
+  footnotes?: FootnotePolicy | (() => FootnotePolicy);
   /**
    * The Stage B classifier (Task 11): consulted cache-first for a section's
    * `classify` residue, never awaited. Absent means rules-only.
@@ -116,7 +120,7 @@ export class Channel {
   private readonly clean: Clean;
   private readonly firstSize: number | undefined;
   private readonly size: number | undefined;
-  private readonly footnotes: FootnotePolicy;
+  private readonly footnotes: FootnotePolicy | (() => FootnotePolicy);
   private readonly footnoteClassifier: FootnoteClassifier | undefined;
   private readonly log: (message: string) => void;
   private readonly overrides: ((segments: readonly ReadSegment[]) => ReadonlyMap<number, LabelCategory> | null) | undefined;
@@ -274,7 +278,7 @@ export class Channel {
    */
   private planned(segments: readonly ReadSegment[], overrides: ReadonlyMap<number, LabelCategory> | null = null): readonly TaggedSegment[] {
     try {
-      const { tagged, dropped } = tagSegments(segments, this.footnotes, overrides ?? undefined);
+      const { tagged, dropped } = tagSegments(segments, typeof this.footnotes === "function" ? this.footnotes() : this.footnotes, overrides ?? undefined);
       for (const segment of dropped) this.log(`a ${segment.why} was not read: ${brief(segment.text)}`);
       if (overrides !== null) {
         for (const [index, category] of overrides) {

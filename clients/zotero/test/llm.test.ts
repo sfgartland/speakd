@@ -3,7 +3,7 @@ import { cleanup, ocrSuspicion } from "../src/cleanup";
 import { verify } from "../src/offsetmap";
 import { GENERIC_PROFILE, OPENCODE_PROFILE } from "../src/presets";
 import type { FetchLike } from "../src/speakd";
-import { LlmClient, testConnection, type LlmConfig, type LlmTimers } from "../src/llm";
+import { liveLlm, LlmClient, testConnection, type LlmConfig, type LlmTimers } from "../src/llm";
 
 const CONFIG: LlmConfig = { enabled: true, endpoint: "https://example.test/v1", apiKey: "sk-x", model: "test-model" };
 
@@ -288,5 +288,24 @@ describe("LlmClient.classifyFootnotes", () => {
     const { client, requests } = llm([]);
     expect((await client.classifyFootnotes([])).size).toBe(0);
     expect(requests).toHaveLength(0);
+  });
+});
+
+describe("liveLlm", () => {
+  it("reads the config on every call: a pref change, or switching the model off, applies at once", () => {
+    let config: LlmConfig = CONFIG;
+    const fetch: FetchLike = async () => {
+      throw new Error("unused");
+    };
+    const get = liveLlm(
+      () => config,
+      (c) => new LlmClient({ config: c, fetch }),
+    );
+    const first = get();
+    expect(get()).toBe(first);
+    expect(first.configured).toBe(true);
+    config = { ...CONFIG, enabled: false };
+    expect(get().configured).toBe(false);
+    expect(get()).not.toBe(first);
   });
 });

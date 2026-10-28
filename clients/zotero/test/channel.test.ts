@@ -120,6 +120,24 @@ function setupPaper(footnotes: FootnotePolicy = "classify") {
   return { daemon, channel, highlights, problems };
 }
 
+describe("Channel's footnote policy", () => {
+  it("is asked at each read start when given as a function", async () => {
+    let policy: FootnotePolicy = "drop_all";
+    const daemon = new FakeDaemon();
+    const channel = new Channel({ client: daemon.client, sourceId: SOURCE, label: "A Paper", size: 60, footnotes: () => policy });
+    daemon.channel = channel;
+    const page = [
+      { text: "The body opens the page.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 760 },
+      { text: "1 Kant, KrV, B25.", anchor: "paragraphStart", pageIndex: 0, firstRectY: 140 },
+    ];
+    await channel.start(page, 0);
+    expect(daemon.enqueued()[0]).toBe("The body opens the page.");
+    policy = "defer_all";
+    await channel.start(page, 0);
+    expect(daemon.enqueued()[1]).toContain("Kant");
+  });
+});
+
 describe("Channel", () => {
   it("labels the channel and enqueues the first section with the pdf profile", async () => {
     const { daemon, channel } = setup();

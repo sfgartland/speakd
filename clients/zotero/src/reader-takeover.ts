@@ -40,7 +40,7 @@ import {
   type LabelCategory,
   type LabelFile,
 } from "./labelstore";
-import { cleanWithLlm, LlmClient } from "./llm";
+import { cleanWithLlm, liveLlm, LlmClient, type FootnoteClassifier } from "./llm";
 import { readFootnotePolicy, readLlmConfig } from "./prefs";
 import type { FetchLike } from "./speakd";
 import type { Link } from "./link";
@@ -372,26 +372,38 @@ class Adopted implements ReaderHandle {
     }, win);
     this.hooked = true;
 
-    const llm = new LlmClient({
-      // The Stage B endpoint as the preferences stand when the reader is
-      // adopted: off until configured, and re-read on the next adoption.
-      config: readLlmConfig(),
-      fetch: fetch as unknown as FetchLike,
-      log: (message) => this.log.log(message),
-      // The one bar mark a failed call leaves; for now it is the debug log.
-      onFailure: () => this.log.log("the language model failed; the rules-only text stands"),
-    });
+    // The Stage B endpoint as the preferences stand now: off until
+    // configured, and read afresh for each section and each footnote lookup,
+    // so a pref change (switching the model off, say) needs no new tab.
+    const llmNow = liveLlm(
+      readLlmConfig,
+      (config) =>
+        new LlmClient({
+          config,
+          fetch: fetch as unknown as FetchLike,
+          log: (message) => this.log.log(message),
+          // The one bar mark a failed call leaves; for now it is the debug log.
+          onFailure: () => this.log.log("the language model failed; the rules-only text stands"),
+        }),
+    );
+    const llm: FootnoteClassifier = {
+      get configured() {
+        return llmNow().configured;
+      },
+      cached: (text) => llmNow().cached(text),
+      classifyFootnotes: (residue) => llmNow().classifyFootnotes(residue),
+    };
     const session = new ReaderSession(
       new Channel({
         client: this.takeover.options.link,
         sourceId: this.sourceId,
         label: this.title(),
-        // The footnote policy as the preferences stand when the reader is
-        // adopted: the filters' word for what a read skips and what it keeps.
-        footnotes: readFootnotePolicy(),
+        // The footnote policy as the preferences stand at each read start:
+        // the filters' word for what a read skips and what it keeps.
+        footnotes: readFootnotePolicy,
         // Stage B: the deterministic cleanup always, the model on top of it
         // after the first section, and cache-first footnote classification.
-        clean: cleanWithLlm(llm),
+        clean: (text, ordinal, signal) => cleanWithLlm(llmNow())(text, ordinal, signal),
         footnoteClassifier: llm,
         // The labeler's overrides, from the file cached at adoption: one map
         // lookup at planned() time, never an await in the read path.
