@@ -232,7 +232,7 @@ Built in a cloud session, then verified and finished locally the same day.
   - Plus's other voice, `longanlufeng`, sounded too Chinese-accented to the user.
   - Other OpenRouter TTS models (MAI-Voice-2, Grok, Deepgram, MiniMax…) were sampled in `~/Music/speakd-compare-*.wav`.
 
-## Built 2026-10-08: PDF text cleanup (branch `feat/pdf-text-cleanup`, not yet merged)
+## Built 2026-10-08: PDF text cleanup (merged 2026-10-28)
 
 Spec `docs/design/2026-10-08-pdf-text-cleanup-proposal-glm.md`; plan
 `docs/superpowers/plans/2026-10-08-pdf-text-cleanup.md`; Stage 0 characterisation
@@ -240,7 +240,7 @@ Spec `docs/design/2026-10-08-pdf-text-cleanup-proposal-glm.md`; plan
 
 - **Zotero plugin, Stage A (deterministic, rules-only):** a segment-level
   running-head/footer filter, structural footnote detection with a
-  `classify`/`drop_all`/`defer_all` policy (default `classify`), deferred
+  `classify`/`drop_all`/`keep_all` policy (default `classify`), deferred
   footnotes appended at their section's end with true indices (highlights
   stay exact), ligature/scan-mark cleanup, and the same filters on the
   export path. The policy is `extensions.speakd-reader.footnote_policy`.
@@ -265,7 +265,7 @@ Spec `docs/design/2026-10-08-pdf-text-cleanup-proposal-glm.md`; plan
   for want of evidence). Full playback past a deferred footnote and the
   export text diff remain a longer harness run.
 
-## Built 2026-10-09: PDF component labeler (branch `feat/pdf-text-cleanup`, not yet merged)
+## Built 2026-10-09: PDF component labeler (merged 2026-10-28)
 
 Spec `docs/superpowers/specs/2026-10-09-speakd-pdf-labeler-design.md`; plan
 `docs/superpowers/plans/2026-10-09-speakd-pdf-labeler.md`; live notes
@@ -321,14 +321,18 @@ Spec `docs/superpowers/specs/2026-10-09-speakd-pdf-labeler-design.md`; plan
 
 ## Deferred and known gaps
 
-- **PDF text cleanup for narration (requested 2026-10-08; built on an unmerged
-  branch):** remove running headers/footers, handle footnotes gracefully (today
-  read inline) and multi-column text, on both the Zotero plugin path and the
-  `speakd-audiobook` skill, with an optional LLM cleanup stage. 24 commits on
-  `feat/pdf-text-cleanup` (worktree `../speakd-worktrees/pdf-text-cleanup`,
-  2026-10-08/09): filters, footnote policy, Stage B LLM, a component labeler and
-  ground-truth fixtures. Not yet reviewed or merged. Brief, design and plan live
-  on that branch under `docs/design/` and `docs/superpowers/plans/`.
+- **PDF text cleanup, after the 2026-10-28 merge:** a whole-branch review's
+  ten findings were fixed before merging (hush during an LLM repair, empty
+  `rects`, two-column ordering and gutter fusing in the skill, footnote false
+  positives, label category/page/duplicate bugs, prefs read fresh). Footnotes
+  now have two settings: *which* (`footnote_policy` / `--footnotes`:
+  `classify` default, `drop_all`, `keep_all`; `defer_all` still accepted) and
+  *where* (`footnote_placement` / `--footnote-placement`: `after-paragraph`
+  default, `inline`, `page-end`, `chapter-end`; live reads support only
+  `inline` and `page-end`). Still open: the live checks listed in the two
+  sections above, a real failing sample to settle the provisional thresholds,
+  and on scans with noisy font sizes the skill falls back to the looser
+  footnote rule.
 - **Housekeeping done 2026-10-28:** the merged worktrees and `feat/onnx-engine`
   (superseded by the ONNX hybrid) were removed; their `.superpowers/` reports and
   the onnx-engine benchmarks are in `.superpowers/archive/`.
